@@ -61,7 +61,15 @@ args=( --remote-debugging-port="$PORT" --user-data-dir="$PROFILE"
        --no-first-run --no-default-browser-check )
 [ -n "$EXT" ] && args+=( --load-extension="$EXT" )
 
-"$BIN" "${args[@]}" >/dev/null 2>&1 &
+# Launch WITHOUT stealing focus. `open -g` starts the app in the background, so
+# the window appears but your current app keeps keyboard focus. Falls back to a
+# direct exec if the binary isn't inside a .app bundle.
+APP="${BIN%/Contents/MacOS/*}"
+if [ "$APP" != "$BIN" ] && [ -d "$APP" ]; then
+  open -g -a "$APP" --args "${args[@]}"
+else
+  "$BIN" "${args[@]}" >/dev/null 2>&1 &
+fi
 
 echo "horse-browser: launching… (waiting for CDP :$PORT)"
 for _ in $(seq 1 30); do

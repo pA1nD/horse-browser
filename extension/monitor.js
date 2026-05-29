@@ -8,12 +8,12 @@
 //
 // The grid syncs in real time: panes appear when an agent opens a tab and
 // disappear when it closes (chrome.tabs / tabGroups events + a safety poll).
-// Idle panes show a grayed thumbnail (refreshed by an occasional forced frame)
-// plus a "no activity" overlay, so the eye lands on the panes that are moving.
+// The grid shows every real web tab. The tab that's ACTIVE in its window gets a
+// coloured highlight — a stable signal of "where the agent is", unlike screencast
+// frames (which arrive sporadically for background tabs and made an idle overlay
+// blink). Thumbnails refresh quietly in the background.
 
 const CDP = "http://127.0.0.1:9223";
-const IDLE_MS = 4000;      // no real frame for this long → pane reads "no activity"
-const REPING_MS = 6000;    // how often to refresh an idle pane's thumbnail
 
 const GROUP_COLORS = {
   grey: "#9aa0a6", blue: "#8ab4f8", red: "#f28b82", yellow: "#fdd663",
@@ -50,20 +50,23 @@ async function connect() {
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
 }
 
-// Agent tabs = tabs that live in a session tab-group, with their CDP targetId.
+// Every real web tab (http/https/file). Grouped tabs get their session colour +
+// label; ungrouped tabs get a neutral marker so they still show up.
 async function discover() {
   const groups = await chrome.tabGroups.query({});
   const gById = new Map(groups.map((g) => [g.id, g]));
   const tabs = await chrome.tabs.query({});
   const targets = await chrome.debugger.getTargets();
   const tgtByTab = new Map(targets.filter((t) => t.tabId).map((t) => [t.tabId, t.id]));
+  const self = location.href;
   return tabs
-    .filter((t) => gById.has(t.groupId) && tgtByTab.has(t.id))
+    .filter((t) => tgtByTab.has(t.id) && /^(https?|file):/.test(t.url || "") && t.url !== self)
     .map((t) => {
       const g = gById.get(t.groupId);
       return {
-        tabId: t.id, targetId: tgtByTab.get(t.id), title: t.title, url: t.url,
-        label: g.title || "•", color: GROUP_COLORS[g.color] || "#9aa0a6",
+        tabId: t.id, targetId: tgtByTab.get(t.id), title: t.title, url: t.url, active: !!t.active,
+        label: g ? (g.title || "•") : "—",
+        color: g ? (GROUP_COLORS[g.color] || "#9aa0a6") : "#5b6470",
       };
     });
 }
@@ -78,8 +81,8 @@ function draw(pane, b64) {
   img.src = "data:image/jpeg;base64," + b64;
 }
 
-// Force one frame even on a never-painted background tab. Updates the thumbnail
-// WITHOUT touching lastFrame, so it doesn't fake "activity" — idle stays idle.
+// Force one frame even on a never-painted background tab, to keep the thumbnail
+// from going stale. Doesn't touch lastFrame or any visible state.
 async function forceCapture(pane) {
   if (!pane.sid) return;
   try {
@@ -91,10 +94,10 @@ async function forceCapture(pane) {
 function makePane(info) {
   const el = document.createElement("div");
   el.className = "pane";
+  el.style.setProperty("--accent", info.color);
   el.innerHTML =
     '<canvas></canvas>' +
-    '<div class="tag"><span class="dot"></span><span class="t"></span></div>' +
-    '<div class="idle">no activity</div>';
+    '<div class="tag"><span class="dot"></span><span class="t"></span></div>';
   el.querySelector(".dot").style.background = info.color;
   const ttlEl = el.querySelector(".t");
   ttlEl.textContent = info.label + " · " + (info.title || info.url);
@@ -119,7 +122,6 @@ async function watch(info) {
   sessionHandlers.set(sid, (m) => {
     if (m.method !== "Page.screencastFrame") return;
     pane.lastFrame = Date.now();
-    pane.el.classList.remove("is-idle");
     draw(pane, m.params.data);
     send("Page.screencastFrameAck", { sessionId: m.params.sessionId }, sid);
   });
@@ -148,7 +150,12 @@ async function reconcile() {
   for (const tid of [...panes.keys()]) if (!want.has(tid)) removePane(tid);
   for (const a of agents) {
     if (!panes.has(a.targetId)) await watch(a);
-    else { const p = panes.get(a.targetId); if (p.ttlEl) p.ttlEl.textContent = a.label + " · " + (a.title || a.url); }
+    const p = panes.get(a.targetId);
+    if (!p) continue;
+    if (p.ttlEl) p.ttlEl.textContent = a.label + " · " + (a.title || a.url);
+    p.el.style.setProperty("--accent", a.color);
+    const dot = p.el.querySelector(".dot"); if (dot) dot.style.background = a.color;
+    p.el.classList.toggle("is-active", a.active); // highlight the focused tab in each window
   }
   countEl.textContent = panes.size + (panes.size === 1 ? " tab" : " tabs");
   emptyEl.hidden = panes.size > 0;
@@ -159,6 +166,7 @@ let reconcileTimer;
 function scheduleReconcile() { clearTimeout(reconcileTimer); reconcileTimer = setTimeout(reconcile, 250); }
 for (const ev of [chrome.tabs.onCreated, chrome.tabs.onRemoved, chrome.tabs.onUpdated,
                   chrome.tabs.onMoved, chrome.tabs.onAttached, chrome.tabs.onDetached,
+                  chrome.tabs.onActivated,
                   chrome.tabGroups.onCreated, chrome.tabGroups.onUpdated, chrome.tabGroups.onRemoved]) {
   ev.addListener(scheduleReconcile);
 }
@@ -187,15 +195,13 @@ function applyCols() {
 colsSel.addEventListener("change", applyCols);
 window.addEventListener("resize", applyCols);
 
-// Mark idle panes, and refresh their thumbnail occasionally so it isn't stale.
+// Quietly refresh thumbnails for tabs that aren't streaming frames (no visible
+// state change, so nothing blinks). The active tab is shown via .is-active.
 setInterval(() => {
   const now = Date.now();
-  for (const p of panes.values()) {
-    const idle = now - p.lastFrame > IDLE_MS;
-    p.el.classList.toggle("is-idle", idle);
-    if (idle && now - (p.lastPing || 0) > REPING_MS) { p.lastPing = now; forceCapture(p); }
-  }
-}, 1000);
+  for (const p of panes.values())
+    if (now - p.lastFrame > 4000 && now - (p.lastPing || 0) > 5000) { p.lastPing = now; forceCapture(p); }
+}, 2000);
 
 (async () => {
   applyCols();
