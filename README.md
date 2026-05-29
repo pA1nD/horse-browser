@@ -12,24 +12,42 @@ anything else speaking CDP) is just a *consumer* that drives it on port 9223.
 ## What's here
 
 ```
-bin/test-brave        launcher — Brave on a dedicated profile, CDP :9223, extension loaded
-extension/            Agent Tab Grouper (MV3): groupTab / activateTab / listTabs over CDP
-agent-helpers/bh.py   bh_open / bh_switch_tab / bh_list — the browser-harness adapter
-statusline.sh         optional Claude Code statusline — shows ses:XXXX = your tab-group label
-SKILL.md              usage + the bh_open discipline (read this)
-install.md            setup steps
+extension/      Agent Tab Grouper (MV3): groupTab / activateTab / listTabs over CDP
+install.sh      one-time setup — registers the statusline + first Brave launch
+statusline.sh   Claude Code statusline — shows ses:XXXX = your tab-group label
+SKILL.md        usage + the bh_open discipline (incl. the helper recipe agents self-install)
 ```
 
-## Quick start
+## Install
 
 ```bash
-bin/test-brave                          # launch Brave (profile + CDP :9223 + extension)
-export BU_CDP_URL=http://127.0.0.1:9223 # point your CDP client at it
+git clone https://github.com/pa1nd/test-brave
+cd test-brave
+./install.sh
 ```
 
-The browser and extension need nothing else. To drive it with browser-harness
-and get session-grouped tabs, copy `agent-helpers/bh.py` into browser-harness's
-workspace — see [install.md](install.md).
+`install.sh` registers `statusline.sh` in your Claude Code settings and launches
+the dedicated Brave profile (Agent Tab Grouper loaded) for the first time. Sign
+into the apps you want your agents to use — those logins persist. Then point a
+CDP client at it:
+
+```bash
+export BU_CDP_URL=http://127.0.0.1:9223
+```
+
+**Relaunch later** (from the repo dir):
+
+```bash
+open -na "Brave Browser" --args --remote-debugging-port=9223 \
+  --user-data-dir="$HOME/.config/test-brave" --load-extension="$PWD/extension" \
+  --no-first-run --no-default-browser-check
+```
+
+There's no helper file to copy. The first time an agent drives this with
+browser-harness, it writes the `bh_open` helpers into browser-harness's
+`agent-workspace/agent_helpers.py` from the recipe in [SKILL.md](SKILL.md) —
+generic across every install. To make the discipline available everywhere,
+install the skill globally: `ln -s "$PWD/SKILL.md" ~/.claude/skills/test-brave/SKILL.md`.
 
 ## Why a dedicated, logged-in browser?
 

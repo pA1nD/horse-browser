@@ -17,7 +17,7 @@ Dedicated Brave profile, separate from the user's daily browser.
 - Profile: `~/.config/test-brave/`
 - CDP: `http://127.0.0.1:9223`  →  `export BU_CDP_URL=http://127.0.0.1:9223`
 
-If it's not already running on 9223, launch it (or just run `bin/test-brave`):
+If it's not already running on 9223, launch it (first-time setup: `./install.sh`):
 
 ```bash
 open -na "Brave Browser" --args \
@@ -65,7 +65,7 @@ self.listTabs(label: string) -> Promise<Tab[]>
 //   }
 ```
 
-Reach them over CDP by attaching to the extension's service-worker target and `Runtime.evaluate`. Drop `agent-helpers/bh.py` into browser-harness's `agent-workspace/agent_helpers.py` (auto-loaded on every browser-harness call) and you get `bh_open(url)` everywhere:
+Reach them over CDP by attaching to the extension's service-worker target and `Runtime.evaluate`. There's no helper file to copy — the first time `bh_open` is undefined, **write the recipe below into browser-harness's `agent-workspace/agent_helpers.py`** yourself (it auto-loads on every browser-harness call; find it in your browser-harness checkout). Then `bh_open(url)` is available everywhere:
 
 ```python
 import json
