@@ -80,3 +80,17 @@ self.listTabs = async (label) => {
       active: !!t.active,
     }));
 };
+
+// Toolbar click → open (or focus) the Agent Monitor — a CCTV grid of every
+// session's live tabs. The monitor page is a normal extension page; it does its
+// own CDP work as a second client on :9223.
+const MONITOR_URL = chrome.runtime.getURL("monitor.html");
+chrome.action.onClicked.addListener(async () => {
+  const existing = await chrome.tabs.query({ url: MONITOR_URL });
+  if (existing.length) {
+    await chrome.tabs.update(existing[0].id, { active: true });
+    await chrome.windows.update(existing[0].windowId, { focused: true });
+  } else {
+    await chrome.tabs.create({ url: MONITOR_URL });
+  }
+});

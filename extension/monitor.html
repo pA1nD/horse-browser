@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent Monitor</title>
+  <link rel="stylesheet" href="monitor.css" />
+</head>
+<body>
+  <header>
+    <span class="brand">🐴 Agent Monitor</span>
+    <span id="count" class="count">…</span>
+    <span class="spacer"></span>
+    <label class="cols">cols
+      <select id="cols">
+        <option value="auto">auto</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+      </select>
+    </label>
+    <button id="refresh">Refresh</button>
+  </header>
+  <main id="grid"></main>
+  <div id="empty" class="empty" hidden>
+    No agent tabs yet. When an agent opens tabs (grouped by session), they show up here live.
+  </div>
+  <script src="monitor.js"></script>
+</body>
+</html>

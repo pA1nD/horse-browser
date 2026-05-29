@@ -32,8 +32,9 @@ if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
 fi
 
 args=( --remote-debugging-port="$PORT" --user-data-dir="$PROFILE"
-       --test-type        # suppresses the "unsupported command-line flag" infobar
-       --disable-infobars # hides the Chrome-for-Testing infobar (per Playwright's chromiumSwitches)
+       --test-type             # suppresses the "unsupported command-line flag" infobar
+       --disable-infobars      # hides the Chrome-for-Testing infobar (per Playwright's chromiumSwitches)
+       --remote-allow-origins=* # lets the in-browser Monitor page open the CDP socket (:9223)
        --no-first-run --no-default-browser-check )
 [ -n "$EXT" ] && args+=( --load-extension="$EXT" )
 

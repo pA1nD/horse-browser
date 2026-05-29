@@ -1,0 +1,51 @@
+:root {
+  --bg: #0b0d10;
+  --panel: #14181d;
+  --line: #262c33;
+  --text: #e6e9ee;
+  --dim: #8b949e;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 13px/1.4 -apple-system, Inter, system-ui, sans-serif; }
+
+header {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 16px; background: var(--bg); border-bottom: 1px solid var(--line);
+}
+.brand { font-weight: 600; }
+.count { color: var(--dim); }
+.spacer { flex: 1; }
+.cols { color: var(--dim); display: flex; align-items: center; gap: 6px; }
+select, button {
+  background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 8px; font: inherit; cursor: pointer;
+}
+
+#grid {
+  display: grid; gap: 10px; padding: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+}
+
+.pane {
+  background: var(--panel); border: 1px solid var(--line);
+  border-top: 2px solid var(--accent, #555); border-radius: 10px; overflow: hidden;
+}
+.bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.lbl { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; font-weight: 700;
+  color: #0b0d10; padding: 1px 6px; border-radius: 5px; }
+.ttl { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.screen { position: relative; aspect-ratio: 16 / 10; background: #000; cursor: pointer; }
+.screen canvas { width: 100%; height: 100%; object-fit: contain; display: block;
+  transition: filter .4s ease, opacity .4s ease; }
+
+/* idle: grayed out + quiet overlay, so the eye lands on active panes */
+.idle { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+  color: var(--dim); font-size: 12px; letter-spacing: .05em; text-transform: uppercase;
+  background: rgba(11, 13, 16, .35); }
+.pane.is-idle canvas { filter: grayscale(1) brightness(.5); opacity: .55; }
+.pane.is-idle .idle { display: flex; }
+
+.empty { color: var(--dim); padding: 48px; text-align: center; }
