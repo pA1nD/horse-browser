@@ -199,7 +199,12 @@ setInterval(() => {
 
 (async () => {
   applyCols();
-  try { await connect(); }
-  catch { countEl.textContent = "can't reach CDP on :9223"; return; }
+  let ok = false;
+  for (let i = 0; i < 60 && !ok; i++) {
+    try { await connect(); ok = true; }
+    catch { countEl.textContent = "connecting to CDP :9223…"; await new Promise((r) => setTimeout(r, 1000)); }
+  }
+  if (!ok) { countEl.textContent = "can't reach CDP on :9223"; return; }
+  ws.onclose = () => setTimeout(() => location.reload(), 1500); // browser restart → reconnect
   await reconcile();
 })();

@@ -31,6 +31,29 @@ if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
   exit 1
 fi
 
+# Pin the extension's toolbar button. Pinned state lives in the profile's
+# Preferences (extensions.toolbar); Chrome owns that file, so we only touch it
+# here — while the browser is stopped. The unpacked extension's id is a hash of
+# its absolute path, so we compute it rather than hardcode. Creates Preferences
+# if absent, so a first install is pinned too. (Re-pins each launch by design.)
+if [ -n "$EXT" ] && command -v python3 >/dev/null 2>&1; then
+  python3 - "$PROFILE/Default/Preferences" "$EXT" <<'PY' || true
+import hashlib, json, os, sys
+pref, ext = sys.argv[1], sys.argv[2]
+eid = "".join(chr(ord("a") + int(c, 16)) for c in hashlib.sha256(ext.encode()).hexdigest()[:32])
+os.makedirs(os.path.dirname(pref), exist_ok=True)
+d = {}
+if os.path.exists(pref):
+    try: d = json.load(open(pref))
+    except Exception: d = {}
+tb = d.setdefault("extensions", {}).get("toolbar")
+if not isinstance(tb, list): tb = []
+if eid not in tb: tb.append(eid)
+d["extensions"]["toolbar"] = tb
+json.dump(d, open(pref, "w"))
+PY
+fi
+
 args=( --remote-debugging-port="$PORT" --user-data-dir="$PROFILE"
        --test-type             # suppresses the "unsupported command-line flag" infobar
        --disable-infobars      # hides the Chrome-for-Testing infobar (per Playwright's chromiumSwitches)
