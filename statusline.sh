@@ -1,7 +1,5 @@
 #!/bin/bash
-# Two-line statusline:
-#   line 1: cwd  branch[*]  model  ctx:NN%  ses:XXXX
-#   line 2: › last user message (truncated)
+# Single-line statusline:  cwd  branch[*]  model  ctx:NN%  ses:XXXX
 #
 # `ses:XXXX` is the last 4 chars of the session id — the SAME label the Agent
 # Tab Grouper uses for this session's tab group. So you can match "which
@@ -40,19 +38,4 @@ line1="${C_DIR}${dir_short}${C_RST}"
 [ -n "$used" ] && line1="${line1} ${C_DIM}ctx:$(printf %.0f "$used")%${C_RST}"
 [ -n "$sid_short" ] && line1="${line1} ${C_DIM}ses:${sid_short}${C_RST}"
 
-last_msg=""
-if [ -n "$transcript" ] && [ -f "$transcript" ]; then
-  last_msg=$(tail -n 2000 "$transcript" 2>/dev/null \
-    | jq -r '
-      select(.type=="user")
-      | if (.message.content | type) == "string" then .message.content else empty end
-    ' 2>/dev/null \
-    | grep -vE '^[[:space:]]*<' \
-    | grep -vE '^[[:space:]]*$' \
-    | tail -1 \
-    | tr '\n' ' ' \
-    | cut -c1-300)
-fi
-
-printf '%b\n' "$line1"
-[ -n "$last_msg" ] && printf '%b' "${C_DIM}› ${last_msg}${C_RST}"
+printf '%b' "$line1"
