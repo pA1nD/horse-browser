@@ -42,6 +42,43 @@ open -na "Brave Browser" --args \
   --load-extension="$HERE/extension" \
   --no-first-run --no-default-browser-check
 echo "✓ launched Brave — profile: $PROFILE, CDP :$PORT, Agent Tab Grouper loaded"
+
+# 3. smoke test (best-effort; only if browser-harness is installed) ───────────
+# Brave is up — drive a real listTabs() call through the extension over CDP to
+# confirm the whole chain (Brave ⇄ CDP ⇄ extension service worker) works, not
+# just that Brave booted.
+if command -v browser-harness >/dev/null 2>&1; then
+  export BU_CDP_URL="http://127.0.0.1:$PORT"
+  read -r -d '' check <<'PY' || true
+from browser_harness.helpers import cdp
+sw = next((t["targetId"] for t in cdp("Target.getTargets")["targetInfos"]
+           if t.get("type") == "service_worker"
+           and t.get("url", "").startswith("chrome-extension://")), None)
+if not sw:
+    print("PENDING"); raise SystemExit(0)
+s = cdp("Target.attachToTarget", targetId=sw, flatten=True)["sessionId"]
+r = cdp("Runtime.evaluate", session_id=s,
+        expression="self.listTabs ? self.listTabs('__install_check__') : 'NOFN'",
+        awaitPromise=True, returnByValue=True)
+cdp("Target.detachFromTarget", sessionId=s)
+print("READY" if isinstance(r.get("result", {}).get("value"), list) else "PENDING")
+PY
+  echo "Verifying through browser-harness (waiting for Brave to come up)…"
+  verified=""
+  for _ in $(seq 1 12); do
+    if printf '%s' "$check" | browser-harness 2>/dev/null | grep -q READY; then
+      verified=1; break
+    fi
+    sleep 2
+  done
+  if [ -n "$verified" ]; then
+    echo "✓ verified — listTabs() answered over CDP; the extension is live"
+  else
+    echo "! couldn't confirm within ~25s — Brave may still be booting, or the"
+    echo "  extension is disabled. Check brave://extensions, then re-run."
+  fi
+fi
+
 echo
 echo "Next:"
 echo "  • Sign into the apps you want your agents to use — those logins persist."
