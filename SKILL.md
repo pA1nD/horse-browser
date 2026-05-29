@@ -1,6 +1,6 @@
 ---
 name: test-brave
-description: A dedicated, persistent browser (CDP on :9223) plus a tab-grouper extension that drops each agent's tabs into its own per-session group and opens them without stealing OS focus. Use whenever you drive a browser via browser-harness — opening tabs, navigating, scraping, rendering, screenshots. ALWAYS open tabs with `bh_open(url)`, never raw `new_tab(url)` / `goto_url(url)` (they hijack other agents' and the human's tabs). If `bh_open` is undefined, write it into browser-harness's `agent_helpers.py` from the recipe below BEFORE opening any tab.
+description: A dedicated, persistent browser (CDP on :9223) plus a tab-grouper extension that drops each agent's tabs into its own per-session group and opens them without stealing OS focus. Use whenever you drive a browser via browser-harness — opening tabs, navigating, scraping, rendering, screenshots.
 ---
 
 # test-brave + tab grouper
