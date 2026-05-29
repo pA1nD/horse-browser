@@ -30,6 +30,7 @@ let ws, msgId = 0;
 const pending = new Map();          // request id → resolver
 const sessionHandlers = new Map();  // sessionId → event handler
 const panes = new Map();            // targetId → pane
+let frameAspect = 16 / 10;          // live content aspect (w/h), refined from real frames
 
 function send(method, params, sessionId) {
   return new Promise((resolve) => {
@@ -77,6 +78,10 @@ function draw(pane, b64) {
     const c = pane.canvas;
     if (c.width !== img.naturalWidth) { c.width = img.naturalWidth; c.height = img.naturalHeight; }
     pane.ctx.drawImage(img, 0, 0);
+    // Refine the grid's cell aspect from the real frame so panes match the tab
+    // (all tabs share the agent window, so one aspect fits all). Relayout if it shifts.
+    const a = img.naturalWidth / img.naturalHeight;
+    if (a > 0.1 && Math.abs(a - frameAspect) / frameAspect > 0.02) { frameAspect = a; scheduleLayout(); }
   };
   img.src = "data:image/jpeg;base64," + b64;
 }
@@ -159,7 +164,7 @@ async function reconcile() {
   }
   countEl.textContent = panes.size + (panes.size === 1 ? " tab" : " tabs");
   emptyEl.hidden = panes.size > 0;
-  applyCols();
+  layout();
 }
 
 let reconcileTimer;
@@ -172,28 +177,39 @@ for (const ev of [chrome.tabs.onCreated, chrome.tabs.onRemoved, chrome.tabs.onUp
 }
 setInterval(reconcile, 3000); // safety net for anything the events miss
 
-// Pick a column count that tiles all panes across the whole viewport with cells
-// closest to a screencast frame's ~1.6 aspect — so the wall fills the screen.
-function applyCols() {
-  const n = Math.max(panes.size, 1);
-  let cols;
-  if (colsSel.value !== "auto") {
-    cols = +colsSel.value;
-  } else {
-    cols = 1; let best = Infinity;
-    const W = window.innerWidth, H = Math.max(window.innerHeight - 28, 1);
-    for (let c = 1; c <= n; c++) {
-      const r = Math.ceil(n / c);
-      const cellAR = (W / c) / (H / r);
-      const score = Math.abs(Math.log(cellAR / 1.6));
-      if (score < best) { best = score; cols = c; }
-    }
+// Responsive layout: tile N panes — each at the content's aspect ratio — into
+// the available area, choosing the column count that makes the panes as LARGE as
+// possible. Because every pane matches the frame aspect, the canvas fills it
+// edge-to-edge (no letterbox) while showing the whole tab (no crop); the only
+// slack is a centred margin around the grid, which this minimises.
+function layout() {
+  const n = panes.size;
+  if (!n) return;
+  const gap = 2;
+  const W = grid.clientWidth, H = grid.clientHeight;
+  if (W < 2 || H < 2) return;
+  const ar = frameAspect;
+  const forced = colsSel.value === "auto" ? null : +colsSel.value;
+  let best = null;
+  for (let cols = 1; cols <= n; cols++) {
+    if (forced && cols !== forced) continue;
+    const rows = Math.ceil(n / cols);
+    const cw = (W - (cols - 1) * gap) / cols;
+    const ch = (H - (rows - 1) * gap) / rows;
+    if (cw <= 0 || ch <= 0) continue;
+    let w = cw, h = cw / ar;          // fit content AR inside the cell box
+    if (h > ch) { h = ch; w = ch * ar; }
+    const area = w * h;
+    if (!best || area > best.area) best = { cols, w, h, area };
   }
-  grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
-  grid.style.gridAutoRows = "1fr";
+  if (!best) return;
+  grid.style.gridTemplateColumns = `repeat(${best.cols}, ${Math.floor(best.w)}px)`;
+  grid.style.gridAutoRows = `${Math.floor(best.h)}px`;
 }
-colsSel.addEventListener("change", applyCols);
-window.addEventListener("resize", applyCols);
+let layoutTimer;
+function scheduleLayout() { clearTimeout(layoutTimer); layoutTimer = setTimeout(layout, 120); }
+colsSel.addEventListener("change", layout);
+window.addEventListener("resize", layout);
 
 // Quietly refresh thumbnails for tabs that aren't streaming frames (no visible
 // state change, so nothing blinks). The active tab is shown via .is-active.
@@ -204,7 +220,7 @@ setInterval(() => {
 }, 2000);
 
 (async () => {
-  applyCols();
+  layout();
   let ok = false;
   for (let i = 0; i < 60 && !ok; i++) {
     try { await connect(); ok = true; }
