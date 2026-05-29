@@ -91,16 +91,14 @@ async function forceCapture(pane) {
 function makePane(info) {
   const el = document.createElement("div");
   el.className = "pane";
-  el.style.setProperty("--accent", info.color);
   el.innerHTML =
-    '<div class="bar"><span class="lbl"></span><span class="ttl"></span></div>' +
-    '<div class="screen"><canvas></canvas><div class="idle">no activity</div></div>';
-  const lbl = el.querySelector(".lbl");
-  lbl.textContent = info.label;
-  lbl.style.background = info.color;
-  const ttlEl = el.querySelector(".ttl");
-  ttlEl.textContent = info.title || info.url;
-  el.querySelector(".screen").addEventListener("click", async () => {
+    '<canvas></canvas>' +
+    '<div class="tag"><span class="dot"></span><span class="t"></span></div>' +
+    '<div class="idle">no activity</div>';
+  el.querySelector(".dot").style.background = info.color;
+  const ttlEl = el.querySelector(".t");
+  ttlEl.textContent = info.label + " · " + (info.title || info.url);
+  el.addEventListener("click", async () => {
     await chrome.tabs.update(info.tabId, { active: true });
     const tab = await chrome.tabs.get(info.tabId);
     chrome.windows.update(tab.windowId, { focused: true });
@@ -150,10 +148,11 @@ async function reconcile() {
   for (const tid of [...panes.keys()]) if (!want.has(tid)) removePane(tid);
   for (const a of agents) {
     if (!panes.has(a.targetId)) await watch(a);
-    else { const p = panes.get(a.targetId); if (p.ttlEl) p.ttlEl.textContent = a.title || a.url; }
+    else { const p = panes.get(a.targetId); if (p.ttlEl) p.ttlEl.textContent = a.label + " · " + (a.title || a.url); }
   }
   countEl.textContent = panes.size + (panes.size === 1 ? " tab" : " tabs");
   emptyEl.hidden = panes.size > 0;
+  applyCols();
 }
 
 let reconcileTimer;
@@ -165,12 +164,28 @@ for (const ev of [chrome.tabs.onCreated, chrome.tabs.onRemoved, chrome.tabs.onUp
 }
 setInterval(reconcile, 3000); // safety net for anything the events miss
 
+// Pick a column count that tiles all panes across the whole viewport with cells
+// closest to a screencast frame's ~1.6 aspect — so the wall fills the screen.
 function applyCols() {
-  const v = colsSel.value;
-  grid.style.gridTemplateColumns =
-    v === "auto" ? "repeat(auto-fit, minmax(360px, 1fr))" : `repeat(${v}, 1fr)`;
+  const n = Math.max(panes.size, 1);
+  let cols;
+  if (colsSel.value !== "auto") {
+    cols = +colsSel.value;
+  } else {
+    cols = 1; let best = Infinity;
+    const W = window.innerWidth, H = Math.max(window.innerHeight - 28, 1);
+    for (let c = 1; c <= n; c++) {
+      const r = Math.ceil(n / c);
+      const cellAR = (W / c) / (H / r);
+      const score = Math.abs(Math.log(cellAR / 1.6));
+      if (score < best) { best = score; cols = c; }
+    }
+  }
+  grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  grid.style.gridAutoRows = "1fr";
 }
 colsSel.addEventListener("change", applyCols);
+window.addEventListener("resize", applyCols);
 
 // Mark idle panes, and refresh their thumbnail occasionally so it isn't stale.
 setInterval(() => {
