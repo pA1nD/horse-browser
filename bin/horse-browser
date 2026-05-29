@@ -32,6 +32,7 @@ if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
 fi
 
 args=( --remote-debugging-port="$PORT" --user-data-dir="$PROFILE"
+       --test-type   # suppresses the "unsupported command-line flag" infobar
        --no-first-run --no-default-browser-check )
 [ -n "$EXT" ] && args+=( --load-extension="$EXT" )
 
