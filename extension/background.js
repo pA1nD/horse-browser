@@ -1,10 +1,11 @@
-// Browser Harness Tab Grouper — CDP-driven.
+// Agent Tab Grouper — CDP-driven.
 //
-// The helper attaches to this service worker via CDP and calls
-// self.bhGroup / self.bhList with Runtime.evaluate (awaitPromise: true).
+// A CDP client attaches to this service worker and calls self.groupTab /
+// self.activateTab / self.listTabs with Runtime.evaluate (awaitPromise: true).
 // chrome.debugger.getTargets() bridges CDP targetIds to chrome.tabs.Tab ids.
+// Nothing here is specific to any one driver — it's a plain tab grouper.
 
-// MV3 service workers sleep when idle (~30s). The CDP-only callers (bh_list
+// MV3 service workers sleep when idle (~30s). The CDP-only callers (listTabs
 // etc.) can't wake us via tab events. A 30s no-op alarm is the chrome-blessed
 // keepalive: each fire resets the idle timer, SW stays warm indefinitely.
 chrome.runtime.onInstalled.addListener(() => chrome.alarms.create("keepalive", { periodInMinutes: 0.5 }));
@@ -26,7 +27,7 @@ async function tabIdForTargetId(targetId) {
   return t.tabId;
 }
 
-self.bhGroup = async (targetId, label) => {
+self.groupTab = async (targetId, label) => {
   const tabId = await tabIdForTargetId(targetId);
   const tab = await chrome.tabs.get(tabId);
   const existing = await chrome.tabGroups.query({ windowId: tab.windowId, title: label });
@@ -49,13 +50,13 @@ self.bhGroup = async (targetId, label) => {
 // chrome.tabs.update({active:true}) swaps Brave's visible tab without raising
 // the app — replaces CDP Target.activateTarget, which calls [NSApp activate]
 // and steals macOS focus while the agent works.
-self.bhActivate = async (targetId) => {
+self.activateTab = async (targetId) => {
   const tabId = await tabIdForTargetId(targetId);
   await chrome.tabs.update(tabId, { active: true });
   return tabId;
 };
 
-self.bhList = async (label) => {
+self.listTabs = async (label) => {
   const groups = await chrome.tabGroups.query({ title: label });
   if (!groups.length) return [];
   const groupIds = new Set(groups.map(g => g.id));

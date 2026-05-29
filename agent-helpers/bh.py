@@ -44,7 +44,7 @@ def bh_switch_tab(target_id):
     cdp("Emulation.setFocusEmulationEnabled", enabled=True)
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
-    ext_call("bhActivate", target_id)
+    ext_call("activateTab", target_id)
     return sid
 
 
@@ -56,9 +56,9 @@ def bh_open(url):
         goto_url(url)
     wait_for_load()
     if _label():
-        ext_call("bhGroup", tid, _label())
+        ext_call("groupTab", tid, _label())
     return tid
 
 
 def bh_list():
-    return ext_call("bhList", _label()) or [] if _label() else []
+    return ext_call("listTabs", _label()) or [] if _label() else []

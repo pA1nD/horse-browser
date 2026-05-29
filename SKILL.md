@@ -1,6 +1,6 @@
 ---
 name: test-brave
-description: Project-local Brave (port 9223) plus a tab-grouper extension that puts every browser-harness tab into a per-session group. ALWAYS open tabs with `bh_open(url)` in this project, never raw `new_tab(url)`. If `bh_open` isn't defined, install it from the recipe below BEFORE opening any tab. Use whenever you'd use `browser-harness` in a project that imports this skill — rendering, scraping, navigation, screenshots, anything that opens tabs.
+description: Project-local Brave (port 9223) plus a tab-grouper extension that puts every agent's tab into a per-session group. ALWAYS open tabs with `bh_open(url)` in this project, never raw `new_tab(url)`. If `bh_open` isn't defined, install it from the recipe below BEFORE opening any tab. Use whenever you'd use `browser-harness` in a project that imports this skill — rendering, scraping, navigation, screenshots, anything that opens tabs.
 ---
 
 # test-brave + tab grouper
@@ -36,7 +36,7 @@ Gives each Claude session its own coloured tab group (label = last 4 chars of `C
 The service worker exposes three async functions on `self`:
 
 ```js
-self.bhGroup(targetId: string, label: string) -> Promise<number>
+self.groupTab(targetId: string, label: string) -> Promise<number>
 //   Puts the tab into a group titled `label`. Creates the group if missing
 //   (colour deterministic from `label`).
 //   targetId: CDP target id (uppercase hex string, e.g. "3C39F0B4…").
@@ -44,13 +44,13 @@ self.bhGroup(targetId: string, label: string) -> Promise<number>
 //   Returns:  chrome tab id (number).
 //   Throws:   Error("no tab for CDP target ...") if targetId has no live tab.
 
-self.bhActivate(targetId: string) -> Promise<number>
+self.activateTab(targetId: string) -> Promise<number>
 //   Makes this tab the visible tab in its Brave window WITHOUT raising Brave
 //   over your current macOS app. Replaces CDP Target.activateTarget, which
 //   calls [NSApp activate] and steals focus while the agent works. Returns
 //   the chrome tab id.
 
-self.bhList(label: string) -> Promise<Tab[]>
+self.listTabs(label: string) -> Promise<Tab[]>
 //   Returns metadata for every tab whose group title equals `label`.
 //   Returns []  if no group with that title exists.
 //   Tab = {
@@ -115,7 +115,7 @@ def bh_switch_tab(target_id):
     cdp("Emulation.setFocusEmulationEnabled", enabled=True)
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
-    ext_call("bhActivate", target_id)
+    ext_call("activateTab", target_id)
     return sid
 
 
@@ -127,12 +127,12 @@ def bh_open(url):
         goto_url(url)
     wait_for_load()
     if _label():
-        ext_call("bhGroup", tid, _label())
+        ext_call("groupTab", tid, _label())
     return tid
 
 
 def bh_list():
-    return ext_call("bhList", _label()) or [] if _label() else []
+    return ext_call("listTabs", _label()) or [] if _label() else []
 ```
 
 You pass CDP `targetId`s only — the extension bridges to chrome `tabId`s internally.
