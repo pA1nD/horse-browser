@@ -32,7 +32,7 @@ if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
 fi
 
 # Pin the extension's toolbar button. Pinned state lives in the profile's
-# Preferences (extensions.toolbar); Chrome owns that file, so we only touch it
+# Preferences (extensions.pinned_extensions); Chrome owns that file, so we only touch it
 # here — while the browser is stopped. The unpacked extension's id is a hash of
 # its absolute path, so we compute it rather than hardcode. Creates Preferences
 # if absent, so a first install is pinned too. (Re-pins each launch by design.)
@@ -46,10 +46,10 @@ d = {}
 if os.path.exists(pref):
     try: d = json.load(open(pref))
     except Exception: d = {}
-tb = d.setdefault("extensions", {}).get("toolbar")
+tb = d.setdefault("extensions", {}).get("pinned_extensions")
 if not isinstance(tb, list): tb = []
 if eid not in tb: tb.append(eid)
-d["extensions"]["toolbar"] = tb
+d["extensions"]["pinned_extensions"] = tb
 json.dump(d, open(pref, "w"))
 PY
 fi
