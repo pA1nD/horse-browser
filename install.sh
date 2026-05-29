@@ -94,7 +94,7 @@ print("READY" if isinstance(r.get("result", {}).get("value"), list) else "PENDIN
 PY
   echo "Verifying through browser-harness…"
   verified=""
-  for _ in $(seq 1 12); do
+  for _ in $(seq 1 20); do   # ~40s — must clear the SW's first 30s keepalive tick
     if printf '%s' "$check" | browser-harness 2>/dev/null | grep -q READY; then verified=1; break; fi
     sleep 2
   done

@@ -5,12 +5,16 @@
 // chrome.debugger.getTargets() bridges CDP targetIds to chrome.tabs.Tab ids.
 // Nothing here is specific to any one driver — it's a plain tab grouper.
 
-// MV3 service workers sleep when idle (~30s). The CDP-only callers (listTabs
-// etc.) can't wake us via tab events. A 30s no-op alarm is the chrome-blessed
-// keepalive: each fire resets the idle timer, SW stays warm indefinitely.
+// MV3 service workers sleep when idle and then vanish from Target.getTargets
+// until something wakes them — so a dormant SW would make groupTab/listTabs
+// (and the install smoke test) silently miss us. Two keepalives:
+//   • a 30s no-op alarm resets the idle timer so we stay warm once running;
+//   • waking on tab creation covers the gap before the first alarm tick — a
+//     tab is created right before we're asked to group it, and at launch.
 chrome.runtime.onInstalled.addListener(() => chrome.alarms.create("keepalive", { periodInMinutes: 0.5 }));
 chrome.runtime.onStartup.addListener(() => chrome.alarms.create("keepalive", { periodInMinutes: 0.5 }));
 chrome.alarms.onAlarm.addListener(() => {});
+chrome.tabs.onCreated.addListener(() => {});
 
 const COLORS = ["blue", "cyan", "green", "yellow", "orange", "red", "pink", "purple"];
 
