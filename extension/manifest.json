@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Browser Harness Tab Grouper",
+  "version": "0.3.0",
+  "description": "Groups browser-harness tabs by Claude session. Driven over CDP via Runtime.evaluate against this extension's service worker.",
+  "background": { "service_worker": "background.js" },
+  "permissions": ["tabs", "tabGroups", "debugger", "alarms"]
+}
