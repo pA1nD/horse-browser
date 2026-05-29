@@ -1,6 +1,6 @@
 ---
 name: test-brave
-description: Project-local Brave (port 9223) plus a tab-grouper extension that puts every agent's tab into a per-session group. ALWAYS open tabs with `bh_open(url)` when this skill is active, never raw `new_tab(url)`. If `bh_open` isn't defined, install it from the recipe below BEFORE opening any tab. Use whenever you'd use `browser-harness` in a project that imports this skill — rendering, scraping, navigation, screenshots, anything that opens tabs.
+description: A dedicated, persistent browser (CDP on :9223) plus a tab-grouper extension that drops each agent's tabs into its own per-session group and opens them without stealing OS focus. Use whenever you drive a browser via browser-harness — opening tabs, navigating, scraping, rendering, screenshots. ALWAYS open tabs with `bh_open(url)`, never raw `new_tab(url)` / `goto_url(url)` (they hijack other agents' and the human's tabs). If `bh_open` is undefined, write it into browser-harness's `agent_helpers.py` from the recipe below BEFORE opening any tab.
 ---
 
 # test-brave + tab grouper
