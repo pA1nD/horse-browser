@@ -33,9 +33,9 @@ C_DIM=$'\033[90m'
 C_RST=$'\033[0m'
 
 line1="${C_DIR}${dir_short}${C_RST}"
-[ -n "$branch" ] && line1="${line1} ${C_DIM}${branch}${dirty}${C_RST}"
+[ -n "$branch" ] && line1="${line1}  ${C_DIM}${branch}${dirty}${C_RST}"
 [ -n "$model" ] && line1="${line1}  ${C_DIM}${model}${C_RST}"
-[ -n "$used" ] && line1="${line1} ${C_DIM}ctx:$(printf %.0f "$used")%${C_RST}"
-[ -n "$sid_short" ] && line1="${line1} ${C_DIM}ses:${sid_short}${C_RST}"
+[ -n "$used" ] && line1="${line1}  ${C_DIM}ctx:$(printf %.0f "$used")%${C_RST}"
+[ -n "$sid_short" ] && line1="${line1}  ${C_DIM}ses:${sid_short}${C_RST}"
 
 printf '%b' "$line1"
