@@ -1,7 +1,7 @@
 # test-brave helpers for browser-harness.
 #
 # Copy (or symlink) this into browser-harness's auto-loaded workspace file:
-#   ~/Developer/browser-harness/agent-workspace/agent_helpers.py
+#   <your browser-harness checkout>/agent-workspace/agent_helpers.py
 # It is loaded on every browser-harness call, giving you bh_open / bh_switch_tab
 # / bh_list. Open tabs with bh_open(url), never raw new_tab(url) / goto_url(url).
 

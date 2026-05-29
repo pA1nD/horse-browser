@@ -5,13 +5,14 @@ Prereqs: macOS, [Brave Browser](https://brave.com) at `/Applications/Brave Brows
 ## 1. Clone
 
 ```bash
-git clone https://github.com/pa1nd/test-brave ~/pro/test-brave
+git clone https://github.com/pa1nd/test-brave
+cd test-brave
 ```
 
 ## 2. Launch
 
 ```bash
-~/pro/test-brave/bin/test-brave
+./bin/test-brave
 ```
 
 This opens Brave on a dedicated profile (`~/.config/test-brave`) with remote
@@ -29,14 +30,15 @@ notice; that's expected for an unpacked extension.)
 ## 3. (Optional) wire it into browser-harness
 
 To get `bh_open` / `bh_switch_tab` / `bh_list` on every browser-harness call,
-copy the helper into browser-harness's auto-loaded workspace file:
+copy the helper into browser-harness's auto-loaded workspace file
+(`agent-workspace/agent_helpers.py`, inside your browser-harness checkout):
 
 ```bash
-cp ~/pro/test-brave/agent-helpers/bh.py \
-   ~/Developer/browser-harness/agent-workspace/agent_helpers.py
+cp agent-helpers/bh.py /path/to/browser-harness/agent-workspace/agent_helpers.py
 ```
 
-(Symlink instead if you'd rather track updates: `ln -sf …/agent-helpers/bh.py …/agent_helpers.py`.)
+(Symlink instead if you'd rather track updates:
+`ln -sf "$PWD/agent-helpers/bh.py" /path/to/browser-harness/agent-workspace/agent_helpers.py`.)
 
 Then **always open tabs with `bh_open(url)`**, never raw `new_tab` / `goto_url`
 — see [SKILL.md](SKILL.md).
@@ -51,7 +53,7 @@ and the browser and know which coloured group is yours.
 Wire it into Claude Code `settings.json` (requires `jq`):
 
 ```json
-"statusLine": { "type": "command", "command": "/Users/pa1nd/pro/test-brave/statusline.sh" }
+"statusLine": { "type": "command", "command": "/absolute/path/to/test-brave/statusline.sh" }
 ```
 
 Use an absolute path (settings.json doesn't expand `~`). Or copy it to
@@ -60,7 +62,7 @@ Use an absolute path (settings.json doesn't expand `~`). Or copy it to
 ## Updating
 
 ```bash
-cd ~/pro/test-brave && git pull --ff-only
+cd test-brave && git pull --ff-only
 ```
 
 Reload the extension afterward (relaunch `bin/test-brave`, or hit reload in

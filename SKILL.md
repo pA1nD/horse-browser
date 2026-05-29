@@ -1,13 +1,13 @@
 ---
 name: test-brave
-description: Project-local Brave (port 9223) plus a tab-grouper extension that puts every agent's tab into a per-session group. ALWAYS open tabs with `bh_open(url)` in this project, never raw `new_tab(url)`. If `bh_open` isn't defined, install it from the recipe below BEFORE opening any tab. Use whenever you'd use `browser-harness` in a project that imports this skill — rendering, scraping, navigation, screenshots, anything that opens tabs.
+description: Project-local Brave (port 9223) plus a tab-grouper extension that puts every agent's tab into a per-session group. ALWAYS open tabs with `bh_open(url)` when this skill is active, never raw `new_tab(url)`. If `bh_open` isn't defined, install it from the recipe below BEFORE opening any tab. Use whenever you'd use `browser-harness` in a project that imports this skill — rendering, scraping, navigation, screenshots, anything that opens tabs.
 ---
 
 # test-brave + tab grouper
 
-**Rule:** in this project, open tabs with `bh_open(url)` not `new_tab(url)`. If `bh_open` is undefined in your browser-harness call, install it from the [recipe](#extension) below *before* opening any tab. End-of-task: prune your group with `bh_list()` and `cdp("Target.closeTarget", ...)`.
+**Rule:** when this skill is active, open tabs with `bh_open(url)` not `new_tab(url)`. If `bh_open` is undefined in your browser-harness call, install it from the [recipe](#extension) below *before* opening any tab. End-of-task: prune your group with `bh_list()` and `cdp("Target.closeTarget", ...)`.
 
-**Never just be lazy and use `goto_url`.** It navigates whichever tab is currently focused in Brave — disastrous for other agents (it hijacks their work) and humans (it clobbers the tab they're reading). Open with `bh_open(url)`; re-navigate within your own session-grouped tab via `bh_switch_tab(tid)` first, then `goto_url(url)`. The only legitimate place for bare `goto_url` is *inside* `bh_open` itself.
+**Never reach for bare `goto_url`.** It navigates whichever tab is currently focused in Brave — disastrous for other agents (it hijacks their work) and humans (it clobbers the tab they're reading). Open with `bh_open(url)`; re-navigate within your own session-grouped tab via `bh_switch_tab(tid)` first, then `goto_url(url)`. The only legitimate place for bare `goto_url` is *inside* `bh_open` itself.
 
 ## Browser
 
@@ -65,7 +65,7 @@ self.listTabs(label: string) -> Promise<Tab[]>
 //   }
 ```
 
-Reach them over CDP by attaching to the extension's service-worker target and `Runtime.evaluate`. Drop `agent-helpers/bh.py` into `~/Developer/browser-harness/agent-workspace/agent_helpers.py` (auto-loaded on every browser-harness call) and you get `bh_open(url)` everywhere:
+Reach them over CDP by attaching to the extension's service-worker target and `Runtime.evaluate`. Drop `agent-helpers/bh.py` into browser-harness's `agent-workspace/agent_helpers.py` (auto-loaded on every browser-harness call) and you get `bh_open(url)` everywhere:
 
 ```python
 import json
