@@ -15,6 +15,7 @@ anything else speaking CDP) is just a *consumer* that drives it on port 9223.
 bin/test-brave        launcher — Brave on a dedicated profile, CDP :9223, extension loaded
 extension/            Agent Tab Grouper (MV3): groupTab / activateTab / listTabs over CDP
 agent-helpers/bh.py   bh_open / bh_switch_tab / bh_list — the browser-harness adapter
+statusline.sh         optional Claude Code statusline — shows ses:XXXX = your tab-group label
 SKILL.md              usage + the bh_open discipline (read this)
 install.md            setup steps
 ```

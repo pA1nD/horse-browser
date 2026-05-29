@@ -41,6 +41,22 @@ cp ~/pro/test-brave/agent-helpers/bh.py \
 Then **always open tabs with `bh_open(url)`**, never raw `new_tab` / `goto_url`
 — see [SKILL.md](SKILL.md).
 
+## 4. (Optional) match your session to its tab group
+
+`statusline.sh` is a Claude Code statusline that ends with `ses:XXXX` — the last
+4 chars of your session id, which is exactly the label the Agent Tab Grouper
+uses for this session's tab group. With it on, you can glance at the terminal
+and the browser and know which coloured group is yours.
+
+Wire it into Claude Code `settings.json` (requires `jq`):
+
+```json
+"statusLine": { "type": "command", "command": "/Users/pa1nd/pro/test-brave/statusline.sh" }
+```
+
+Use an absolute path (settings.json doesn't expand `~`). Or copy it to
+`~/.claude/statusline.sh` and point there instead.
+
 ## Updating
 
 ```bash
