@@ -1,53 +1,64 @@
-# test-brave
+# horse-browser 🐴
 
-A dedicated [Brave](https://brave.com) profile for your agents — one you **log
-into once and stay logged into** — plus a small MV3 extension that drops every
-automation tab into a per-session, coloured group so agents (and you) never
-clobber each other's tabs.
+A dedicated browser for your AI agents — one you **log into once and stay logged
+into** — that coexists peacefully with your daily browser. Agents share it, each
+gets its own coloured tab group, and it never steals your focus.
 
-It's a thin, self-contained setup: a launcher and one extension. It runs on its
-own; [browser-harness](https://github.com/browser-use/browser-harness) (or
-anything else speaking CDP) is just a *consumer* that drives it on port 9223.
+### Why "horse"?
+
+Two reasons, and they're both real:
+
+1. **"browse" literally comes from grazing animals.** It meant a deer or a horse
+   nibbling leaves and shoots long before it meant clicking links. So a horse
+   that browses isn't a pun — it's the *original* browser. 🐴
+2. **It rides in [browser-harness](https://github.com/browser-use/browser-harness).**
+   You put a harness on a horse. browser-harness drives the browser; this is the
+   horse it harnesses. (That's also where the 🐴 marker on the controlled tab
+   comes from.)
+
+So: the horse browses, the harness steers. Naturally.
 
 ## What's here
 
 ```
 extension/      Agent Tab Grouper (MV3): groupTab / activateTab / listTabs over CDP
-install.sh      one-time setup — registers the statusline + first Brave launch
+bin/horse-browser  idempotent launcher — ensures the browser is up on :9223
+install.sh      one-time setup — fetches the browser, registers launcher + statusline
 statusline.sh   Claude Code statusline — shows ses:XXXX = your tab-group label
 SKILL.md        usage + the bh_open discipline (incl. the helper recipe agents self-install)
 ```
 
+It's a thin, self-contained setup. [browser-harness](https://github.com/browser-use/browser-harness)
+(or anything else speaking CDP) is just a *consumer* that drives it on port 9223.
+
 ## Install
 
 ```bash
-git clone https://github.com/pa1nd/test-brave
-cd test-brave
+git clone https://github.com/pa1nd/horse-browser
+cd horse-browser
 ./install.sh
 ```
 
-`install.sh` registers `statusline.sh` in your Claude Code settings and launches
-the dedicated Brave profile (Agent Tab Grouper loaded) for the first time. Sign
-into the apps you want your agents to use — those logins persist. Then point a
-CDP client at it:
+You don't install a browser by hand — `install.sh` fetches **Chrome for Testing**
+(a dedicated, automation-purposed Chromium that lives *alongside* your daily
+browser, never fighting it for the dock) via `@puppeteer/browsers`, registers the
+`horse-browser` launcher on your PATH, wires up the statusline, and opens the
+browser so you can sign into your apps. Prefer your own Chromium? Set
+`HORSE_BROWSER_BIN=/path/to/chromium` before running.
+
+Then, anytime — you or an agent:
 
 ```bash
-export BU_CDP_URL=http://127.0.0.1:9223
-```
-
-**Relaunch later** (from the repo dir):
-
-```bash
-open -na "Brave Browser" --args --remote-debugging-port=9223 \
-  --user-data-dir="$HOME/.config/test-brave" --load-extension="$PWD/extension" \
-  --no-first-run --no-default-browser-check
+horse-browser                            # idempotent: launches if down, no-op if up
+export BU_CDP_URL=http://127.0.0.1:9223  # point your CDP client at it
 ```
 
 There's no helper file to copy. The first time an agent drives this with
 browser-harness, it writes the `bh_open` helpers into browser-harness's
 `agent-workspace/agent_helpers.py` from the recipe in [SKILL.md](SKILL.md) —
 generic across every install. To make the discipline available everywhere,
-install the skill globally: `ln -s "$PWD/SKILL.md" ~/.claude/skills/test-brave/SKILL.md`.
+install the skill globally:
+`ln -s "$PWD/SKILL.md" ~/.claude/skills/horse-browser/SKILL.md`.
 
 ## Why a dedicated, logged-in browser?
 
@@ -59,8 +70,9 @@ that agents borrow.
 
 The catch with one shared browser is everyone trips over everyone — so:
 
+- **Coexists with your daily browser.** It's a *separate* browser (Chrome for Testing), so launching it never hijacks your everyday Brave/Chrome, and clicking yours never lands you in the agents' window.
 - **Per-session tab groups.** Each agent's tabs live in their own coloured group; you see whose-is-whose at a glance, and humans + agents coexist in one window.
-- **Focus-safe by construction.** Tabs open in the background and activate through the extension instead of `Target.activateTarget` (which calls `[NSApp activate]` and yanks Brave over whatever you're doing). The page is told it's foregrounded via focus emulation, so nothing misbehaves. See [SKILL.md](SKILL.md).
+- **Focus-safe by construction.** Tabs open in the background and activate through the extension instead of `Target.activateTarget` (which calls `[NSApp activate]` and yanks the browser over whatever you're doing). The page is told it's foregrounded via focus emulation, so nothing misbehaves. See [SKILL.md](SKILL.md).
 
 ## Prior art (or: turns out this is a real problem)
 

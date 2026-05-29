@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# horse-browser — ensure the dedicated agent browser is running.
+#
+# Idempotent: no-op if CDP is already up on the port; otherwise launches the
+# browser (dedicated profile + tab-grouper extension) and BLOCKS until CDP is
+# ready. So callers can run this and then immediately drive the browser.
+#
+# Config is written by install.sh to ~/.config/horse-browser/config. Env vars
+# override it: HORSE_BROWSER_BIN, HORSE_BROWSER_PORT, HORSE_BROWSER_PROFILE.
+set -euo pipefail
+
+CONFIG="$HOME/.config/horse-browser/config"
+# shellcheck disable=SC1090
+[ -f "$CONFIG" ] && . "$CONFIG"
+
+PORT="${HORSE_BROWSER_PORT:-${PORT:-9223}}"
+PROFILE="${HORSE_BROWSER_PROFILE:-${PROFILE:-$HOME/.config/horse-browser/profile}}"
+BIN="${HORSE_BROWSER_BIN:-${BROWSER_BIN:-}}"
+EXT="${EXTENSION_DIR:-}"
+
+cdp_up() { curl -sf "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
+
+if cdp_up; then
+  echo "horse-browser: already up on :$PORT"
+  exit 0
+fi
+
+if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
+  echo "horse-browser: no browser configured (BROWSER_BIN missing or not executable)." >&2
+  echo "  Run the repo's ./install.sh first, or set HORSE_BROWSER_BIN." >&2
+  exit 1
+fi
+
+args=( --remote-debugging-port="$PORT" --user-data-dir="$PROFILE"
+       --no-first-run --no-default-browser-check )
+[ -n "$EXT" ] && args+=( --load-extension="$EXT" )
+
+"$BIN" "${args[@]}" >/dev/null 2>&1 &
+
+echo "horse-browser: launching… (waiting for CDP :$PORT)"
+for _ in $(seq 1 30); do
+  cdp_up && { echo "horse-browser: ready on :$PORT"; exit 0; }
+  sleep 1
+done
+echo "horse-browser: timed out waiting for CDP :$PORT — check the browser window." >&2
+exit 1

@@ -1,52 +1,81 @@
 #!/usr/bin/env bash
-# One-time setup for test-brave. Safe to re-run.
+# One-time setup for horse-browser. Safe to re-run.
 #
-#   1. Registers statusline.sh in your Claude Code settings (~/.claude/settings.json)
-#      so the statusline shows ses:XXXX — the same label the tab grouper uses.
-#   2. Launches the dedicated Brave profile for the first time, with the Agent
-#      Tab Grouper loaded, so you can sign into the apps you want your agents to
-#      use. Those logins persist in the profile.
+#   1. Fetches Chrome for Testing (a dedicated, automation-purposed browser that
+#      coexists with your daily browser) via @puppeteer/browsers — you install
+#      nothing by hand. Override with HORSE_BROWSER_BIN=/path/to/chromium to use
+#      your own Chromium instead.
+#   2. Writes config + symlinks the `horse-browser` launcher onto your PATH.
+#   3. Registers statusline.sh in Claude Code settings (~/.claude/settings.json).
+#   4. Launches the browser for the first time (sign into your apps — logins
+#      persist), then smoke-tests the whole chain via browser-harness if present.
 #
-# Env overrides: TEST_BRAVE_PORT (default 9223), TEST_BRAVE_PROFILE
-# (default ~/.config/test-brave).
+# Env overrides: HORSE_BROWSER_BIN, HORSE_BROWSER_PORT (9223),
+# HORSE_BROWSER_PROFILE (~/.config/horse-browser/profile).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PORT="${TEST_BRAVE_PORT:-9223}"
-PROFILE="${TEST_BRAVE_PROFILE:-$HOME/.config/test-brave}"
+PORT="${HORSE_BROWSER_PORT:-9223}"
+PROFILE="${HORSE_BROWSER_PROFILE:-$HOME/.config/horse-browser/profile}"
+CONFIG_DIR="$HOME/.config/horse-browser"
+CONFIG="$CONFIG_DIR/config"
+CACHE="$HOME/.cache/horse-browser"
+BINDIR="$HOME/.local/bin"
 SETTINGS="$HOME/.claude/settings.json"
+EXT="$HERE/extension"
 
-# 1. statusline ──────────────────────────────────────────────────────────────
+mkdir -p "$CONFIG_DIR" "$BINDIR" "$CACHE"
+
+# 1. browser ──────────────────────────────────────────────────────────────────
+BIN="${HORSE_BROWSER_BIN:-}"
+if [ -n "$BIN" ]; then
+  echo "Using your nominated browser: $BIN"
+else
+  if ! command -v npx >/dev/null 2>&1; then
+    echo "ERROR: npx (Node) not found — needed to fetch Chrome for Testing." >&2
+    echo "  Install Node, or set HORSE_BROWSER_BIN to a Chromium binary, then re-run." >&2
+    exit 1
+  fi
+  echo "Fetching Chrome for Testing via @puppeteer/browsers (one-time, ~170MB)…"
+  out="$(npx -y @puppeteer/browsers install chrome@stable --path "$CACHE")"
+  # output line: "chrome@<version> <path-to-executable>"  (path may contain spaces)
+  BIN="$(printf '%s\n' "$out" | grep '^chrome@' | tail -1 | sed 's/^[^ ]* //')"
+fi
+if [ ! -x "$BIN" ]; then
+  echo "ERROR: browser binary not found / not executable: $BIN" >&2
+  exit 1
+fi
+echo "✓ browser: $BIN"
+
+# 2. config + launcher on PATH ─────────────────────────────────────────────────
+cat > "$CONFIG" <<EOF
+# horse-browser config — written by install.sh
+BROWSER_BIN="$BIN"
+EXTENSION_DIR="$EXT"
+PORT="$PORT"
+PROFILE="$PROFILE"
+EOF
+ln -sf "$HERE/bin/horse-browser" "$BINDIR/horse-browser"
+echo "✓ launcher: $BINDIR/horse-browser  (config: $CONFIG)"
+case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "  note: $BINDIR isn't on your PATH — add it so 'horse-browser' resolves";; esac
+
+# 3. statusline ────────────────────────────────────────────────────────────────
 if command -v jq >/dev/null 2>&1; then
   mkdir -p "$(dirname "$SETTINGS")"
   [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-  cp "$SETTINGS" "$SETTINGS.bak" 2>/dev/null || true   # one backup before we touch it
+  cp "$SETTINGS" "$SETTINGS.bak" 2>/dev/null || true
   tmp="$(mktemp)"
-  jq --arg cmd "$HERE/statusline.sh" \
-     '.statusLine = {type: "command", command: $cmd}' "$SETTINGS" > "$tmp"
+  jq --arg cmd "$HERE/statusline.sh" '.statusLine = {type:"command", command:$cmd}' "$SETTINGS" > "$tmp"
   mv "$tmp" "$SETTINGS"
   echo "✓ statusline registered in $SETTINGS (previous saved to $SETTINGS.bak)"
 else
-  echo "! jq not found — skipping statusline. Install jq, then add to $SETTINGS:"
-  echo "    \"statusLine\": { \"type\": \"command\", \"command\": \"$HERE/statusline.sh\" }"
+  echo "! jq not found — add to $SETTINGS:  \"statusLine\": {\"type\":\"command\",\"command\":\"$HERE/statusline.sh\"}"
 fi
 
-# 2. first launch ─────────────────────────────────────────────────────────────
-if [ ! -d "/Applications/Brave Browser.app" ]; then
-  echo "ERROR: Brave Browser not found at /Applications/Brave Browser.app" >&2
-  exit 1
-fi
-open -na "Brave Browser" --args \
-  --remote-debugging-port="$PORT" \
-  --user-data-dir="$PROFILE" \
-  --load-extension="$HERE/extension" \
-  --no-first-run --no-default-browser-check
-echo "✓ launched Brave — profile: $PROFILE, CDP :$PORT, Agent Tab Grouper loaded"
+# 4. first launch + smoke test ─────────────────────────────────────────────────
+echo "Launching for the first time…"
+"$BINDIR/horse-browser" || true
 
-# 3. smoke test (best-effort; only if browser-harness is installed) ───────────
-# Brave is up — drive a real listTabs() call through the extension over CDP to
-# confirm the whole chain (Brave ⇄ CDP ⇄ extension service worker) works, not
-# just that Brave booted.
 if command -v browser-harness >/dev/null 2>&1; then
   export BU_CDP_URL="http://127.0.0.1:$PORT"
   read -r -d '' check <<'PY' || true
@@ -63,23 +92,21 @@ r = cdp("Runtime.evaluate", session_id=s,
 cdp("Target.detachFromTarget", sessionId=s)
 print("READY" if isinstance(r.get("result", {}).get("value"), list) else "PENDING")
 PY
-  echo "Verifying through browser-harness (waiting for Brave to come up)…"
+  echo "Verifying through browser-harness…"
   verified=""
   for _ in $(seq 1 12); do
-    if printf '%s' "$check" | browser-harness 2>/dev/null | grep -q READY; then
-      verified=1; break
-    fi
+    if printf '%s' "$check" | browser-harness 2>/dev/null | grep -q READY; then verified=1; break; fi
     sleep 2
   done
   if [ -n "$verified" ]; then
     echo "✓ verified — listTabs() answered over CDP; the extension is live"
   else
-    echo "! couldn't confirm within ~25s — Brave may still be booting, or the"
-    echo "  extension is disabled. Check brave://extensions, then re-run."
+    echo "! couldn't confirm the extension within ~25s — check the browser window."
   fi
 fi
 
 echo
 echo "Next:"
-echo "  • Sign into the apps you want your agents to use — those logins persist."
-echo "  • Point your CDP client at it:  export BU_CDP_URL=http://127.0.0.1:$PORT"
+echo "  • Sign into the apps you want your agents to use — logins persist in $PROFILE"
+echo "  • Point CDP clients at it:  export BU_CDP_URL=http://127.0.0.1:$PORT"
+echo "  • (Re)launch anytime — agents too — with:  horse-browser"

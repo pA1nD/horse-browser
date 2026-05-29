@@ -1,33 +1,32 @@
 ---
-name: test-brave
+name: horse-browser
 description: A dedicated, persistent browser (CDP on :9223) plus a tab-grouper extension that drops each agent's tabs into its own per-session group and opens them without stealing OS focus. Use whenever you drive a browser via browser-harness — opening tabs, navigating, scraping, rendering, screenshots.
 ---
 
-# test-brave + tab grouper
+# horse-browser
 
 **Rule:** when this skill is active, open tabs with `bh_open(url)` not `new_tab(url)`. If `bh_open` is undefined in your browser-harness call, install it from the [recipe](#extension) below *before* opening any tab. End-of-task: prune your group with `bh_list()` and `cdp("Target.closeTarget", ...)`.
 
-**Never reach for bare `goto_url`.** It navigates whichever tab is currently focused in Brave — disastrous for other agents (it hijacks their work) and humans (it clobbers the tab they're reading). Open with `bh_open(url)`; re-navigate within your own session-grouped tab via `bh_switch_tab(tid)` first, then `goto_url(url)`. The only legitimate place for bare `goto_url` is *inside* `bh_open` itself.
+**Never reach for bare `goto_url`.** It navigates whichever tab is currently focused in the browser — disastrous for other agents (it hijacks their work) and humans (it clobbers the tab they're reading). Open with `bh_open(url)`; re-navigate within your own session-grouped tab via `bh_switch_tab(tid)` first, then `goto_url(url)`. The only legitimate place for bare `goto_url` is *inside* `bh_open` itself.
 
-## Browser
+## Starting the browser
 
-Dedicated Brave profile, separate from the user's daily browser.
-
-- Binary: `/Applications/Brave Browser.app/Contents/MacOS/Brave Browser`
-- Profile: `~/.config/test-brave/`
-- CDP: `http://127.0.0.1:9223`  →  `export BU_CDP_URL=http://127.0.0.1:9223`
-
-If it's not already running on 9223, launch it (first-time setup: `./install.sh`):
+Before opening any tab, ensure the browser is up. It's idempotent — just run:
 
 ```bash
-open -na "Brave Browser" --args \
-  --remote-debugging-port=9223 \
-  --user-data-dir="$HOME/.config/test-brave" \
-  --load-extension="$PWD/extension" \
-  --no-first-run --no-default-browser-check
+horse-browser                            # launches the dedicated browser (own profile +
+                                         # tab grouper) if it's down; no-op if already up.
+                                         # Blocks until CDP :9223 is ready.
+export BU_CDP_URL=http://127.0.0.1:9223  # point browser-harness at it
 ```
 
-`open -na` is detached (doesn't block the shell). The profile lock means a duplicate `open` is harmless — the second instance hands off to the first.
+**Never launch a browser yourself** — don't `open` Chrome/Brave, don't spawn your own
+Chromium. Only `horse-browser`. It runs a *dedicated* browser (Chrome for Testing, on its
+own profile) that won't collide with the user's daily browser; improvising would.
+
+If `horse-browser` isn't on your PATH, the one-time setup hasn't been run — tell the user
+to run the repo's `./install.sh` (fetches the browser, registers the launcher). Don't
+attempt setup yourself.
 
 ## Extension
 
@@ -45,8 +44,8 @@ self.groupTab(targetId: string, label: string) -> Promise<number>
 //   Throws:   Error("no tab for CDP target ...") if targetId has no live tab.
 
 self.activateTab(targetId: string) -> Promise<number>
-//   Makes this tab the visible tab in its Brave window WITHOUT raising Brave
-//   over your current macOS app. Replaces CDP Target.activateTarget, which
+//   Makes this tab the visible tab in its browser window WITHOUT raising the
+//   browser over your current macOS app. Replaces CDP Target.activateTarget, which
 //   calls [NSApp activate] and steals focus while the agent works. Returns
 //   the chrome tab id.
 
@@ -91,8 +90,8 @@ def ext_call(fn, *args):
 ```
 
 Build whatever helpers the project needs on top of `ext_call`. The canonical
-trio for this project — `bh_open` opens a tab without raising Brave over your
-current macOS app, and tells the renderer to always behave as if focused:
+trio for this project — `bh_open` opens a tab without raising the browser over
+your current macOS app, and tells the renderer to always behave as if focused:
 
 ```python
 import os
@@ -106,7 +105,7 @@ def _label():
 def bh_switch_tab(target_id):
     # Drop-in replacement for helpers.switch_tab that does NOT call
     # Target.activateTarget (which fires [NSApp activate] on macOS and yanks
-    # Brave over your current app). Tab-strip activation goes through the
+    # the browser over your current app). Tab-strip activation goes through the
     # extension; focus emulation makes the page believe it's foregrounded.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
@@ -141,7 +140,7 @@ You pass CDP `targetId`s only — the extension bridges to chrome `tabId`s inter
 
 Two ingredients:
 
-1. **`Target.createTarget(background=True)` + `chrome.tabs.update({active:true})` instead of `Target.activateTarget`.** The latter calls `[NSApp activate]` on macOS and pulls Brave over whatever app you're in. `chrome.tabs.update` is documented to "not affect whether the window is focused" — it only changes which tab is visible inside Brave.
+1. **`Target.createTarget(background=True)` + `chrome.tabs.update({active:true})` instead of `Target.activateTarget`.** The latter calls `[NSApp activate]` on macOS and pulls the browser over whatever app you're in. `chrome.tabs.update` is documented to "not affect whether the window is focused" — it only changes which tab is visible inside the browser.
 2. **`Emulation.setFocusEmulationEnabled` per attached session.** Makes the renderer treat the page as always focused — `document.hasFocus()` returns true, `requestAnimationFrame` runs at full rate, focus/blur events fire as if user-driven. The OS app focus state is independent of this; the emulation just stops sites and Chromium internals from misbehaving because the tab "looks" backgrounded.
 
 Native popovers (autofill, password save, translate) are *not* gated by focus emulation — they're triggered in the browser process per-form-field. If you see typing-time focus theft, those are the likely culprit; disable them at the profile level rather than chasing them through CDP.

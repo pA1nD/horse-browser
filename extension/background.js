@@ -47,7 +47,7 @@ self.groupTab = async (targetId, label) => {
   return tabId;
 };
 
-// chrome.tabs.update({active:true}) swaps Brave's visible tab without raising
+// chrome.tabs.update({active:true}) swaps the browser's visible tab without raising
 // the app — replaces CDP Target.activateTarget, which calls [NSApp activate]
 // and steals macOS focus while the agent works.
 self.activateTab = async (targetId) => {
