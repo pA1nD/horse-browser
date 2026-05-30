@@ -18,6 +18,21 @@
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
+/* The sidebar is a LIGHT surface — Chrome's bright-mode tab chrome — so favicons
+   and logos (designed for light tab strips) sit naturally. The wall stays dark.
+   Re-declaring the tokens on #sidebar re-themes every descendant via the cascade. */
+#sidebar {
+  --panel:     #ffffff;   /* side-panel surface (Chrome light) */
+  --card:      #f1f3f4;   /* list row (Google grey 100) */
+  --card-hi:   #e8eaed;   /* hover / elevated */
+  --line:      #dadce0;   /* divider (Google grey 300) */
+  --line-soft: #e8eaed;
+  --text:      #202124;   /* Google grey 900 */
+  --dim:       #5f6368;   /* Google grey 700 */
+  --faint:     #80868b;   /* Google grey 600 */
+  --accent-br: #1e8e3e;   /* Chrome light-mode green — LIVE / active */
+}
+
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
   font: 13px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
@@ -37,7 +52,7 @@ body.collapsed .sb-head { padding-left: 19px; }
 .brand { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; }
 .logo { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
   background: var(--brand); font-size: 15px; line-height: 1; flex: 0 0 auto; cursor: pointer;
-  box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+  box-shadow: 0 1px 3px rgba(0,0,0,.2); }
 .word { font-weight: 500; letter-spacing: 0; font-size: 14px; color: var(--text);
   white-space: nowrap; transition: opacity .16s ease; }
 body.collapsed .word { opacity: 0; }
@@ -69,9 +84,9 @@ body.collapsed .tablist {
           mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent); }
 .tablist::-webkit-scrollbar { width: 8px; }
 .tablist::-webkit-scrollbar-track { background: transparent; }
-.tablist::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 4px;
+.tablist::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); border-radius: 4px;
   border: 2px solid transparent; background-clip: content-box; }
-.tablist:hover::-webkit-scrollbar-thumb { background: rgba(255,255,255,.24); background-clip: content-box; }
+.tablist:hover::-webkit-scrollbar-thumb { background: rgba(0,0,0,.30); background-clip: content-box; }
 /* the collapsed rail is too narrow for a scrollbar — it reads as a stray bar */
 body.collapsed .tablist { scrollbar-width: none; }
 body.collapsed .tablist::-webkit-scrollbar { width: 0; height: 0; }
