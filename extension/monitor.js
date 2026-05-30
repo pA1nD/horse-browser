@@ -2,11 +2,25 @@
 //
 // This page is a *second* CDP client on :9223 (browser-harness is the first).
 // Modern Chrome allows multiple flat sessions per target, so we can screencast a
-// tab while an agent drives it. The SIDEBAR lists every web tab ranked by most
-// recent activity (with a relative "active / 5m ago" time). The GRID is a fixed
-// 2×2 / 3×3 wall showing the N² most-recently-active tabs, live.
+// tab while an agent drives it.
+//
+// THE WALL IS A FIXED SET OF SLOTS. The grid is N² slots (2×2 / 3×3), row-major:
+// slot 0 = top-left … slot N²-1 = bottom-right. A tab, once placed in a slot,
+// STAYS in that slot — activity inside a shown tab never reorders the wall, it
+// only lights the slot's "active" outline in place. The order changes only when
+// MEMBERSHIP changes, governed by computeSlots():
+//   • a closed tab frees its slot; the hottest waiting tab fills it (no guard)
+//   • a hotter waiting tab evicts the COLDEST slot — but only once that slot has
+//     been idle longer than HOT_MS, so a wall full of busy agents stays frozen
+//     and changes at most once something idles.
+// The sidebar mirrors this: slot order on top (numbered, hard-linked to cells),
+// a divider, then the bench (everything not shown) ranked by recency.
 
 const CDP = "http://127.0.0.1:9223";
+
+// How long a slot stays "hot" after its last activity: it glows, and it is
+// PROTECTED from eviction for this long. Tunable — we may try 5s / 10s / 15s.
+const HOT_MS = 15000;
 
 const GROUP_COLORS = {
   grey: "#9aa0a6", blue: "#8ab4f8", red: "#f28b82", yellow: "#fdd663",
@@ -23,7 +37,8 @@ const collapseBtn = document.getElementById("collapse");
 let ws, msgId = 0;
 const pending = new Map();          // request id → resolver
 const sessionHandlers = new Map();  // CDP sessionId → frame handler
-const panes = new Map();            // targetId → pane
+const panes = new Map();            // targetId → pane (only for tabs currently on the wall)
+let slots = [];                     // slot index → targetId | null  (the persistent wall)
 let frameAspect = 16 / 10;          // live content aspect (w/h), refined from real frames
 
 function send(method, params, sessionId) {
@@ -66,7 +81,8 @@ chrome.tabs.onCreated.addListener((t) => noteActivity(t.id, Date.now()));
 function ago(ts) {
   if (!ts) return "—";
   const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return "active";
+  if ((Date.now() - ts) < HOT_MS) return "active";
+  if (s < 60) return s + "s";
   const m = Math.floor(s / 60); if (m < 60) return m + "m";
   const h = Math.floor(m / 60); if (h < 24) return h + "h";
   return Math.floor(h / 24) + "d";
@@ -100,7 +116,81 @@ async function discover() {
   return out;
 }
 
-// ── sidebar: one entry per tab, ranked by recency ────────────────────────────
+// <computeSlots> — PURE slot assignment. No DOM, no CDP, no globals (except it
+// reads HOT_MS via the `guard` arg). Unit-tested in Node by slicing this region
+// out of the file and eval'ing it, so the test exercises the real shipped logic.
+//   prev   : previous slots array (targetId|null per cell)
+//   agents : [{ targetId, lastActivity }, ...]  (the live tab set)
+//   cap    : number of slots (N²)
+//   now    : Date.now()
+//   guard  : ms a slot must be idle before it can be evicted (HOT_MS)
+// → new slots array of length `cap`.
+function computeSlots(prev, agents, cap, now, guard) {
+  const byId = new Map(agents.map((a) => [a.targetId, a]));
+  // resize: keep slot→tab bindings for indices that still exist; pad/truncate.
+  const slots = new Array(cap).fill(null);
+  for (let i = 0; i < Math.min(cap, prev.length); i++) slots[i] = prev[i];
+  // prune closed tabs and any duplicate (safety) — a tab lives in at most one slot.
+  const seen = new Set();
+  for (let i = 0; i < cap; i++) {
+    const id = slots[i];
+    if (id == null) continue;
+    if (!byId.has(id) || seen.has(id)) slots[i] = null;
+    else seen.add(id);
+  }
+  const benchSorted = () => {
+    const placed = new Set();
+    for (const id of slots) if (id != null) placed.add(id);
+    return agents.filter((a) => !placed.has(a.targetId))
+                 .sort((x, y) => y.lastActivity - x.lastActivity);
+  };
+  // 1) fill EMPTY slots, lowest index first, with the hottest bench tab — no guard.
+  for (let i = 0; i < cap; i++) {
+    if (slots[i] != null) continue;
+    const b = benchSorted();
+    if (!b.length) break;
+    slots[i] = b[0].targetId;
+  }
+  // 2) GUARDED swaps: the hottest bench tab evicts the COLDEST slot iff it is
+  //    strictly hotter AND that slot has been idle longer than `guard`. Repeats
+  //    until no warranted swap (bounded by cap — converges, can't oscillate:
+  //    an evicted tab is the coldest, so it can't be hotter than a remaining slot).
+  for (let loop = 0; loop < cap; loop++) {
+    const b = benchSorted();
+    if (!b.length) break;
+    const hottest = b[0];
+    let coldIdx = -1, coldAct = Infinity;
+    for (let i = 0; i < cap; i++) {
+      const id = slots[i];
+      if (id == null) continue;
+      const act = byId.get(id).lastActivity;
+      if (act < coldAct) { coldAct = act; coldIdx = i; }
+    }
+    if (coldIdx < 0) break;
+    if (hottest.lastActivity > coldAct && (now - coldAct) > guard) {
+      slots[coldIdx] = hottest.targetId; // evict cold; newcomer inherits the exact slot
+    } else break;
+  }
+  return slots;
+}
+// </computeSlots>
+
+// The hottest bench tab that WANTS a slot but is blocked by the guard (its target
+// slot is still hot). Marked "standing by" in the sidebar. null if none waiting.
+function standbyId(slots, agents, byId, now, guard) {
+  const placed = new Set();
+  for (const id of slots) if (id != null) placed.add(id);
+  const bench = agents.filter((a) => !placed.has(a.targetId))
+                      .sort((x, y) => y.lastActivity - x.lastActivity);
+  if (!bench.length) return null;
+  let coldAct = Infinity;
+  for (const id of slots) if (id != null) coldAct = Math.min(coldAct, byId.get(id).lastActivity);
+  const h = bench[0];
+  if (h.lastActivity > coldAct && (now - coldAct) <= guard) return h.targetId;
+  return null;
+}
+
+// ── sidebar: slot order on top (numbered), divider, then bench by recency ──────
 const tabEls = new Map(); // targetId → entry element
 
 function makeEntry(key) {
@@ -110,7 +200,7 @@ function makeEntry(key) {
   el.innerHTML =
     '<span class="tab-ico"><img alt="" /></span>' +
     '<span class="tab-body"><span class="tab-title"></span><span class="tab-host"></span></span>' +
-    '<span class="tab-meta"><span class="tab-time"></span></span>';
+    '<span class="tab-meta"><span class="slot-no"></span><span class="tab-time"></span></span>';
   el.querySelector("img").addEventListener("error", (e) => {
     e.target.removeAttribute("src"); e.target.closest(".tab-ico").classList.remove("has-ico");
   });
@@ -126,35 +216,46 @@ function setIco(el, favIconUrl) {
   } else { img.removeAttribute("src"); ico.classList.remove("has-ico"); }
 }
 
-function renderSidebar(ranked, cap) {
-  const want = new Set(ranked.map((a) => a.targetId));
+function renderSidebar(slots, agents, byId, cap) {
+  // slotNo: targetId → 1-based slot number (shown tabs only)
+  const slotNo = new Map();
+  slots.forEach((id, i) => { if (id != null) slotNo.set(id, i + 1); });
+  const shown = slots.filter((id) => id != null).map((id) => byId.get(id)); // slot order
+  const shownSet = new Set(shown.map((a) => a.targetId));
+  const bench = agents.filter((a) => !shownSet.has(a.targetId))
+                      .sort((x, y) => y.lastActivity - x.lastActivity);
+  const order = [...shown, ...bench];
+  const standby = standbyId(slots, agents, byId, Date.now(), HOT_MS);
+
+  // drop rows for tabs that vanished
+  const want = new Set(order.map((a) => a.targetId));
   for (const [k, el] of [...tabEls]) if (!want.has(k)) { el.remove(); tabEls.delete(k); }
 
-  // index of the last tab that's actually on the grid (top `cap` by recency);
-  // a divider is drawn under it to mark "everything below isn't shown on the wall"
-  const lastOnGrid = Math.min(cap, ranked.length) - 1;
-
-  ranked.forEach((a, i) => {
+  order.forEach((a, i) => {
     let el = tabEls.get(a.targetId);
     if (!el) { el = makeEntry(a.targetId); tabListEl.appendChild(el); tabEls.set(a.targetId, el); }
+    const n = slotNo.get(a.targetId);
     el.style.setProperty("--c", a.color);
     setIco(el, a.favIconUrl);
     el.querySelector(".tab-title").textContent = a.title || a.host || a.url;
     el.querySelector(".tab-host").textContent = a.host;
     el.querySelector(".tab-time").textContent = ago(a.lastActivity);
-    el.classList.toggle("active", Date.now() - a.lastActivity < 60000);
-    // mark the cutoff: divider under the last on-grid card, only if some tab is below it
-    el.classList.toggle("grid-edge", i === lastOnGrid && i < ranked.length - 1);
+    el.querySelector(".slot-no").textContent = n ? n : "";
+    el.classList.toggle("on-grid", !!n);
+    el.classList.toggle("active", (Date.now() - a.lastActivity) < HOT_MS);
+    el.classList.toggle("standby", a.targetId === standby);
+    // cutoff divider: under the last shown row, only when a bench exists below it
+    el.classList.toggle("grid-edge", i === shown.length - 1 && bench.length > 0);
   });
-  // Re-order to match the ranking, moving only out-of-place nodes (moving a node
-  // restarts its entrance animation, so a steady ranking touches nothing).
+  // reorder DOM minimally (moving a node restarts its entrance animation, so a
+  // steady order touches nothing).
   let node = tabListEl.firstChild;
-  for (const a of ranked) {
+  for (const a of order) {
     const el = tabEls.get(a.targetId);
     if (node === el) node = node.nextSibling;
     else tabListEl.insertBefore(el, node);
   }
-  statTabs.textContent = ranked.length;
+  statTabs.textContent = agents.length;
 }
 
 // ── screencast panes ─────────────────────────────────────────────────────────
@@ -187,10 +288,10 @@ function makePane(info) {
   el.className = "pane";
   el.dataset.tid = info.targetId; // lets reconcile detect & drop orphaned duplicate panes
   el.style.setProperty("--accent", info.color);
-  el.innerHTML = '<canvas></canvas><div class="tag"><span class="dot"></span><span class="t"></span></div>';
+  el.innerHTML = '<canvas></canvas>' +
+    '<div class="slot-badge"></div>' +
+    '<div class="tag"><span class="dot"></span><span class="t"></span></div>';
   el.querySelector(".dot").style.background = info.color;
-  const ttlEl = el.querySelector(".t");
-  ttlEl.textContent = info.host || info.title || info.url;
   el.addEventListener("click", async () => {
     await chrome.tabs.update(info.tabId, { active: true });
     const tab = await chrome.tabs.get(info.tabId);
@@ -198,7 +299,8 @@ function makePane(info) {
   });
   grid.appendChild(el);
   const canvas = el.querySelector("canvas");
-  return { el, ttlEl, canvas, ctx: canvas.getContext("2d"), img: new Image(), lastFrame: 0 };
+  return { el, ttlEl: el.querySelector(".t"), badge: el.querySelector(".slot-badge"),
+           canvas, ctx: canvas.getContext("2d"), img: new Image(), lastFrame: 0 };
 }
 
 async function watch(info) {
@@ -233,35 +335,47 @@ function removePane(targetId) {
   panes.delete(targetId);
 }
 
-// Sync the grid to the N² most-recently-active tabs; sidebar shows them all.
-// Non-reentrant: watch() awaits an attach before it registers its pane, so two
-// overlapping runs could both attach the SAME target — spawning a duplicate pane
-// whose loser orphans. The lock serialises runs; a request mid-flight re-queues.
+// Reconcile the live tab set into the fixed-slot wall. Non-reentrant: watch()
+// awaits an attach before it registers its pane, so two overlapping runs could
+// both attach the SAME target — spawning a duplicate pane whose loser orphans.
+// The lock serialises runs; a request mid-flight re-queues.
 let reconcileBusy = false, reconcileQueued = false;
 async function reconcile() {
   if (reconcileBusy) { reconcileQueued = true; return; }
   reconcileBusy = true;
   try {
     const agents = await discover();
-    const ranked = agents.slice().sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
-    const cap = (+gridSel.value || 2) ** 2;     // 2×2 → 4, 3×3 → 9
-    renderSidebar(ranked, cap);
-    const visible = ranked.slice(0, cap);
-    const want = new Map(visible.map((a) => [a.targetId, a]));
-    for (const tid of [...panes.keys()]) if (!want.has(tid)) removePane(tid);
-    for (const a of visible) {
-      if (!panes.has(a.targetId)) await watch(a);
-      const p = panes.get(a.targetId);
+    const byId = new Map(agents.map((a) => [a.targetId, a]));
+    const N = +gridSel.value || 2;
+    const cap = N * N;
+    slots = computeSlots(slots, agents, cap, Date.now(), HOT_MS);
+
+    const shownSet = new Set(slots.filter((id) => id != null));
+    for (const tid of [...panes.keys()]) if (!shownSet.has(tid)) removePane(tid);
+
+    for (let i = 0; i < cap; i++) {
+      const id = slots[i];
+      if (id == null) continue;
+      const a = byId.get(id);
+      if (!panes.has(id)) await watch(a);
+      const p = panes.get(id);
       if (!p) continue;
-      if (p.ttlEl) p.ttlEl.textContent = a.host || a.title || a.url;
+      // pin the pane to its slot's grid cell (row-major). Recomputed each tick so a
+      // grid-size change (slot index → different cell) repositions correctly.
+      p.el.style.gridColumn = (i % N) + 1;
+      p.el.style.gridRow = Math.floor(i / N) + 1;
+      p.badge.textContent = i + 1;
+      p.ttlEl.textContent = a.title || a.host || a.url; // title disambiguates same-host tabs
       p.el.style.setProperty("--accent", a.color);
       const dot = p.el.querySelector(".dot"); if (dot) dot.style.background = a.color;
-      p.el.classList.toggle("is-active", a.active); // focused tab in its window
+      p.el.classList.toggle("is-active", (Date.now() - a.lastActivity) < HOT_MS);
     }
+    // orphan sweep: drop any pane DOM that isn't the tracked pane for its tab
     for (const el of grid.querySelectorAll(".pane")) {
       const tracked = panes.get(el.dataset.tid);
       if (!tracked || tracked.el !== el) el.remove();
     }
+    renderSidebar(slots, agents, byId, cap);
     emptyEl.hidden = panes.size > 0;
     layout();
   } finally {
@@ -278,14 +392,15 @@ for (const ev of [chrome.tabs.onCreated, chrome.tabs.onRemoved, chrome.tabs.onUp
                   chrome.tabGroups.onCreated, chrome.tabGroups.onUpdated, chrome.tabGroups.onRemoved]) {
   ev.addListener(scheduleReconcile);
 }
-setInterval(reconcile, 3000); // safety net + keeps the relative times ticking
+// 1s poll: re-runs the slot machine so an idling slot crosses the HOT_MS guard and
+// any standing-by tab can enter promptly — and keeps the relative times ticking.
+setInterval(reconcile, 1000);
 
 // ── fixed N×N layout ─────────────────────────────────────────────────────────
-// Cells sized to the content aspect within an N-column, N-row grid, centred — so
-// each pane fills edge-to-edge (no letterbox) and the wall is a tidy 2×2 / 3×3.
+// All N×N cells always exist (explicit template-rows/cols), so a tab keeps its
+// cell even when other slots are empty. Cells are sized to the content aspect and
+// the grid is centred, so each pane fills edge-to-edge with no letterbox.
 function layout() {
-  const n = panes.size;
-  if (!n) return;
   const N = +gridSel.value || 2;
   const gap = 3;
   const W = grid.clientWidth, H = grid.clientHeight;
@@ -296,11 +411,11 @@ function layout() {
   let w = cw, h = cw / ar;
   if (h > ch) { h = ch; w = ch * ar; }
   grid.style.gridTemplateColumns = `repeat(${N}, ${Math.floor(w)}px)`;
-  grid.style.gridAutoRows = `${Math.floor(h)}px`;
+  grid.style.gridTemplateRows = `repeat(${N}, ${Math.floor(h)}px)`;
 }
 let layoutTimer;
 function scheduleLayout() { clearTimeout(layoutTimer); layoutTimer = setTimeout(layout, 120); }
-gridSel.addEventListener("change", reconcile); // grid size changes the cap → add/remove panes
+gridSel.addEventListener("change", reconcile); // grid size changes the cap → resize slots
 window.addEventListener("resize", layout);
 
 // ── sidebar collapse (persisted) ─────────────────────────────────────────────
