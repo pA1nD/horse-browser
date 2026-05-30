@@ -7,24 +7,49 @@
   <link rel="stylesheet" href="monitor.css" />
 </head>
 <body>
-  <header>
-    <span class="brand">🐴 Agent Monitor</span>
-    <span id="count" class="count">…</span>
-    <span class="spacer"></span>
-    <label class="cols">cols
-      <select id="cols">
-        <option value="auto">auto</option>
-        <option value="2">2</option>
-        <option value="3">3</option>
-        <option value="4">4</option>
-      </select>
-    </label>
-    <button id="refresh">Refresh</button>
-  </header>
-  <main id="grid"></main>
-  <div id="empty" class="empty" hidden>
-    No agent tabs yet. When an agent opens tabs (grouped by session), they show up here live.
-  </div>
+  <aside id="sidebar">
+    <header class="sb-head">
+      <div class="brand">
+        <span class="logo">🐴</span>
+        <span class="word">MONITOR</span>
+      </div>
+      <button id="collapse" class="icon-btn" title="Collapse sidebar" aria-label="Collapse sidebar">«</button>
+    </header>
+
+    <div class="sb-stats">
+      <span class="live"><span class="live-dot"></span>LIVE</span>
+      <span class="spacer"></span>
+      <span id="stat-tabs" class="stat">0</span><span class="stat-u">tabs</span>
+      <span id="stat-sessions" class="stat">0</span><span class="stat-u">ses</span>
+    </div>
+
+    <div class="sb-section">Sessions</div>
+    <nav id="sessions" class="sessions"></nav>
+
+    <footer class="sb-foot">
+      <label class="cols" title="Columns">
+        <span class="cols-lbl">COLS</span>
+        <select id="cols">
+          <option value="auto">auto</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+        </select>
+      </label>
+      <button id="refresh" class="icon-btn" title="Reload monitor" aria-label="Reload">⟳</button>
+    </footer>
+  </aside>
+
+  <main id="stage">
+    <div id="grid"></div>
+    <div id="empty" class="empty" hidden>
+      <span class="empty-glyph">⌁</span>
+      <span class="empty-title">No agent tabs</span>
+      <span class="empty-sub">When an agent opens tabs they stream in here live, grouped by session.</span>
+    </div>
+  </main>
+
   <script src="monitor.js"></script>
 </body>
 </html>
