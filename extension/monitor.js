@@ -110,7 +110,7 @@ function makeEntry(key) {
   el.innerHTML =
     '<span class="tab-ico"><img alt="" /></span>' +
     '<span class="tab-body"><span class="tab-title"></span><span class="tab-host"></span></span>' +
-    '<span class="tab-meta"><span class="tab-time"></span><span class="tab-live"></span></span>';
+    '<span class="tab-meta"><span class="tab-time"></span></span>';
   el.querySelector("img").addEventListener("error", (e) => {
     e.target.removeAttribute("src"); e.target.closest(".tab-ico").classList.remove("has-ico");
   });
