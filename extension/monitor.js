@@ -324,13 +324,6 @@ window.addEventListener("keydown", (e) => {
     setCollapsed(!document.body.classList.contains("collapsed"));
   }
 });
-// ⌘B / Ctrl+B toggles the sidebar (Chrome-native side-panel shortcut feel)
-window.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "b" || e.key === "B")) {
-    e.preventDefault();
-    setCollapsed(!document.body.classList.contains("collapsed"));
-  }
-});
 
 // quietly refresh thumbnails for tabs that aren't streaming frames (no blink)
 setInterval(() => {
