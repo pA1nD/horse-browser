@@ -100,13 +100,12 @@ body.collapsed .tablist::-webkit-scrollbar { width: 0; height: 0; }
   border-radius: 0 2px 2px 0; background: var(--c); transition: width .12s, top .12s, bottom .12s; }
 .tab.active::before { width: 4px; top: 5px; bottom: 5px; }
 
-/* cutoff marker: a hairline under the last card that's shown on the grid —
-   everything below this line is tracked but not on the wall */
+/* cutoff marker: a full-width hairline under the last card that's shown on the
+   grid — everything below this line is tracked but not on the wall. The list has
+   8px padding, so extend the line by that much on each side to span the sidebar. */
 .tab.grid-edge { margin-bottom: 13px; }
-.tab.grid-edge::after { content: ""; position: absolute; left: 4px; right: 4px; bottom: -7px;
+.tab.grid-edge::after { content: ""; position: absolute; left: -8px; right: -8px; bottom: -7px;
   height: 1px; background: var(--line); }
-body.collapsed .tab.grid-edge { margin-bottom: 12px; }
-body.collapsed .tab.grid-edge::after { left: 12px; right: 12px; }
 
 /* favicon, with a colour-dot fallback when the tab has none */
 .tab-ico { position: relative; width: 16px; height: 16px; flex: 0 0 auto; display: grid; place-items: center; }
