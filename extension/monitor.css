@@ -59,12 +59,14 @@ body.collapsed #collapse { opacity: 0; pointer-events: none; }
 .stat { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .stat-u { color: var(--faint); font-size: 11px; margin-left: 4px; }
 
-.tablist { flex: 1; min-height: 0; overflow-y: auto; padding: 8px;
-  /* collapsed hides the footer, so the list runs to the window's bottom edge and
-     the last card hard-clips there (a rounded half-box that looked like a stray
-     overlay). Fade the bottom so any clipped card dissolves cleanly instead. */
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
-          mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent); }
+.tablist { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; }
+/* Collapsed hides the footer, so the list runs to the window's bottom edge and
+   the last card hard-clips there into a rounded half-box (the "artifact"). Fade
+   the bottom ~one card height so a clipped card dissolves cleanly. Collapsed-only
+   — expanded mode is capped by the footer and needs no mask. */
+body.collapsed .tablist {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
+          mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent); }
 .tablist::-webkit-scrollbar { width: 8px; }
 .tablist::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
 
