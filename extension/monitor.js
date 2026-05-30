@@ -171,26 +171,15 @@ function draw(pane, b64) {
 }
 
 async function forceCapture(pane) {
-  if (!pane.sid) return false;
+  if (!pane.sid) return;
   try {
-    // fromSurface:true captures even a backgrounded tab (screencast frames are
-    // only emitted for VISIBLE tabs — after a browser restart every web tab is
-    // backgrounded, so the passive stream stays silent and the grid looked empty)
+    // fromSurface:true captures even a backgrounded tab. startScreencast only
+    // streams frames for the VISIBLE tab, so background panes (and every tab right
+    // after a browser restart) are painted by this still capture, not the stream.
     const r = await send("Page.captureScreenshot",
-      { format: "jpeg", quality: 50, fromSurface: true, captureBeyondViewport: false }, pane.sid);
-    if (r.result && r.result.data) { draw(pane, r.result.data); return true; }
+      { format: "jpeg", quality: 50, fromSurface: true }, pane.sid);
+    if (r.result && r.result.data) draw(pane, r.result.data);
   } catch {}
-  return false;
-}
-
-// Poll captureScreenshot until the pane shows its first frame — covers the
-// restart case where no screencast frame ever arrives for a background tab.
-async function ensureFirstFrame(pane, tries = 20) {
-  for (let i = 0; i < tries; i++) {
-    if (pane.lastFrame) return;            // a screencast frame beat us to it
-    if (await forceCapture(pane)) return;  // got a still — good enough as first paint
-    await new Promise((r) => setTimeout(r, 600));
-  }
 }
 
 function makePane(info) {
@@ -229,7 +218,7 @@ async function watch(info) {
   await send("Page.enable", {}, sid);
   await send("Page.startScreencast",
     { format: "jpeg", quality: 50, maxWidth: 900, maxHeight: 560, everyNthFrame: 1 }, sid);
-  ensureFirstFrame(pane); // poll a still until the first paint lands (don't await — let panes fill in parallel)
+  forceCapture(pane); // first paint as a still; the 2s heartbeat repaints thereafter
 }
 
 function removePane(targetId) {
