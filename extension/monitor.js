@@ -317,6 +317,20 @@ function setCollapsed(c) {
 if (localStorage.getItem(COLLAPSE_KEY) === "1") document.body.classList.add("collapsed");
 collapseBtn.addEventListener("click", () => setCollapsed(!document.body.classList.contains("collapsed")));
 logoEl.addEventListener("click", () => { if (document.body.classList.contains("collapsed")) setCollapsed(false); });
+// ⌘B / Ctrl+B toggles the sidebar (Chrome-native side-panel shortcut feel)
+window.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "b" || e.key === "B")) {
+    e.preventDefault();
+    setCollapsed(!document.body.classList.contains("collapsed"));
+  }
+});
+// ⌘B / Ctrl+B toggles the sidebar (Chrome-native side-panel shortcut feel)
+window.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "b" || e.key === "B")) {
+    e.preventDefault();
+    setCollapsed(!document.body.classList.contains("collapsed"));
+  }
+});
 
 // quietly refresh thumbnails for tabs that aren't streaming frames (no blink)
 setInterval(() => {
