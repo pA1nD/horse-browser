@@ -67,18 +67,13 @@ body.collapsed .sb-section { display: none; }
 .tablist::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
 
 /* tab entry — one browser tab per row */
-.tab { --c: var(--faint); position: relative; width: 100%; text-align: left; cursor: pointer;
+.tab { --c: var(--faint); position: relative; width: 100%; cursor: default;
   display: flex; align-items: center; gap: 9px; padding: 7px 9px 7px 13px; margin-top: 4px;
   background: var(--card); border: 1px solid transparent; border-radius: 8px;
-  transition: background .12s, border-color .12s; animation: cardIn .24s ease both; }
+  animation: cardIn .24s ease both; }
 .tab::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3px;
   border-radius: 0 2px 2px 0; background: var(--c); transition: width .12s, top .12s, bottom .12s; }
-.tab:hover { background: var(--card-hi); }
-.tab:hover::before { width: 4px; top: 5px; bottom: 5px; }
-.tab.selected { background: var(--card-hi); border-color: color-mix(in srgb, var(--c) 55%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 18%, transparent),
-              0 0 14px -6px color-mix(in srgb, var(--c) 70%, transparent); }
-.tab.selected::before { width: 4px; top: 4px; bottom: 4px; }
+.tab.active::before { width: 4px; top: 5px; bottom: 5px; }
 
 /* favicon, with a colour-dot fallback when the tab has none */
 .tab-ico { position: relative; width: 16px; height: 16px; flex: 0 0 auto; display: grid; place-items: center; }
@@ -91,13 +86,10 @@ body.collapsed .sb-section { display: none; }
 .tab-title { color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tab-host { color: var(--dim); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tab-meta { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
-.tab-count { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 11px; }
+.tab-time { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10.5px; white-space: nowrap; }
+.tab.active .tab-time { color: var(--accent-br); }
 .tab-live { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
 .tab.active .tab-live { background: var(--accent-br); animation: pulse 2.2s infinite; }
-
-/* the "all tabs" entry */
-.tab.all { --c: var(--accent); }
-.tab.all .tab-title { letter-spacing: .06em; }
 
 /* collapsed rail: just the favicon (or colour dot), centred */
 body.collapsed .tab { justify-content: center; padding: 9px 0; }
