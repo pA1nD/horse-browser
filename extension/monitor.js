@@ -18,18 +18,16 @@ const GROUP_COLORS = {
 const grid = document.getElementById("grid");
 const emptyEl = document.getElementById("empty");
 const colsSel = document.getElementById("cols");
-const sessionsEl = document.getElementById("sessions");
+const tabListEl = document.getElementById("tablist");
 const statTabs = document.getElementById("stat-tabs");
-const statSessions = document.getElementById("stat-sessions");
 const collapseBtn = document.getElementById("collapse");
-document.getElementById("refresh").addEventListener("click", () => location.reload());
 
 let ws, msgId = 0;
 const pending = new Map();          // request id → resolver
 const sessionHandlers = new Map();  // CDP sessionId → frame handler
 const panes = new Map();            // targetId → pane
 let frameAspect = 16 / 10;          // live content aspect (w/h), refined from real frames
-let selectedKey = null;             // sidebar filter: null = all sessions
+let selectedKey = null;             // sidebar filter: null = all tabs, else a targetId
 
 function send(method, params, sessionId) {
   return new Promise((resolve) => {
@@ -66,7 +64,7 @@ async function discover() {
       try { host = new URL(t.url).hostname.replace(/^www\./, ""); } catch {}
       return {
         tabId: t.id, targetId: tgtByTab.get(t.id), title: t.title, url: t.url, host,
-        active: !!t.active,
+        favIconUrl: t.favIconUrl || "", active: !!t.active, grouped: !!g,
         sessionKey: g ? "g" + t.groupId : "ungrouped",
         label: g ? (g.title || "session") : "Ungrouped",
         color: g ? (GROUP_COLORS[g.color] || "#9aa0a6") : "#5b6470",
@@ -74,85 +72,83 @@ async function discover() {
     });
 }
 
-// ── sidebar: one card per session ──────────────────────────────────────────
-function buildSessions(agents) {
-  const map = new Map();
-  for (const a of agents) {
-    let s = map.get(a.sessionKey);
-    if (!s) {
-      s = { key: a.sessionKey, label: a.label, color: a.color,
-            grouped: a.sessionKey !== "ungrouped", tabs: [], active: false, host: "" };
-      map.set(a.sessionKey, s);
-    }
-    s.tabs.push(a);
-    if (a.active) s.active = true;
-  }
-  for (const s of map.values()) {
-    const rep = s.tabs.find((t) => t.active) || s.tabs[0];
-    s.host = rep ? (rep.host || rep.title || "") : "";
-  }
-  return [...map.values()].sort((a, b) =>
-    a.grouped === b.grouped ? a.label.localeCompare(b.label) : (a.grouped ? -1 : 1));
-}
+// ── sidebar: one entry per browser tab ──────────────────────────────────────
+const tabEls = new Map(); // '__all__' | targetId → entry element
 
-const sesEls = new Map(); // key → card element ('__all__' or a session key)
-
-function makeSesCard(key, cls) {
+function makeEntry(key, cls) {
   const el = document.createElement("button");
-  el.className = "ses" + (cls ? " " + cls : "");
+  el.className = "tab" + (cls ? " " + cls : "");
   el.dataset.key = key;
   el.innerHTML =
-    '<span class="ses-body"><span class="ses-label"></span><span class="ses-host"></span></span>' +
-    '<span class="ses-meta"><span class="ses-count"></span><span class="ses-live"></span></span>';
+    '<span class="tab-ico"><img alt="" /></span>' +
+    '<span class="tab-body"><span class="tab-title"></span><span class="tab-host"></span></span>' +
+    '<span class="tab-meta"><span class="tab-count"></span><span class="tab-live"></span></span>';
+  el.querySelector("img").addEventListener("error", (e) => {
+    e.target.removeAttribute("src"); e.target.closest(".tab-ico").classList.remove("has-ico");
+  });
   el.addEventListener("click", () => {
     selectedKey = key === "__all__" ? null : (selectedKey === key ? null : key);
     syncSelected();
-    reconcile(); // re-filter the wall
+    reconcile(); // re-filter the wall to the chosen tab
   });
   return el;
 }
 
 function syncSelected() {
-  for (const [k, el] of sesEls)
+  for (const [k, el] of tabEls)
     el.classList.toggle("selected", k === "__all__" ? selectedKey === null : selectedKey === k);
 }
 
+function setIco(el, favIconUrl) {
+  const ico = el.querySelector(".tab-ico");
+  const img = ico.querySelector("img");
+  if (favIconUrl && /^(https?:|data:)/.test(favIconUrl)) {
+    if (img.getAttribute("src") !== favIconUrl) img.src = favIconUrl;
+    ico.classList.add("has-ico");
+  } else {
+    img.removeAttribute("src"); ico.classList.remove("has-ico");
+  }
+}
+
 function renderSidebar(agents) {
-  const sessions = buildSessions(agents);
-  if (selectedKey && !sessions.some((s) => s.key === selectedKey)) selectedKey = null;
+  // group tabs of the same session together (grouped first), then by title
+  const sorted = [...agents].sort((a, b) =>
+    a.grouped !== b.grouped ? (a.grouped ? -1 : 1)
+    : a.sessionKey !== b.sessionKey ? a.label.localeCompare(b.label)
+    : (a.title || "").localeCompare(b.title || ""));
+  if (selectedKey && !sorted.some((a) => a.targetId === selectedKey)) selectedKey = null;
 
-  const want = new Set(["__all__", ...sessions.map((s) => s.key)]);
-  for (const [k, el] of [...sesEls]) if (!want.has(k)) { el.remove(); sesEls.delete(k); }
+  const want = new Set(["__all__", ...sorted.map((a) => a.targetId)]);
+  for (const [k, el] of [...tabEls]) if (!want.has(k)) { el.remove(); tabEls.delete(k); }
 
-  let allEl = sesEls.get("__all__");
-  if (!allEl) { allEl = makeSesCard("__all__", "all"); sessionsEl.appendChild(allEl); sesEls.set("__all__", allEl); }
-  allEl.querySelector(".ses-label").textContent = "All sessions";
-  allEl.querySelector(".ses-host").textContent = sessions.length + (sessions.length === 1 ? " session" : " sessions");
-  allEl.querySelector(".ses-count").textContent = agents.length;
-  allEl.classList.toggle("active", agents.some((a) => a.active));
+  let allEl = tabEls.get("__all__");
+  if (!allEl) { allEl = makeEntry("__all__", "all"); tabListEl.appendChild(allEl); tabEls.set("__all__", allEl); }
+  allEl.querySelector(".tab-title").textContent = "All tabs";
+  allEl.querySelector(".tab-host").textContent = "";
+  allEl.querySelector(".tab-count").textContent = sorted.length;
+  allEl.classList.toggle("active", sorted.some((a) => a.active));
 
-  for (const s of sessions) {
-    let el = sesEls.get(s.key);
-    if (!el) { el = makeSesCard(s.key); sessionsEl.appendChild(el); sesEls.set(s.key, el); }
-    el.style.setProperty("--c", s.color);
-    el.querySelector(".ses-label").textContent = s.grouped ? "session " + s.label : "Ungrouped";
-    el.querySelector(".ses-host").textContent = s.host;
-    el.querySelector(".ses-count").textContent = s.tabs.length;
-    el.classList.toggle("active", s.active);
+  for (const a of sorted) {
+    let el = tabEls.get(a.targetId);
+    if (!el) { el = makeEntry(a.targetId); tabListEl.appendChild(el); tabEls.set(a.targetId, el); }
+    el.style.setProperty("--c", a.color);
+    setIco(el, a.favIconUrl);
+    el.querySelector(".tab-title").textContent = a.title || a.host || a.url;
+    el.querySelector(".tab-host").textContent = a.host;
+    el.classList.toggle("active", a.active);
   }
-  // Re-order only the cards that are actually out of place. Moving a node
-  // restarts its CSS entrance animation, so blindly re-appending every reconcile
-  // would replay `cardIn` on every click — here an unchanged list moves nothing.
-  const order = ["__all__", ...sessions.map((s) => s.key)];
-  let node = sessionsEl.firstChild;
+
+  // Re-order only entries that are out of place — moving a node restarts its CSS
+  // entrance animation, so an unchanged list (e.g. on a click) moves nothing.
+  const order = ["__all__", ...sorted.map((a) => a.targetId)];
+  let node = tabListEl.firstChild;
   for (const k of order) {
-    const el = sesEls.get(k);
+    const el = tabEls.get(k);
     if (node === el) node = node.nextSibling;
-    else sessionsEl.insertBefore(el, node);
+    else tabListEl.insertBefore(el, node);
   }
 
-  statTabs.textContent = agents.length;
-  statSessions.textContent = sessions.length;
+  statTabs.textContent = sorted.length;
   syncSelected();
 }
 
@@ -242,7 +238,7 @@ async function reconcile() {
   try {
     const agents = await discover();
     renderSidebar(agents); // sidebar always reflects ALL sessions
-    const visible = selectedKey ? agents.filter((a) => a.sessionKey === selectedKey) : agents;
+    const visible = selectedKey ? agents.filter((a) => a.targetId === selectedKey) : agents;
     const want = new Map(visible.map((a) => [a.targetId, a]));
     for (const tid of [...panes.keys()]) if (!want.has(tid)) removePane(tid);
     for (const a of visible) {

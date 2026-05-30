@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Agent Monitor</title>
+  <title>Horse Browser</title>
   <link rel="stylesheet" href="monitor.css" />
 </head>
 <body>
@@ -11,7 +11,7 @@
     <header class="sb-head">
       <div class="brand">
         <span class="logo">🐴</span>
-        <span class="word">MONITOR</span>
+        <span class="word">Horse Browser</span>
       </div>
       <button id="collapse" class="icon-btn" title="Collapse sidebar" aria-label="Collapse sidebar">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
@@ -23,11 +23,10 @@
       <span class="live"><span class="live-dot"></span>LIVE</span>
       <span class="spacer"></span>
       <span id="stat-tabs" class="stat">0</span><span class="stat-u">tabs</span>
-      <span id="stat-sessions" class="stat">0</span><span class="stat-u">ses</span>
     </div>
 
-    <div class="sb-section">Sessions</div>
-    <nav id="sessions" class="sessions"></nav>
+    <div class="sb-section">Tabs</div>
+    <nav id="tablist" class="tablist"></nav>
 
     <footer class="sb-foot">
       <label class="cols" title="Columns">
@@ -40,10 +39,6 @@
           <option value="4">4</option>
         </select>
       </label>
-      <button id="refresh" class="icon-btn" title="Reload monitor" aria-label="Reload">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
-             stroke-linecap="round" stroke-linejoin="round"><path d="M13.4 8a5.4 5.4 0 1 1-1.65-3.9"/><path d="M13.7 2.7v2.7H11"/></svg>
-      </button>
     </footer>
   </aside>
 
@@ -52,7 +47,7 @@
     <div id="empty" class="empty" hidden>
       <span class="empty-glyph">⌁</span>
       <span class="empty-title">No agent tabs</span>
-      <span class="empty-sub">When an agent opens tabs they stream in here live, grouped by session.</span>
+      <span class="empty-sub">When an agent opens tabs they stream in here live.</span>
     </div>
   </main>
 
