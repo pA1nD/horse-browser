@@ -30,7 +30,9 @@ button { font: inherit; color: inherit; }
 body.collapsed #sidebar { flex-basis: 60px; width: 60px; }
 
 .sb-head { display: flex; align-items: center; gap: 9px; padding: 13px 12px 11px;
-  border-bottom: 1px solid var(--line-soft); }
+  border-bottom: 1px solid var(--line-soft); transition: padding .3s cubic-bezier(.4, 0, .2, 1); }
+/* centre the 22px logo in the 60px rail — glides via the padding transition */
+body.collapsed .sb-head { padding-left: 19px; }
 .brand { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; }
 .logo { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
   background: var(--accent); font-size: 15px; line-height: 1; flex: 0 0 auto; cursor: pointer;
@@ -87,10 +89,13 @@ body.collapsed #collapse { opacity: 0; pointer-events: none; }
 body.collapsed .tab-body, body.collapsed .tab-meta { opacity: 0; pointer-events: none; }
 
 .sb-foot { display: flex; align-items: center; gap: 8px; padding: 9px 12px;
-  border-top: 1px solid var(--line-soft); transition: opacity .16s ease; }
+  border-top: 1px solid var(--line-soft); overflow: hidden; max-height: 60px;
+  transition: opacity .16s ease, max-height .3s ease, padding .3s ease, border-color .16s ease; }
 #gridsel { background: var(--card); color: var(--text); border: 1px solid var(--line);
   border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 11px; cursor: pointer; }
-body.collapsed .sb-foot { opacity: 0; pointer-events: none; }
+/* collapse the footer box entirely so no border/sliver remains in the rail */
+body.collapsed .sb-foot { opacity: 0; pointer-events: none; max-height: 0;
+  padding-top: 0; padding-bottom: 0; border-top-color: transparent; }
 
 /* ── stage / wall ─────────────────────────────────────────────────────── */
 #stage { position: relative; flex: 1; min-width: 0;
