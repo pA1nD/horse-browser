@@ -97,6 +97,10 @@ body.collapsed .tab-body, body.collapsed .tab-meta { opacity: 0; pointer-events:
 /* collapse the footer box entirely so no border/sliver remains in the rail */
 body.collapsed .sb-foot { opacity: 0; pointer-events: none; max-height: 0;
   padding-top: 0; padding-bottom: 0; border-top-color: transparent; }
+/* the native <select> renders via the OS compositor and ignores the footer's
+   opacity/overflow, bleeding a sliver into the collapsed rail — visibility:hidden
+   actually stops it painting */
+body.collapsed #gridsel { visibility: hidden; }
 
 /* ── stage / wall ─────────────────────────────────────────────────────── */
 #stage { position: relative; flex: 1; min-width: 0; background: var(--bg); }
