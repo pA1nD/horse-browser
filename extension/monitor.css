@@ -68,7 +68,13 @@ body.collapsed .tablist {
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
           mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent); }
 .tablist::-webkit-scrollbar { width: 8px; }
-.tablist::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+.tablist::-webkit-scrollbar-track { background: transparent; }
+.tablist::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 4px;
+  border: 2px solid transparent; background-clip: content-box; }
+.tablist:hover::-webkit-scrollbar-thumb { background: rgba(255,255,255,.24); background-clip: content-box; }
+/* the collapsed rail is too narrow for a scrollbar — it reads as a stray bar */
+body.collapsed .tablist { scrollbar-width: none; }
+body.collapsed .tablist::-webkit-scrollbar { width: 0; height: 0; }
 
 /* tab entry — one browser tab per row */
 .tab { --c: var(--faint); position: relative; width: 100%; cursor: default;
