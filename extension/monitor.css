@@ -27,13 +27,13 @@ button { font: inherit; color: inherit; }
   background: linear-gradient(180deg, #0f1312 0%, var(--panel) 60%);
   border-right: 1px solid var(--line); transition: flex-basis .2s ease, width .2s ease;
   overflow: hidden; }
-body.collapsed #sidebar { flex-basis: 56px; width: 56px; }
+body.collapsed #sidebar { flex-basis: 60px; width: 60px; }
 
 .sb-head { display: flex; align-items: center; gap: 9px; padding: 13px 12px 11px;
   border-bottom: 1px solid var(--line-soft); }
 .brand { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; }
 .logo { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
-  background: var(--accent); font-size: 15px; line-height: 1; flex: 0 0 auto;
+  background: var(--accent); font-size: 15px; line-height: 1; flex: 0 0 auto; cursor: pointer;
   box-shadow: 0 1px 4px rgba(0,0,0,.5); }
 .word { font-weight: 600; letter-spacing: .18em; font-size: 12px; color: var(--text);
   white-space: nowrap; }
@@ -43,7 +43,9 @@ body.collapsed .word { display: none; }
   width: 24px; height: 24px; display: grid; place-items: center; cursor: pointer;
   color: var(--dim); flex: 0 0 auto; transition: background .12s, color .12s, border-color .12s; }
 .icon-btn:hover { background: var(--card-hi); color: var(--text); border-color: var(--line); }
-body.collapsed #collapse { transform: rotate(180deg); }
+.icon-btn svg { width: 14px; height: 14px; display: block; }
+body.collapsed .sb-head { flex-direction: column; padding: 12px 0; }
+body.collapsed #collapse { display: none; }
 
 .sb-stats { display: flex; align-items: center; gap: 5px; padding: 9px 13px;
   color: var(--dim); border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
@@ -54,8 +56,7 @@ body.collapsed #collapse { transform: rotate(180deg); }
   animation: pulse 2.2s infinite; }
 .stat { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .stat-u { color: var(--faint); font-size: 10px; margin-right: 4px; }
-body.collapsed .sb-stats { justify-content: center; padding: 9px 0; }
-body.collapsed .live, body.collapsed .stat-u, body.collapsed .spacer { display: none; }
+body.collapsed .sb-stats { display: none; }
 
 .sb-section { padding: 12px 13px 6px; font-size: 9.5px; letter-spacing: .22em;
   text-transform: uppercase; color: var(--faint); }

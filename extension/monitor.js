@@ -305,13 +305,16 @@ window.addEventListener("resize", layout);
 
 // ── sidebar collapse (persisted) ─────────────────────────────────────────────
 const COLLAPSE_KEY = "hb-monitor-collapsed";
-if (localStorage.getItem(COLLAPSE_KEY) === "1") document.body.classList.add("collapsed");
-collapseBtn.addEventListener("click", () => {
-  const c = document.body.classList.toggle("collapsed");
+const logoEl = document.querySelector(".logo");
+function setCollapsed(c) {
+  document.body.classList.toggle("collapsed", c);
   localStorage.setItem(COLLAPSE_KEY, c ? "1" : "0");
   layout();
   setTimeout(layout, 220); // after the width transition settles
-});
+}
+if (localStorage.getItem(COLLAPSE_KEY) === "1") document.body.classList.add("collapsed");
+collapseBtn.addEventListener("click", () => setCollapsed(!document.body.classList.contains("collapsed")));
+logoEl.addEventListener("click", () => { if (document.body.classList.contains("collapsed")) setCollapsed(false); });
 
 // quietly refresh thumbnails for tabs that aren't streaming frames (no blink)
 setInterval(() => {
