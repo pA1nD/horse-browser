@@ -99,6 +99,7 @@ async function forceCapture(pane) {
 function makePane(info) {
   const el = document.createElement("div");
   el.className = "pane";
+  el.dataset.tid = info.targetId; // lets reconcile detect & drop orphaned duplicate panes
   el.style.setProperty("--accent", info.color);
   el.innerHTML =
     '<canvas></canvas>' +
@@ -149,7 +150,15 @@ function removePane(targetId) {
 }
 
 // Sync the grid to the live set of agent tabs: add new, drop gone, refresh titles.
+// Non-reentrant: watch() awaits an attach before it registers its pane, so two
+// overlapping runs could both attach the SAME target — spawning a duplicate pane
+// (both screencasting one tab) whose loser orphans and goes stale. The lock
+// serialises runs; a request that arrives mid-flight is re-queued.
+let reconcileBusy = false, reconcileQueued = false;
 async function reconcile() {
+  if (reconcileBusy) { reconcileQueued = true; return; }
+  reconcileBusy = true;
+  try {
   const agents = await discover();
   const want = new Map(agents.map((a) => [a.targetId, a]));
   for (const tid of [...panes.keys()]) if (!want.has(tid)) removePane(tid);
@@ -162,9 +171,19 @@ async function reconcile() {
     const dot = p.el.querySelector(".dot"); if (dot) dot.style.background = a.color;
     p.el.classList.toggle("is-active", a.active); // highlight the focused tab in each window
   }
+  // self-heal: remove any orphaned pane DOM (a superseded duplicate, or a leftover
+  // whose target is gone) so a stale pane can't linger on screen
+  for (const el of grid.querySelectorAll(".pane")) {
+    const tracked = panes.get(el.dataset.tid);
+    if (!tracked || tracked.el !== el) el.remove();
+  }
   countEl.textContent = panes.size + (panes.size === 1 ? " tab" : " tabs");
   emptyEl.hidden = panes.size > 0;
   layout();
+  } finally {
+    reconcileBusy = false;
+    if (reconcileQueued) { reconcileQueued = false; scheduleReconcile(); }
+  }
 }
 
 let reconcileTimer;
