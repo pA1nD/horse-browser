@@ -47,22 +47,16 @@ body.collapsed .word { display: none; }
 body.collapsed .sb-head { flex-direction: column; padding: 12px 0; }
 body.collapsed #collapse { display: none; }
 
-.sb-stats { display: flex; align-items: center; gap: 5px; padding: 9px 13px;
-  color: var(--dim); border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
 .spacer { flex: 1; }
 .live { display: inline-flex; align-items: center; gap: 6px; letter-spacing: .14em;
   font-size: 10px; color: var(--accent-br); }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-br);
   animation: pulse 2.2s infinite; }
+.count { display: inline-flex; align-items: baseline; }
 .stat { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-.stat-u { color: var(--faint); font-size: 10px; margin-right: 4px; }
-body.collapsed .sb-stats { display: none; }
+.stat-u { color: var(--faint); font-size: 10px; margin-left: 4px; }
 
-.sb-section { padding: 12px 13px 6px; font-size: 9.5px; letter-spacing: .22em;
-  text-transform: uppercase; color: var(--faint); }
-body.collapsed .sb-section { display: none; }
-
-.tablist { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 8px; }
+.tablist { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; }
 .tablist::-webkit-scrollbar { width: 8px; }
 .tablist::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
 
@@ -97,9 +91,7 @@ body.collapsed .tab-body, body.collapsed .tab-meta { display: none; }
 
 .sb-foot { display: flex; align-items: center; gap: 8px; padding: 9px 12px;
   border-top: 1px solid var(--line-soft); }
-.cols { display: flex; align-items: center; gap: 7px; flex: 1; color: var(--faint); }
-.cols-lbl { font-size: 9.5px; letter-spacing: .2em; }
-#cols { background: var(--card); color: var(--text); border: 1px solid var(--line);
+#gridsel { background: var(--card); color: var(--text); border: 1px solid var(--line);
   border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 11px; cursor: pointer; }
 body.collapsed .sb-foot { display: none; }
 
