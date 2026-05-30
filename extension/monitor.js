@@ -288,10 +288,7 @@ function makePane(info) {
   el.className = "pane";
   el.dataset.tid = info.targetId; // lets reconcile detect & drop orphaned duplicate panes
   el.style.setProperty("--accent", info.color);
-  el.innerHTML = '<canvas></canvas>' +
-    '<div class="slot-badge"></div>' +
-    '<div class="tag"><span class="dot"></span><span class="t"></span></div>';
-  el.querySelector(".dot").style.background = info.color;
+  el.innerHTML = '<canvas></canvas><div class="slot-badge"></div>';
   el.addEventListener("click", async () => {
     await chrome.tabs.update(info.tabId, { active: true });
     const tab = await chrome.tabs.get(info.tabId);
@@ -299,7 +296,7 @@ function makePane(info) {
   });
   grid.appendChild(el);
   const canvas = el.querySelector("canvas");
-  return { el, ttlEl: el.querySelector(".t"), badge: el.querySelector(".slot-badge"),
+  return { el, badge: el.querySelector(".slot-badge"),
            canvas, ctx: canvas.getContext("2d"), img: new Image(), lastFrame: 0 };
 }
 
@@ -365,9 +362,6 @@ async function reconcile() {
       p.el.style.gridColumn = (i % N) + 1;
       p.el.style.gridRow = Math.floor(i / N) + 1;
       p.badge.textContent = i + 1;
-      p.ttlEl.textContent = a.title || a.host || a.url; // title disambiguates same-host tabs
-      p.el.style.setProperty("--accent", a.color);
-      const dot = p.el.querySelector(".dot"); if (dot) dot.style.background = a.color;
       p.el.classList.toggle("is-active", (Date.now() - a.lastActivity) < HOT_MS);
     }
     // orphan sweep: drop any pane DOM that isn't the tracked pane for its tab
