@@ -46,17 +46,19 @@ async function connect() {
 }
 
 // ── per-tab activity tracking ────────────────────────────────────────────────
-// lastActivity[tabId] = ms of the most recent action we could observe: a
-// navigation / load / title / favicon change (fires for background tabs too, so
-// it catches agent-driven navigations), a screencast repaint, a focus, or the
-// tab's own lastAccessed as a seed for history before the monitor opened.
+// lastActivity[tabId] = ms of the most recent ACTION we can observe: a navigation
+// or load (chrome.tabs.onUpdated url/status — fires for background tabs too, so it
+// catches agent-driven navigations), a focus (onActivated), or the tab's own
+// lastAccessed as a seed for history before the monitor opened. We deliberately do
+// NOT count screencast repaints or passive title/favicon churn — those keep a tab
+// painting without any real action and would peg every visible tab to "active".
 const lastActivity = new Map();
 function noteActivity(tabId, ts) {
   if (tabId == null) return;
   if (ts > (lastActivity.get(tabId) || 0)) lastActivity.set(tabId, ts);
 }
 chrome.tabs.onUpdated.addListener((tabId, ci) => {
-  if (ci.url || ci.status || ci.title || ci.favIconUrl || ci.audible !== undefined) noteActivity(tabId, Date.now());
+  if (ci.url || ci.status) noteActivity(tabId, Date.now()); // navigation / (re)load only
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => noteActivity(tabId, Date.now()));
 chrome.tabs.onCreated.addListener((t) => noteActivity(t.id, Date.now()));
@@ -200,8 +202,7 @@ async function watch(info) {
   sessionHandlers.set(sid, (m) => {
     if (m.method !== "Page.screencastFrame") return;
     pane.lastFrame = Date.now();
-    noteActivity(pane.tabId, Date.now()); // a repaint = activity on this tab
-    draw(pane, m.params.data);
+    draw(pane, m.params.data); // NB: a repaint is NOT activity — pages paint passively
     send("Page.screencastFrameAck", { sessionId: m.params.sessionId }, sid);
   });
   await send("Page.enable", {}, sid);
