@@ -126,11 +126,15 @@ function setIco(el, favIconUrl) {
   } else { img.removeAttribute("src"); ico.classList.remove("has-ico"); }
 }
 
-function renderSidebar(ranked) {
+function renderSidebar(ranked, cap) {
   const want = new Set(ranked.map((a) => a.targetId));
   for (const [k, el] of [...tabEls]) if (!want.has(k)) { el.remove(); tabEls.delete(k); }
 
-  for (const a of ranked) {
+  // index of the last tab that's actually on the grid (top `cap` by recency);
+  // a divider is drawn under it to mark "everything below isn't shown on the wall"
+  const lastOnGrid = Math.min(cap, ranked.length) - 1;
+
+  ranked.forEach((a, i) => {
     let el = tabEls.get(a.targetId);
     if (!el) { el = makeEntry(a.targetId); tabListEl.appendChild(el); tabEls.set(a.targetId, el); }
     el.style.setProperty("--c", a.color);
@@ -139,7 +143,9 @@ function renderSidebar(ranked) {
     el.querySelector(".tab-host").textContent = a.host;
     el.querySelector(".tab-time").textContent = ago(a.lastActivity);
     el.classList.toggle("active", Date.now() - a.lastActivity < 60000);
-  }
+    // mark the cutoff: divider under the last on-grid card, only if some tab is below it
+    el.classList.toggle("grid-edge", i === lastOnGrid && i < ranked.length - 1);
+  });
   // Re-order to match the ranking, moving only out-of-place nodes (moving a node
   // restarts its entrance animation, so a steady ranking touches nothing).
   let node = tabListEl.firstChild;
@@ -234,8 +240,8 @@ async function reconcile() {
   try {
     const agents = await discover();
     const ranked = agents.slice().sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
-    renderSidebar(ranked);
     const cap = (+gridSel.value || 2) ** 2;     // 2×2 → 4, 3×3 → 9
+    renderSidebar(ranked, cap);
     const visible = ranked.slice(0, cap);
     const want = new Map(visible.map((a) => [a.targetId, a]));
     for (const tid of [...panes.keys()]) if (!want.has(tid)) removePane(tid);
