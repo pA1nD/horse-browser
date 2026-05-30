@@ -25,8 +25,8 @@ button { font: inherit; color: inherit; }
 /* ── sidebar ──────────────────────────────────────────────────────────── */
 #sidebar { flex: 0 0 248px; width: 248px; display: flex; flex-direction: column;
   background: linear-gradient(180deg, #0f1312 0%, var(--panel) 60%);
-  border-right: 1px solid var(--line); transition: flex-basis .2s ease, width .2s ease;
-  overflow: hidden; }
+  border-right: 1px solid var(--line); overflow: hidden;
+  transition: flex-basis .3s cubic-bezier(.4, 0, .2, 1), width .3s cubic-bezier(.4, 0, .2, 1); }
 body.collapsed #sidebar { flex-basis: 60px; width: 60px; }
 
 .sb-head { display: flex; align-items: center; gap: 9px; padding: 13px 12px 11px;
@@ -36,16 +36,16 @@ body.collapsed #sidebar { flex-basis: 60px; width: 60px; }
   background: var(--accent); font-size: 15px; line-height: 1; flex: 0 0 auto; cursor: pointer;
   box-shadow: 0 1px 4px rgba(0,0,0,.5); }
 .word { font-weight: 600; letter-spacing: .04em; font-size: 12.5px; color: var(--text);
-  white-space: nowrap; }
-body.collapsed .word { display: none; }
+  white-space: nowrap; transition: opacity .16s ease; }
+body.collapsed .word { opacity: 0; }
 
 .icon-btn { background: transparent; border: 1px solid transparent; border-radius: 6px;
-  width: 24px; height: 24px; display: grid; place-items: center; cursor: pointer;
-  color: var(--dim); flex: 0 0 auto; transition: background .12s, color .12s, border-color .12s; }
+  width: 24px; height: 24px; display: grid; place-items: center; cursor: pointer; color: var(--dim);
+  flex: 0 0 auto; transition: background .12s, color .12s, border-color .12s, opacity .16s ease; }
 .icon-btn:hover { background: var(--card-hi); color: var(--text); border-color: var(--line); }
 .icon-btn svg { width: 14px; height: 14px; display: block; }
-body.collapsed .sb-head { flex-direction: column; padding: 12px 0; }
-body.collapsed #collapse { display: none; }
+/* collapse keeps the header a row so the logo stays put; only the chevron fades */
+body.collapsed #collapse { opacity: 0; pointer-events: none; }
 
 .spacer { flex: 1; }
 .live { display: inline-flex; align-items: center; gap: 6px; letter-spacing: .14em;
@@ -76,22 +76,21 @@ body.collapsed #collapse { display: none; }
 .tab-ico::after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
 .tab-ico.has-ico::after { display: none; }
 
-.tab-body { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 1px; }
+.tab-body { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 1px; transition: opacity .16s ease; }
 .tab-title { color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tab-host { color: var(--dim); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tab-meta { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
+.tab-meta { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; transition: opacity .16s ease; }
 .tab-time { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10.5px; white-space: nowrap; }
 .tab.active .tab-time { color: var(--accent-br); }
 
-/* collapsed rail: just the favicon (or colour dot), centred */
-body.collapsed .tab { justify-content: center; padding: 9px 0; }
-body.collapsed .tab-body, body.collapsed .tab-meta { display: none; }
+/* collapsed rail: favicon + colour bar stay exactly in place; the rest fades */
+body.collapsed .tab-body, body.collapsed .tab-meta { opacity: 0; pointer-events: none; }
 
 .sb-foot { display: flex; align-items: center; gap: 8px; padding: 9px 12px;
-  border-top: 1px solid var(--line-soft); }
+  border-top: 1px solid var(--line-soft); transition: opacity .16s ease; }
 #gridsel { background: var(--card); color: var(--text); border: 1px solid var(--line);
   border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 11px; cursor: pointer; }
-body.collapsed .sb-foot { display: none; }
+body.collapsed .sb-foot { opacity: 0; pointer-events: none; }
 
 /* ── stage / wall ─────────────────────────────────────────────────────── */
 #stage { position: relative; flex: 1; min-width: 0;

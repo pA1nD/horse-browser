@@ -296,11 +296,23 @@ window.addEventListener("resize", layout);
 // ── sidebar collapse (persisted) ─────────────────────────────────────────────
 const COLLAPSE_KEY = "hb-monitor-collapsed";
 const logoEl = document.querySelector(".logo");
+
+// Re-run layout on every frame for `ms`, so the grid tracks the sidebar width as
+// it animates — panes resize continuously instead of snapping between two sizes.
+let layoutAnim = 0;
+function animateLayout(ms) {
+  cancelAnimationFrame(layoutAnim);
+  const start = performance.now();
+  const step = (now) => {
+    layout();
+    if (now - start < ms) layoutAnim = requestAnimationFrame(step);
+  };
+  layoutAnim = requestAnimationFrame(step);
+}
 function setCollapsed(c) {
   document.body.classList.toggle("collapsed", c);
   localStorage.setItem(COLLAPSE_KEY, c ? "1" : "0");
-  layout();
-  setTimeout(layout, 220);
+  animateLayout(340); // a touch longer than the .3s width transition, to catch the settle
 }
 if (localStorage.getItem(COLLAPSE_KEY) === "1") document.body.classList.add("collapsed");
 collapseBtn.addEventListener("click", () => setCollapsed(!document.body.classList.contains("collapsed")));
