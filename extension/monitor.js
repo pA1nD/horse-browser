@@ -140,9 +140,16 @@ function renderSidebar(agents) {
     el.querySelector(".ses-count").textContent = s.tabs.length;
     el.classList.toggle("active", s.active);
   }
-  // keep stable order (ALL first, then sessions); appendChild just moves nodes
-  sessionsEl.appendChild(allEl);
-  for (const s of sessions) sessionsEl.appendChild(sesEls.get(s.key));
+  // Re-order only the cards that are actually out of place. Moving a node
+  // restarts its CSS entrance animation, so blindly re-appending every reconcile
+  // would replay `cardIn` on every click — here an unchanged list moves nothing.
+  const order = ["__all__", ...sessions.map((s) => s.key)];
+  let node = sessionsEl.firstChild;
+  for (const k of order) {
+    const el = sesEls.get(k);
+    if (node === el) node = node.nextSibling;
+    else sessionsEl.insertBefore(el, node);
+  }
 
   statTabs.textContent = agents.length;
   statSessions.textContent = sessions.length;
