@@ -1,98 +1,88 @@
+<p align="center">
+  <img src="./assets/horse-browser-banner-v2.png" alt="horse-browser — a dedicated browser for AI agents: colored per-session tab groups and a celestial navigation trail" width="100%" />
+</p>
+
 # horse-browser 🐴
 
-A dedicated browser for your AI agents — one you **log into once and stay logged
-into** — that coexists peacefully with your daily browser. Agents share it, each
-gets its own coloured tab group, and it never steals your focus.
+**A browser where your agents live.** Log in once; every agent you point at it inherits the session — and you watch them all on one live wall.
 
-### Why "horse"?
+<p align="center">
+  <a href="https://github.com/pA1nD/horse-browser/releases"><img src="https://img.shields.io/github/v/release/pA1nD/horse-browser?color=2f855a&label=release" alt="release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2f855a" alt="MIT" /></a>
+  <img src="https://img.shields.io/badge/platform-macOS-2f855a" alt="macOS" />
+</p>
 
-Two reasons, and they're both real:
+One dedicated browser, shared by all your agents. It coexists with your daily browser, **never steals your focus**, drops each agent's tabs into their own colored group — and ships a live monitor so you can watch every agent browse at once.
 
-1. **"browse" literally comes from grazing animals.** It meant a deer or a horse
-   nibbling leaves and shoots long before it meant clicking links. So a horse
-   that browses isn't a pun — it's the *original* browser. 🐴
-2. **It rides in [browser-harness](https://github.com/browser-use/browser-harness).**
-   You put a harness on a horse. browser-harness drives the browser; this is the
-   horse it harnesses. (That's also where the 🐴 marker on the controlled tab
-   comes from.)
+## Setup
 
-So: the horse browses, the harness steers. Naturally.
+You don't install this by hand. Hand the repo to your agent and let it do the work — paste into **Claude Code** or **Codex**:
 
-## What's here
+```text
+Set up https://github.com/pA1nD/horse-browser for me.
 
-```
-extension/      MV3 extension — tab grouper (groupTab/activateTab/listTabs over CDP)
-                + the Agent Monitor (live grid of every agent's tabs)
-bin/horse-browser  idempotent launcher — ensures the browser is up on :9223
-install.sh      one-time setup — fetches the browser, registers launcher + statusline
-statusline.sh   Claude Code statusline — shows ses:XXXX = your tab-group label
-SKILL.md        usage + the bh_open discipline (incl. the helper recipe agents self-install)
+Read SKILL.md and run ./install.sh, then register the skill so you use bh_open
+to open tabs from now on.
 ```
 
-It's a thin, self-contained setup. [browser-harness](https://github.com/browser-use/browser-harness)
-(or anything else speaking CDP) is just a *consumer* that drives it on port 9223.
+That's it. `install.sh` fetches a dedicated **Chrome for Testing** (lives alongside your daily browser, never fights it for the dock), puts the `horse-browser` launcher on your PATH, and opens the browser so you can **sign into your apps once** — those logins persist for every agent.
 
-## Install
+Prefer your own Chromium? `export HORSE_BROWSER_BIN=/path/to/chromium` before setup.
 
-```bash
-git clone https://github.com/pa1nd/horse-browser
-cd horse-browser
-./install.sh
-```
+## Why a browser that *stays logged in*
 
-You don't install a browser by hand — `install.sh` fetches **Chrome for Testing**
-(a dedicated, automation-purposed Chromium that lives *alongside* your daily
-browser, never fighting it for the dock) via `@puppeteer/browsers`, registers the
-`horse-browser` launcher on your PATH, wires up the statusline, and opens the
-browser so you can sign into your apps. Prefer your own Chromium? Set
-`HORSE_BROWSER_BIN=/path/to/chromium` before running.
+The point isn't a throwaway browser — it's the opposite. Sign into Gmail, GitHub, your dashboards, whatever — **once** — and every agent you point at `:9223` inherits those sessions. No re-auth dance, no cookie juggling, no "paste your token" on every run.
 
-Then, anytime — you or an agent:
+The catch with one shared browser is everyone trips over everyone. So:
+
+- **Coexists with your daily browser.** A *separate* browser (Chrome for Testing) — launching it never hijacks your everyday Chrome/Brave, and clicking yours never lands you in the agents' window.
+- **Focus-safe by construction.** Tabs open in the background and activate through the extension instead of `Target.activateTarget` (which calls `[NSApp activate]` and yanks the browser over whatever you're doing). The page is told it's foregrounded via focus emulation, so nothing misbehaves.
+- **Per-session tab groups.** Each agent's tabs live in their own colored group; you see whose-is-whose at a glance, humans and agents in one window.
+
+## Watch them all — the Agent Monitor
+
+<p align="center">
+  <img src="./assets/monitor.png" alt="The Agent Monitor — a live grid of every agent's tabs" width="100%" />
+</p>
+
+Click the 🐴 toolbar button for a live **2×2 / 3×3 wall** of screencasts — one tab per cell — so you can watch every agent browse at once on a big screen.
+
+Built around **stable slots**: a tab keeps its cell, so the picture never shuffles under you. Activity lights up *in place* (a green pulse on the tab an agent just acted on) instead of reordering everything; the wall only changes membership when a tab has gone idle and a busier one is waiting. A theme-aware sidebar lists every tab — slot-numbered, recency-ranked, with a cutoff line marking what's on the wall vs. waiting. Click any pane to jump to that tab. Pure read-only over CDP (a *second* client alongside whatever's driving), so it costs the agents nothing.
+
+## How agents drive it
+
+`horse-browser` runs a dedicated browser with CDP on `:9223`. Anything that speaks CDP can drive it — [browser-harness](https://github.com/browser-use/browser-harness) is the natural fit:
 
 ```bash
 horse-browser                            # idempotent: launches if down, no-op if up
 export BU_CDP_URL=http://127.0.0.1:9223  # point your CDP client at it
 ```
 
-There's no helper file to copy. The first time an agent drives this with
-browser-harness, it writes the `bh_open` helpers into browser-harness's
-`agent-workspace/agent_helpers.py` from the recipe in [SKILL.md](SKILL.md) —
-generic across every install. To make the discipline available everywhere,
-install the skill globally:
-`ln -s "$PWD/SKILL.md" ~/.claude/skills/horse-browser/SKILL.md`.
+Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) rather than bare `goto_url` (which clobbers whoever's focused). The discipline lives in [SKILL.md](SKILL.md) — register it once and agents follow it automatically.
 
-## Why a dedicated, logged-in browser?
+## What's inside
 
-The point *isn't* a throwaway browser — it's the opposite. Sign into Gmail,
-GitHub, your dashboards, whatever — once — and every agent you point at `:9223`
-inherits those sessions. No re-auth dance, no cookie juggling, no "paste your
-token" on every run. A real, persistent, authenticated browser that's yours,
-that agents borrow.
+```
+extension/         MV3 extension — tab grouper (groupTab/activateTab/listTabs over CDP)
+                   + the Agent Monitor (live grid of every agent's tabs)
+bin/horse-browser  idempotent launcher — ensures the browser is up on :9223
+install.sh         one-time setup — fetches the browser, registers launcher + statusline
+statusline.sh      Claude Code statusline — shows ses:XXXX = your tab-group label
+SKILL.md           the agent's playbook (bh_open discipline + the helper recipe it self-installs)
+```
 
-The catch with one shared browser is everyone trips over everyone — so:
+A thin, self-contained setup. browser-harness (or anything else speaking CDP) is just a *consumer* that drives it on port 9223.
 
-- **Coexists with your daily browser.** It's a *separate* browser (Chrome for Testing), so launching it never hijacks your everyday Brave/Chrome, and clicking yours never lands you in the agents' window.
-- **Per-session tab groups.** Each agent's tabs live in their own coloured group; you see whose-is-whose at a glance, and humans + agents coexist in one window.
-- **Focus-safe by construction.** Tabs open in the background and activate through the extension instead of `Target.activateTarget` (which calls `[NSApp activate]` and yanks the browser over whatever you're doing). The page is told it's foregrounded via focus emulation, so nothing misbehaves. See [SKILL.md](SKILL.md).
+## Why "horse"?
 
-## The Agent Monitor
+Two reasons, both real:
 
-Once several agents share one browser, you want to *see* them. Click the 🐴
-toolbar button and the extension opens a live wall — a 2×2 or 3×3 grid of
-screencasts, one tab per cell, so you can watch every agent browse at once on a
-big screen.
+1. **"browse" literally comes from grazing animals.** It meant a deer or a horse nibbling leaves and shoots long before it meant clicking links. So a horse that browses isn't a pun — it's the *original* browser. 🐴
+2. **It rides in [browser-harness](https://github.com/browser-use/browser-harness).** You put a harness on a horse. browser-harness drives the browser; this is the horse it harnesses.
 
-It's built around **stable slots**: a tab keeps its cell, so the picture doesn't
-shuffle under you. Activity lights up in place (a green pulse on the tab an agent
-just acted on) instead of reordering everything; the wall only changes membership
-when a tab has been idle a while and a busier one is waiting. A theme-aware
-sidebar lists every tab — slot-numbered, ranked by recency, with a cutoff line
-marking what's on the wall vs. waiting. Click any pane to jump to that tab.
+The horse browses, the harness steers. Naturally.
 
-Pure read-only over CDP (a *second* client alongside whatever's driving), so it
-costs the agents nothing.
-
-## Prior art (or: turns out this is a real problem)
+## Prior art (turns out this is a real problem)
 
 The focus-stealing half isn't us being fussy — it's an open sore in the big tools:
 
