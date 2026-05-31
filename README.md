@@ -21,7 +21,8 @@ So: the horse browses, the harness steers. Naturally.
 ## What's here
 
 ```
-extension/      Agent Tab Grouper (MV3): groupTab / activateTab / listTabs over CDP
+extension/      MV3 extension — tab grouper (groupTab/activateTab/listTabs over CDP)
+                + the Agent Monitor (live grid of every agent's tabs)
 bin/horse-browser  idempotent launcher — ensures the browser is up on :9223
 install.sh      one-time setup — fetches the browser, registers launcher + statusline
 statusline.sh   Claude Code statusline — shows ses:XXXX = your tab-group label
@@ -73,6 +74,23 @@ The catch with one shared browser is everyone trips over everyone — so:
 - **Coexists with your daily browser.** It's a *separate* browser (Chrome for Testing), so launching it never hijacks your everyday Brave/Chrome, and clicking yours never lands you in the agents' window.
 - **Per-session tab groups.** Each agent's tabs live in their own coloured group; you see whose-is-whose at a glance, and humans + agents coexist in one window.
 - **Focus-safe by construction.** Tabs open in the background and activate through the extension instead of `Target.activateTarget` (which calls `[NSApp activate]` and yanks the browser over whatever you're doing). The page is told it's foregrounded via focus emulation, so nothing misbehaves. See [SKILL.md](SKILL.md).
+
+## The Agent Monitor
+
+Once several agents share one browser, you want to *see* them. Click the 🐴
+toolbar button and the extension opens a live wall — a 2×2 or 3×3 grid of
+screencasts, one tab per cell, so you can watch every agent browse at once on a
+big screen.
+
+It's built around **stable slots**: a tab keeps its cell, so the picture doesn't
+shuffle under you. Activity lights up in place (a green pulse on the tab an agent
+just acted on) instead of reordering everything; the wall only changes membership
+when a tab has been idle a while and a busier one is waiting. A theme-aware
+sidebar lists every tab — slot-numbered, ranked by recency, with a cutoff line
+marking what's on the wall vs. waiting. Click any pane to jump to that tab.
+
+Pure read-only over CDP (a *second* client alongside whatever's driving), so it
+costs the agents nothing.
 
 ## Prior art (or: turns out this is a real problem)
 
