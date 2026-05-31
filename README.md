@@ -2,7 +2,7 @@
   <img src="./assets/horse-browser-banner-v2.png" alt="horse-browser — a dedicated browser for AI agents: colored per-session tab groups and a celestial navigation trail" width="100%" />
 </p>
 
-# horse-browser 🐴
+# Horse Browser 🐴
 
 **A browser where your agents live.** Log in once; every agent you point at it inherits the session — and you watch them all on one live wall.
 
@@ -12,7 +12,9 @@
   <img src="https://img.shields.io/badge/platform-macOS-2f855a" alt="macOS" />
 </p>
 
-One dedicated browser, shared by all your agents. It coexists with your daily browser, **never steals your focus**, drops each agent's tabs into their own colored group — and ships a live monitor so you can watch every agent browse at once.
+Every other tool hands each agent a *throwaway* browser. But you don't want throwaway — you want **your** browser, logged into your stuff, that agents quietly borrow. The catch: on macOS, every CDP command yanks the browser to the foreground ([a known open sore](https://github.com/ChromeDevTools/chrome-devtools-mcp/issues/1254) across [the big tools](https://github.com/vercel-labs/agent-browser/issues/1247)). Horse Browser fixes that — agents open tabs **in the background**, each in their own **colored group**, in a **dedicated browser** that coexists with your daily one and never steals your focus.
+
+> Why "horse"? *Browse* meant a horse grazing — nibbling shoots — long before it meant clicking links. A horse that browses is the *original* browser. And it rides in [browser-harness](https://github.com/browser-use/browser-harness): you harness a horse. 🐴
 
 ## Setup
 
@@ -29,15 +31,15 @@ That's it. `install.sh` fetches a dedicated **Chrome for Testing** (lives alongs
 
 Prefer your own Chromium? `export HORSE_BROWSER_BIN=/path/to/chromium` before setup.
 
-## Why a browser that *stays logged in*
+## How it stays out of your way
 
-The point isn't a throwaway browser — it's the opposite. Sign into Gmail, GitHub, your dashboards, whatever — **once** — and every agent you point at `:9223` inherits those sessions. No re-auth dance, no cookie juggling, no "paste your token" on every run.
-
-The catch with one shared browser is everyone trips over everyone. So:
+Sign into Gmail, GitHub, your dashboards, whatever — **once** — and every agent you point at `:9223` inherits those sessions. No re-auth dance, no cookie juggling, no "paste your token" on every run. The catch with one shared browser is everyone trips over everyone, so three things keep it civil:
 
 - **Coexists with your daily browser.** A *separate* browser (Chrome for Testing) — launching it never hijacks your everyday Chrome/Brave, and clicking yours never lands you in the agents' window.
 - **Focus-safe by construction.** Tabs open in the background and activate through the extension instead of `Target.activateTarget` (which calls `[NSApp activate]` and yanks the browser over whatever you're doing). The page is told it's foregrounded via focus emulation, so nothing misbehaves.
 - **Per-session tab groups.** Each agent's tabs live in their own colored group; you see whose-is-whose at a glance, humans and agents in one window.
+
+(Browserbase, Steel, Hyperbrowser & co. solve scale by giving each agent its *own throwaway* browser. Great for the cloud; useless when you want **one real browser, on your machine, that stays logged in**. That's this.)
 
 ## Watch them all — the Agent Monitor
 
@@ -62,34 +64,13 @@ Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) r
 
 ## What's inside
 
-```
-extension/         MV3 extension — tab grouper (groupTab/activateTab/listTabs over CDP)
-                   + the Agent Monitor (live grid of every agent's tabs)
-bin/horse-browser  idempotent launcher — ensures the browser is up on :9223
-install.sh         one-time setup — fetches the browser, registers launcher + statusline
-statusline.sh      Claude Code statusline — shows ses:XXXX = your tab-group label
-SKILL.md           the agent's playbook (bh_open discipline + the helper recipe it self-installs)
-```
+- **`extension/`** — MV3 extension: the tab grouper + the Agent Monitor.
+- **`bin/horse-browser`** — idempotent launcher; ensures the browser is up on `:9223`.
+- **`install.sh`** — one-time setup; fetches the browser, registers the launcher + statusline.
+- **`statusline.sh`** — Claude Code statusline; shows `ses:XXXX` = your tab-group label.
+- **`SKILL.md`** — the agent's playbook (the `bh_open` discipline + a helper recipe it self-installs).
 
-A thin, self-contained setup. browser-harness (or anything else speaking CDP) is just a *consumer* that drives it on port 9223.
-
-## Why "horse"?
-
-Two reasons, both real:
-
-1. **"browse" literally comes from grazing animals.** It meant a deer or a horse nibbling leaves and shoots long before it meant clicking links. So a horse that browses isn't a pun — it's the *original* browser. 🐴
-2. **It rides in [browser-harness](https://github.com/browser-use/browser-harness).** You put a harness on a horse. browser-harness drives the browser; this is the horse it harnesses.
-
-The horse browses, the harness steers. Naturally.
-
-## Prior art (turns out this is a real problem)
-
-The focus-stealing half isn't us being fussy — it's an open sore in the big tools:
-
-- [chrome-devtools-mcp #1254](https://github.com/ChromeDevTools/chrome-devtools-mcp/issues/1254) — *"macOS: Chrome steals window focus on every CDP command."*
-- [vercel-labs/agent-browser #1247](https://github.com/vercel-labs/agent-browser/issues/1247) — a feature request for exactly the background-open trick this already ships.
-
-And most other answers — Playwright contexts, [Browserbase](https://www.browserbase.com), [Steel](https://steel.dev), Hyperbrowser — isolate by handing each agent its *own throwaway* browser. Great for scale; useless when you want **one real browser, on your machine, that stays logged in**. That's this.
+A thin, self-contained setup — browser-harness (or anything else speaking CDP) is just a *consumer* on port 9223.
 
 ## License
 
