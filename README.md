@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="./assets/horse-browser-banner-v2-animated.svg" alt="Horse Browser — a dedicated browser for AI agents: colored per-session tab groups and a celestial navigation trail" width="100%" />
+  <img src="https://raw.githubusercontent.com/pA1nD/pa1nd-media/main/horse-browser/banner-animated.svg" alt="Horse Browser — a dedicated browser for AI agents: colored per-session tab groups and a celestial navigation trail" width="100%" />
 </p>
 <!-- static fallback if the animated SVG ever fails to render:
 <p align="center">
-  <img src="./assets/horse-browser-banner-v2.png" alt="Horse Browser" width="100%" />
+  <img src="https://raw.githubusercontent.com/pA1nD/pa1nd-media/main/horse-browser/banner.jpg" alt="Horse Browser" width="100%" />
 </p>
 -->
 
@@ -63,7 +63,7 @@ Sign into Gmail, GitHub, your dashboards, whatever — **once** — and every ag
 ## Watch them all — the Agent Monitor
 
 <p align="center">
-  <img src="./assets/monitor.png" alt="The Agent Monitor — a live grid of every agent's tabs" width="100%" />
+  <img src="https://raw.githubusercontent.com/pA1nD/pa1nd-media/main/horse-browser/monitor.jpg" alt="The Agent Monitor — a live grid of every agent's tabs" width="100%" />
 </p>
 
 Click the 🐴 toolbar button for a live **2×2 / 3×3 wall** of screencasts — one tab per cell — so you can watch every agent browse at once on a big screen.
