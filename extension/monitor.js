@@ -314,9 +314,14 @@ function makePane(info) {
 }
 
 async function watch(info) {
-  const att = await send("Target.attachToTarget", { targetId: info.targetId, flatten: true });
+  // Short timeout (not the default 8s): right after a browser restart the target
+  // subsystem isn't ready to attach for ~1–3s and simply doesn't answer. Failing
+  // fast lets the 1s poll retry and succeed once the browser settles, instead of
+  // every pane stalling the full 8s backstop (which read as a ~20s cold start).
+  const FAST = 2500;
+  const att = await send("Target.attachToTarget", { targetId: info.targetId, flatten: true }, undefined, FAST);
   const sid = att.result && att.result.sessionId;
-  if (!sid) return;
+  if (!sid) return; // not ready yet — next poll retries
   const pane = makePane(info);
   pane.sid = sid;
   pane.tabId = info.tabId;
