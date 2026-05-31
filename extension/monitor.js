@@ -428,7 +428,14 @@ function layout() {
 }
 let layoutTimer;
 function scheduleLayout() { clearTimeout(layoutTimer); layoutTimer = setTimeout(layout, 120); }
-gridSel.addEventListener("change", reconcile); // grid size changes the cap → resize slots
+// persist the grid size across reloads / browser restarts
+const GRID_KEY = "hb-monitor-grid";
+const savedGrid = localStorage.getItem(GRID_KEY);
+if (savedGrid === "2" || savedGrid === "3") gridSel.value = savedGrid;
+gridSel.addEventListener("change", () => { // grid size changes the cap → resize slots
+  localStorage.setItem(GRID_KEY, gridSel.value);
+  reconcile();
+});
 window.addEventListener("resize", layout);
 
 // ── sidebar collapse (persisted) ─────────────────────────────────────────────
