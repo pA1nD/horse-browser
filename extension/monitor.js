@@ -41,11 +41,24 @@ const panes = new Map();            // targetId → pane (only for tabs currentl
 let slots = [];                     // slot index → targetId | null  (the persistent wall)
 let frameAspect = 16 / 10;          // live content aspect (w/h), refined from real frames
 
-function send(method, params, sessionId) {
+// Every CDP request times out. Right after a browser restart the freshly-restored
+// renderer sometimes never answers an attach/screencast call; without a timeout
+// that promise hangs forever, and because reconcile() holds a non-reentrant lock
+// across `await watch()`, the WHOLE monitor deadlocks (empty sidebar + grid until
+// a manual reload). On timeout we resolve to a benign error shape so callers that
+// read `.result` simply treat it as "no data" and move on.
+function send(method, params, sessionId, timeoutMs = 8000) {
   return new Promise((resolve) => {
     const id = ++msgId;
-    pending.set(id, resolve);
-    ws.send(JSON.stringify({ id, method, params: params || {}, sessionId }));
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; pending.delete(id); resolve(v); };
+    pending.set(id, finish);
+    const timer = setTimeout(() => finish({ error: { message: "timeout", method } }), timeoutMs);
+    // wrap so clearing the timer happens whenever the real response arrives
+    const wrapped = (v) => { clearTimeout(timer); finish(v); };
+    pending.set(id, wrapped);
+    try { ws.send(JSON.stringify({ id, method, params: params || {}, sessionId })); }
+    catch (e) { clearTimeout(timer); finish({ error: { message: String(e), method } }); }
   });
 }
 
@@ -347,6 +360,11 @@ async function reconcile() {
     const cap = N * N;
     slots = computeSlots(slots, agents, cap, Date.now(), HOT_MS);
 
+    // Render the sidebar FIRST — it's pure DOM (no CDP), so the tab list always
+    // appears even if pane attaches are slow or failing after a restart.
+    renderSidebar(slots, agents, byId, cap);
+    statTabs.textContent = agents.length;
+
     const shownSet = new Set(slots.filter((id) => id != null));
     for (const tid of [...panes.keys()]) if (!shownSet.has(tid)) removePane(tid);
 
@@ -354,7 +372,9 @@ async function reconcile() {
       const id = slots[i];
       if (id == null) continue;
       const a = byId.get(id);
-      if (!panes.has(id)) await watch(a);
+      // one tab's attach must never block the others — on failure, skip it; the
+      // next tick (1s poll) retries. send() now times out, so this can't hang.
+      if (!panes.has(id)) { try { await watch(a); } catch {} }
       const p = panes.get(id);
       if (!p) continue;
       // pin the pane to its slot's grid cell (row-major). Recomputed each tick so a
@@ -369,7 +389,6 @@ async function reconcile() {
       const tracked = panes.get(el.dataset.tid);
       if (!tracked || tracked.el !== el) el.remove();
     }
-    renderSidebar(slots, agents, byId, cap);
     emptyEl.hidden = panes.size > 0;
     layout();
   } finally {
