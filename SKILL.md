@@ -64,77 +64,9 @@ self.listTabs(label: string) -> Promise<Tab[]>
 //   }
 ```
 
-Reach them over CDP by attaching to the extension's service-worker target and `Runtime.evaluate`. There's no helper file to copy — the first time `bh_open` is undefined, **write the recipe below into browser-harness's `agent-workspace/agent_helpers.py`** yourself (it auto-loads on every browser-harness call; find it in your browser-harness checkout). Then `bh_open(url)` is available everywhere:
+**`bh_open` / `bh_list` / `bh_switch_tab` are pre-installed.** `install.sh` writes them into browser-harness's `agent-workspace/agent_helpers.py` (which auto-loads on every call), so they're available immediately — just call `bh_open(url)`.
 
-```python
-import json
-from browser_harness.helpers import cdp
-
-
-def ext_call(fn, *args):
-    """Call an extension SW function. Returns the deserialised JS value,
-    or None if the extension's service worker isn't registered."""
-    sw = next((t["targetId"] for t in cdp("Target.getTargets")["targetInfos"]
-               if t.get("type") == "service_worker"
-               and t.get("url", "").startswith("chrome-extension://")), None)
-    if sw is None:
-        return None
-    s = cdp("Target.attachToTarget", targetId=sw, flatten=True)["sessionId"]
-    a = ", ".join(json.dumps(x) for x in args)
-    try:
-        return cdp("Runtime.evaluate", session_id=s,
-                   expression=f"self.{fn}({a})",
-                   awaitPromise=True, returnByValue=True)["result"].get("value")
-    finally:
-        cdp("Target.detachFromTarget", sessionId=s)
-```
-
-Build whatever helpers the project needs on top of `ext_call`. The canonical
-trio for this project — `bh_open` opens a tab without raising the browser over
-your current macOS app, and tells the renderer to always behave as if focused:
-
-```python
-import os
-from browser_harness.helpers import cdp, _send, goto_url, wait_for_load
-
-
-def _label():
-    return os.environ.get("CLAUDE_CODE_SESSION_ID", "")[-4:]
-
-
-def bh_switch_tab(target_id):
-    # Drop-in replacement for helpers.switch_tab that does NOT call
-    # Target.activateTarget (which fires [NSApp activate] on macOS and yanks
-    # the browser over your current app). Tab-strip activation goes through the
-    # extension; focus emulation makes the page believe it's foregrounded.
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
-    except Exception: pass
-    sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
-    _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
-    cdp("Emulation.setFocusEmulationEnabled", enabled=True)
-    try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
-    except Exception: pass
-    ext_call("activateTab", target_id)
-    return sid
-
-
-def bh_open(url):
-    # background=True on createTarget keeps [NSApp activate] from firing.
-    tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
-    bh_switch_tab(tid)
-    if url != "about:blank":
-        goto_url(url)
-    wait_for_load()
-    if _label():
-        ext_call("groupTab", tid, _label())
-    return tid
-
-
-def bh_list():
-    return ext_call("listTabs", _label()) or [] if _label() else []
-```
-
-You pass CDP `targetId`s only — the extension bridges to chrome `tabId`s internally.
+If `bh_open` is somehow undefined (a browser-harness checkout that never ran our `install.sh`), re-run `horse-browser`'s `install.sh` to install them — don't hand-roll your own; the focus-safe behaviour is subtle. You pass CDP `targetId`s only — the extension bridges to chrome `tabId`s internally.
 
 ### Why this avoids stealing macOS focus
 

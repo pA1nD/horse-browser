@@ -72,10 +72,44 @@ else
   echo "! jq not found — add to $SETTINGS:  \"statusLine\": {\"type\":\"command\",\"command\":\"$HERE/statusline.sh\"}"
 fi
 
-# 4. first launch + smoke test ─────────────────────────────────────────────────
+# 4. bh_open helpers into browser-harness ───────────────────────────────────────
+# browser-harness auto-loads agent-workspace/agent_helpers.py on every call. We
+# append our bh_open/bh_list/bh_switch_tab helpers there so they exist on the
+# FIRST run — no agent has to install the recipe by hand. Append-once: skip if
+# bh_open is already defined (preserves anything the agent added). We must find
+# the browser-harness checkout to do this — fail loud if we can't (it's a
+# required peer; we don't silently bootstrap it).
+HELPERS_SRC="$HERE/agent-helpers.py"
+BH_DIR="${BROWSER_HARNESS_DIR:-}"
+if [ -z "$BH_DIR" ]; then
+  for c in "$HOME/Developer/browser-harness" "$HOME/pro/browser-harness" "$HOME/browser-harness"; do
+    [ -f "$c/agent-workspace/agent_helpers.py" ] && { BH_DIR="$c"; break; }
+  done
+fi
+# fall back to the installed python package location's repo, if resolvable
+if [ -z "$BH_DIR" ] && command -v python3 >/dev/null 2>&1; then
+  pkg="$(python3 -c 'import browser_harness,os;print(os.path.dirname(browser_harness.__file__))' 2>/dev/null || true)"
+  [ -n "$pkg" ] && [ -f "$pkg/../../agent-workspace/agent_helpers.py" ] && BH_DIR="$(cd "$pkg/../.." && pwd)"
+fi
+if [ -z "$BH_DIR" ]; then
+  echo "ERROR: browser-harness not found — can't install the bh_open helpers." >&2
+  echo "  Install browser-harness first (https://github.com/browser-use/browser-harness)," >&2
+  echo "  or set BROWSER_HARNESS_DIR=/path/to/browser-harness, then re-run." >&2
+  exit 1
+fi
+HELPERS_DST="$BH_DIR/agent-workspace/agent_helpers.py"
+if grep -q "def bh_open" "$HELPERS_DST" 2>/dev/null; then
+  echo "✓ bh_open already in $HELPERS_DST"
+else
+  printf '\n\n# ── horse-browser helpers (installed by horse-browser/install.sh) ──\n' >> "$HELPERS_DST"
+  cat "$HELPERS_SRC" >> "$HELPERS_DST"
+  echo "✓ installed bh_open helpers → $HELPERS_DST"
+fi
+
+# 5. first launch + smoke test ─────────────────────────────────────────────────
 # HORSE_SKIP_LAUNCH=1 skips this whole step — used by the "update" path (re-running
 # install for a fresh pull) where relaunching the browser + a 40s smoke test would
-# be noise. Steps 1–3 (browser fetch, config, launcher, statusline) still run.
+# be noise. Steps 1–4 (browser fetch, config, launcher, statusline, helpers) still run.
 if [ -n "${HORSE_SKIP_LAUNCH:-}" ]; then
   echo "✓ setup refreshed (skipped launch/smoke-test: HORSE_SKIP_LAUNCH set)"
   echo "  Restart to pick up changes:  horse-browser"
