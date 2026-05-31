@@ -328,9 +328,11 @@ async function watch(info) {
     send("Page.screencastFrameAck", { sessionId: m.params.sessionId }, sid);
   });
   await send("Page.enable", {}, sid);
-  await send("Page.startScreencast",
+  // fire the first-paint still immediately (don't await) so the pane shows ASAP,
+  // and kick off the screencast in parallel — neither blocks the other.
+  forceCapture(pane); // still: fastest first paint; the 2s heartbeat repaints thereafter
+  send("Page.startScreencast",
     { format: "jpeg", quality: 50, maxWidth: 900, maxHeight: 560, everyNthFrame: 1 }, sid);
-  forceCapture(pane); // first paint as a still; the 2s heartbeat repaints thereafter
 }
 
 function removePane(targetId) {
@@ -368,13 +370,18 @@ async function reconcile() {
     const shownSet = new Set(slots.filter((id) => id != null));
     for (const tid of [...panes.keys()]) if (!shownSet.has(tid)) removePane(tid);
 
+    // Attach all missing panes IN PARALLEL. Each watch() is ~3 serial CDP
+    // round-trips; doing them one-at-a-time made a fresh 3×3 wall take ~30 trips
+    // back-to-back. Concurrently, wall-clock ≈ the slowest single tab. The Map
+    // key + orphan sweep already prevent duplicate panes, and the reconcile lock
+    // means only one batch runs at a time, so parallel attach is safe.
+    await Promise.all(slots.map((id) => (id != null && !panes.has(id))
+      ? watch(byId.get(id)).catch(() => {}) : null));
+
     for (let i = 0; i < cap; i++) {
       const id = slots[i];
       if (id == null) continue;
       const a = byId.get(id);
-      // one tab's attach must never block the others — on failure, skip it; the
-      // next tick (1s poll) retries. send() now times out, so this can't hang.
-      if (!panes.has(id)) { try { await watch(a); } catch {} }
       const p = panes.get(id);
       if (!p) continue;
       // pin the pane to its slot's grid cell (row-major). Recomputed each tick so a
