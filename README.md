@@ -1,6 +1,11 @@
 <p align="center">
-  <img src="./assets/horse-browser-banner-v2.png" alt="horse-browser — a dedicated browser for AI agents: colored per-session tab groups and a celestial navigation trail" width="100%" />
+  <img src="./assets/horse-browser-banner-v2-animated.svg" alt="Horse Browser — a dedicated browser for AI agents: colored per-session tab groups and a celestial navigation trail" width="100%" />
 </p>
+<!-- static fallback if the animated SVG ever fails to render:
+<p align="center">
+  <img src="./assets/horse-browser-banner-v2.png" alt="Horse Browser" width="100%" />
+</p>
+-->
 
 # Horse Browser 🐴
 
