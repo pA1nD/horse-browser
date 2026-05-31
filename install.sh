@@ -73,6 +73,15 @@ else
 fi
 
 # 4. first launch + smoke test ─────────────────────────────────────────────────
+# HORSE_SKIP_LAUNCH=1 skips this whole step — used by the "update" path (re-running
+# install for a fresh pull) where relaunching the browser + a 40s smoke test would
+# be noise. Steps 1–3 (browser fetch, config, launcher, statusline) still run.
+if [ -n "${HORSE_SKIP_LAUNCH:-}" ]; then
+  echo "✓ setup refreshed (skipped launch/smoke-test: HORSE_SKIP_LAUNCH set)"
+  echo "  Restart to pick up changes:  horse-browser"
+  exit 0
+fi
+
 echo "Launching for the first time…"
 "$BINDIR/horse-browser" || true
 
