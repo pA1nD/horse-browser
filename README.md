@@ -28,11 +28,25 @@ You don't install this by hand. Hand the repo to your agent and let it do the wo
 ```text
 Set up https://github.com/pA1nD/horse-browser for me.
 
-Read SKILL.md and run ./install.sh, then register the skill so you use bh_open
-to open tabs from now on.
+Clone it, run ./install.sh, then add SKILL.md to my CLAUDE.md so you always use
+bh_open to open tabs from now on.
 ```
 
 That's it. `install.sh` fetches a dedicated **Chrome for Testing** (lives alongside your daily browser, never fights it for the dock), puts the `horse-browser` launcher on your PATH, and opens the browser so you can **sign into your apps once** — those logins persist for every agent.
+
+### Teaching agents the discipline
+
+`SKILL.md` isn't an optional skill — it's a guardrail (open tabs with `bh_open`, never bare `goto_url`) that must be in context *before* the first browser call. So you register it by importing it into a `CLAUDE.md`, not as a load-on-demand skill. Two ways:
+
+**Every agent on your machine** — add this line to your global `~/.claude/CLAUDE.md`:
+
+```text
+@~/path/to/horse-browser/SKILL.md
+```
+
+**Just one project** — add the same line to that repo's `CLAUDE.md`.
+
+(Codex users: `~/.codex/AGENTS.md` works the same way.) Either way, the agent loads the `bh_open` discipline automatically from then on.
 
 Prefer your own Chromium? `export HORSE_BROWSER_BIN=/path/to/chromium` before setup.
 
@@ -65,7 +79,7 @@ horse-browser                            # idempotent: launches if down, no-op i
 export BU_CDP_URL=http://127.0.0.1:9223  # point your CDP client at it
 ```
 
-Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) rather than bare `goto_url` (which clobbers whoever's focused). The discipline lives in [SKILL.md](SKILL.md) — register it once and agents follow it automatically.
+Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) rather than bare `goto_url` (which clobbers whoever's focused). The discipline lives in [SKILL.md](SKILL.md) — import it into a `CLAUDE.md` ([see Setup](#teaching-agents-the-discipline)) and agents follow it automatically.
 
 ## What's inside
 
