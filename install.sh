@@ -58,38 +58,40 @@ echo "✓ launcher: $BINDIR/horse-browser  (config: $CONFIG)"
 case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "  note: $BINDIR isn't on your PATH — add it so 'horse-browser' resolves";; esac
 
 # 3. bh_open helpers into browser-harness ───────────────────────────────────────
-# browser-harness auto-loads agent-workspace/agent_helpers.py on every call. We
-# append our bh_open/bh_list/bh_switch_tab helpers there so they exist on the
-# FIRST run — no agent has to install the recipe by hand. Append-once: skip if
-# bh_open is already defined (preserves anything the agent added). We must find
-# the browser-harness checkout to do this — fail loud if we can't (it's a
-# required peer; we don't silently bootstrap it).
+# browser-harness auto-loads <workspace>/agent_helpers.py on every call; we append our
+# bh_open/bh_list/bh_switch_tab helpers there so they exist on the first run — no agent
+# installs the recipe by hand. The workspace location moved between versions: 0.1.1+ load
+# from ${BH_AGENT_WORKSPACE:-~/agent-workspace}; ≤0.1.0 loads from a source checkout's
+# agent-workspace/. We append to whichever apply, so the helpers load on either version
+# and on packaged (pip/uv) installs. Append-once: skip if bh_open is already present.
+if ! command -v browser-harness >/dev/null 2>&1; then
+  echo "ERROR: browser-harness not found on PATH — can't install the bh_open helpers." >&2
+  echo "  Install it first (https://github.com/browser-use/browser-harness), then re-run." >&2
+  exit 1
+fi
 HELPERS_SRC="$HERE/agent-helpers.py"
+install_helpers_into() {  # $1 = workspace dir; appends our helpers once
+  local dst="$1/agent_helpers.py"
+  mkdir -p "$1" 2>/dev/null || return 0
+  if grep -q "def bh_open" "$dst" 2>/dev/null; then
+    echo "✓ bh_open already in $dst"
+  else
+    printf '\n\n# ── horse-browser helpers (installed by horse-browser/install.sh) ──\n' >> "$dst"
+    cat "$HELPERS_SRC" >> "$dst"
+    echo "✓ installed bh_open helpers → $dst"
+  fi
+}
+# (a) the workspace browser-harness 0.1.1+ loads from (honours BH_AGENT_WORKSPACE)
+WS_NEW="${BH_AGENT_WORKSPACE:-$HOME/agent-workspace}"
+install_helpers_into "$WS_NEW"
+# (b) a source checkout's agent-workspace, if present (browser-harness ≤ 0.1.0)
 BH_DIR="${BROWSER_HARNESS_DIR:-}"
 if [ -z "$BH_DIR" ]; then
   for c in "$HOME/Developer/browser-harness" "$HOME/browser-harness"; do
     [ -f "$c/agent-workspace/agent_helpers.py" ] && { BH_DIR="$c"; break; }
   done
 fi
-# fall back to the installed python package location's repo, if resolvable
-if [ -z "$BH_DIR" ] && command -v python3 >/dev/null 2>&1; then
-  pkg="$(python3 -c 'import browser_harness,os;print(os.path.dirname(browser_harness.__file__))' 2>/dev/null || true)"
-  [ -n "$pkg" ] && [ -f "$pkg/../../agent-workspace/agent_helpers.py" ] && BH_DIR="$(cd "$pkg/../.." && pwd)"
-fi
-if [ -z "$BH_DIR" ]; then
-  echo "ERROR: browser-harness not found — can't install the bh_open helpers." >&2
-  echo "  Install browser-harness first (https://github.com/browser-use/browser-harness)," >&2
-  echo "  or set BROWSER_HARNESS_DIR=/path/to/browser-harness, then re-run." >&2
-  exit 1
-fi
-HELPERS_DST="$BH_DIR/agent-workspace/agent_helpers.py"
-if grep -q "def bh_open" "$HELPERS_DST" 2>/dev/null; then
-  echo "✓ bh_open already in $HELPERS_DST"
-else
-  printf '\n\n# ── horse-browser helpers (installed by horse-browser/install.sh) ──\n' >> "$HELPERS_DST"
-  cat "$HELPERS_SRC" >> "$HELPERS_DST"
-  echo "✓ installed bh_open helpers → $HELPERS_DST"
-fi
+[ -n "$BH_DIR" ] && [ "$BH_DIR/agent-workspace" != "$WS_NEW" ] && install_helpers_into "$BH_DIR/agent-workspace"
 
 # 4. first launch + smoke test ─────────────────────────────────────────────────
 # HORSE_SKIP_LAUNCH=1 skips this whole step — used by the "update" path (re-running
@@ -107,7 +109,10 @@ echo "Launching for the first time…"
 if command -v browser-harness >/dev/null 2>&1; then
   export BU_CDP_URL="http://127.0.0.1:$PORT"
   read -r -d '' check <<'PY' || true
+import browser_harness.helpers as _h
 from browser_harness.helpers import cdp
+if not hasattr(_h, "bh_open"):           # our helpers didn't load from the workspace we appended to
+    print("NOHELPERS"); raise SystemExit(0)
 sw = next((t["targetId"] for t in cdp("Target.getTargets")["targetInfos"]
            if t.get("type") == "service_worker"
            and t.get("url", "").startswith("chrome-extension://")), None)
@@ -121,15 +126,20 @@ cdp("Target.detachFromTarget", sessionId=s)
 print("READY" if isinstance(r.get("result", {}).get("value"), list) else "PENDING")
 PY
   echo "Verifying through browser-harness…"
-  verified=""
+  verified=""; result=""
   for _ in $(seq 1 20); do   # ~40s — must clear the SW's first 30s keepalive tick
-    if printf '%s' "$check" | browser-harness 2>/dev/null | grep -q READY; then verified=1; break; fi
+    result="$(printf '%s' "$check" | browser-harness 2>/dev/null | tail -1)"
+    [ "$result" = "READY" ] && { verified=1; break; }
+    [ "$result" = "NOHELPERS" ] && break   # helpers not loading — no point retrying
     sleep 2
   done
   if [ -n "$verified" ]; then
-    echo "✓ verified — listTabs() answered over CDP; the extension is live"
+    echo "✓ verified — bh_open loaded + listTabs() answered over CDP; the extension is live"
+  elif [ "$result" = "NOHELPERS" ]; then
+    echo "! bh_open did NOT load — browser-harness isn't reading the workspace we appended to." >&2
+    echo "  Set BH_AGENT_WORKSPACE to its agent-workspace dir and re-run ./install.sh." >&2
   else
-    echo "! couldn't confirm the extension within ~25s — check the browser window."
+    echo "! couldn't confirm the extension within ~40s — check the browser window."
   fi
 fi
 
