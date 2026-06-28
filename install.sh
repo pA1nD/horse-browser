@@ -98,6 +98,11 @@ if [ -z "$BH_DIR" ]; then
 fi
 [ -n "$BH_DIR" ] && [ "$BH_DIR/agent-workspace" != "$WS_NEW" ] && install_helpers_into "$BH_DIR/agent-workspace"
 
+# Keep the stable symlink that ~/.claude/CLAUDE.md's @-import points at aimed at the current
+# (Python-version-specific) packaged SKILL, so the import never rots across reinstalls. We
+# only refresh the symlink — registering the block in CLAUDE.md is opt-in (./claude-md.sh apply).
+"$HERE/claude-md.sh" symlink || echo "  (skipped CLAUDE.md SKILL symlink — see ./claude-md.sh)" >&2
+
 # 4. first launch + smoke test ─────────────────────────────────────────────────
 # HORSE_SKIP_LAUNCH=1 skips this whole step — used by the "update" path (re-running
 # install for a fresh pull) where relaunching the browser + a 40s smoke test would

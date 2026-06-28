@@ -36,15 +36,23 @@ That's it. `install.sh` fetches a dedicated **Chrome for Testing** (lives alongs
 
 ### Teaching agents the discipline
 
-`SKILL.md` isn't an optional skill — it's a guardrail (open tabs with `bh_open`, never bare `goto_url`) that must be in context *before* the first browser call. So you register it by importing it into a `CLAUDE.md`, not as a load-on-demand skill. Two ways:
+`SKILL.md` isn't an optional skill — it's a guardrail (open tabs with `bh_open`, never bare `goto_url`) that must be in context *before* the first browser call. So you register it by importing it into a `CLAUDE.md`, not as a load-on-demand skill.
 
-**Every agent on your machine** — add this line to your global `~/.claude/CLAUDE.md`:
+**Recommended** — let `claude-md.sh` manage a small, marked block in your global `~/.claude/CLAUDE.md`:
+
+```bash
+./claude-md.sh apply     # write/refresh the block (idempotent)
+./claude-md.sh print     # just print it — to compare, or copy by hand
+./claude-md.sh check     # is CLAUDE.md up to date? (exit 1 if drifted — good for a cron)
+```
+
+It imports both playbooks — horse-browser's, and browser-harness's via a **stable symlink** it keeps aimed at the current install, so the `@`-import never rots when browser-harness is reinstalled on a different Python (`install.sh` refreshes that symlink too).
+
+**By hand** — or just add the import yourself (global `~/.claude/CLAUDE.md`, or a single repo's `CLAUDE.md`):
 
 ```text
 @~/path/to/horse-browser/SKILL.md
 ```
-
-**Just one project** — add the same line to that repo's `CLAUDE.md`.
 
 (Codex users: `~/.codex/AGENTS.md` works the same way.) Either way, the agent loads the `bh_open` discipline automatically from then on.
 
@@ -93,7 +101,8 @@ Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) r
 
 - **`extension/`** — MV3 extension: the tab grouper + the Agent Monitor.
 - **`bin/horse-browser`** — the launcher *and* a browser-harness drop-in: ensures the browser is up (self-heals a GPU wedge after sleep), then runs your script against it.
-- **`install.sh`** — one-time setup; fetches the browser, registers the launcher.
+- **`install.sh`** — one-time setup; fetches the browser, registers the launcher + helpers.
+- **`claude-md.sh`** — registers horse-browser's guidance in your `~/.claude/CLAUDE.md` (`apply`/`print`/`check`), via a version-proof symlink to the browser-harness SKILL.
 - **`SKILL.md`** — the agent's playbook (the `bh_open` discipline + a helper recipe it self-installs).
 
 A thin, self-contained setup — browser-harness (or anything else speaking CDP) is just a *consumer* on port 9223.
