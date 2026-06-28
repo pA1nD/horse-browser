@@ -60,10 +60,10 @@ case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "  note: $BINDIR isn't on your PATH 
 # 3. bh_open helpers into browser-harness ───────────────────────────────────────
 # browser-harness auto-loads <workspace>/agent_helpers.py on every call; we append our
 # bh_open/bh_list/bh_switch_tab helpers there so they exist on the first run — no agent
-# installs the recipe by hand. The workspace location moved between versions: 0.1.1+ load
-# from ${BH_AGENT_WORKSPACE:-~/agent-workspace}; ≤0.1.0 loads from a source checkout's
-# agent-workspace/. We append to whichever apply, so the helpers load on either version
-# and on packaged (pip/uv) installs. Append-once: skip if bh_open is already present.
+# installs the recipe by hand. The workspace location varies by version/install (≤0.1.0:
+# <repo>/agent-workspace; 0.1.1+: ~/.config/browser-harness/agent-workspace; or whatever
+# BH_AGENT_WORKSPACE points at) — so instead of guessing, we ASK browser-harness itself
+# where it loads from via its own python (helpers.AGENT_WORKSPACE). Append-once.
 if ! command -v browser-harness >/dev/null 2>&1; then
   echo "ERROR: browser-harness not found on PATH — can't install the bh_open helpers." >&2
   echo "  Install it first (https://github.com/browser-use/browser-harness), then re-run." >&2
@@ -81,10 +81,15 @@ install_helpers_into() {  # $1 = workspace dir; appends our helpers once
     echo "✓ installed bh_open helpers → $dst"
   fi
 }
-# (a) the workspace browser-harness 0.1.1+ loads from (honours BH_AGENT_WORKSPACE)
-WS_NEW="${BH_AGENT_WORKSPACE:-$HOME/agent-workspace}"
+# (a) the workspace browser-harness ACTUALLY loads from — ask it via its own python
+# (the CLI's shebang points at it); helpers.AGENT_WORKSPACE honours BH_AGENT_WORKSPACE and
+# resolves the right default on every version. Fall back to known defaults if the query fails.
+WS_NEW=""
+BHPY="$(head -1 "$(command -v browser-harness)" 2>/dev/null | sed 's/^#!//;s/ .*//')"
+[ -n "$BHPY" ] && [ -x "$BHPY" ] && WS_NEW="$("$BHPY" -c 'from browser_harness.helpers import AGENT_WORKSPACE; print(AGENT_WORKSPACE)' 2>/dev/null)"
+[ -z "$WS_NEW" ] && WS_NEW="${BH_AGENT_WORKSPACE:-$HOME/.config/browser-harness/agent-workspace}"
 install_helpers_into "$WS_NEW"
-# (b) a source checkout's agent-workspace, if present (browser-harness ≤ 0.1.0)
+# (b) a source checkout's agent-workspace, if present (editable/dev installs)
 BH_DIR="${BROWSER_HARNESS_DIR:-}"
 if [ -z "$BH_DIR" ]; then
   for c in "$HOME/Developer/browser-harness" "$HOME/browser-harness"; do
