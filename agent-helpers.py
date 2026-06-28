@@ -15,7 +15,52 @@
 
 import json
 import os
-from browser_harness.helpers import cdp, _send, goto_url, wait_for_load
+from browser_harness.helpers import cdp as _real_cdp, _send, goto_url, wait_for_load
+
+
+# ── auto-home: group-aware attach, from the helper side ──────────────────────────
+# A stock browser-harness daemon attaches to the FIRST real page in the whole (shared)
+# browser at startup — possibly another session's tab. So a raw cdp()/page_info()/js()
+# BEFORE the first bh_open() could read or act on a neighbour's tab. We can't patch the
+# daemon, but browser-harness MERGES this file into its helpers namespace, so defining
+# cdp() here overrides it — and every helper that routes through cdp (page_info, js,
+# goto_url, new_tab, bh_open, …) goes through ours. We use that to home onto THIS
+# session's own tab on the first cdp of a fresh daemon — recreating group-aware attach
+# without forking browser-harness.
+_homed = False
+
+
+def cdp(*args, **kwargs):
+    global _homed
+    if not _homed:
+        _homed = True              # set BEFORE homing so re-entrant cdp() is a plain passthrough
+        try: _hb_home()
+        except Exception: pass     # a home failure must never break cdp()
+    return _real_cdp(*args, **kwargs)
+
+
+def _hb_home():
+    # Home the daemon onto this session's own tab, ONCE per daemon (keyed on its pid) so we
+    # never clobber the agent's current-tab choice on later calls. Grouped sessions only.
+    if not _session_id():
+        return
+    pid = (_send({"meta": "ping"}) or {}).get("pid")
+    if not pid:
+        return
+    mark = os.path.expanduser(f"~/.config/horse-browser/homed/{os.environ.get('BU_NAME', 'default')}.{pid}")
+    if os.path.exists(mark):
+        return
+    own = sorted((t for t in bh_list() if t.get("targetId")),
+                 key=lambda t: t.get("lastAccessed") or 0, reverse=True)
+    if own:
+        bh_switch_tab(own[0]["targetId"])   # attach to my most-recently-used existing tab
+    else:
+        bh_open("about:blank")              # no tab yet → create + home a blank in my group
+    try:
+        os.makedirs(os.path.dirname(mark), exist_ok=True)
+        open(mark, "w").close()
+    except Exception:
+        pass
 
 
 def ext_call(fn, *args):

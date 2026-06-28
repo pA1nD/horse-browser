@@ -111,7 +111,8 @@ if command -v browser-harness >/dev/null 2>&1; then
   read -r -d '' check <<'PY' || true
 import browser_harness.helpers as _h
 from browser_harness.helpers import cdp
-if not hasattr(_h, "bh_open"):           # our helpers didn't load from the workspace we appended to
+# our helpers must have loaded AND overridden cdp (so auto-home is active), not just added bh_open
+if not hasattr(_h, "bh_open") or getattr(_h.cdp, "__module__", "") != "browser_harness_agent_helpers":
     print("NOHELPERS"); raise SystemExit(0)
 sw = next((t["targetId"] for t in cdp("Target.getTargets")["targetInfos"]
            if t.get("type") == "service_worker"
