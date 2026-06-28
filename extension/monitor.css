@@ -60,6 +60,10 @@ button { font: inherit; color: inherit; }
   background: var(--panel); border-right: 1px solid var(--line-soft); overflow: hidden;
   transition: flex-basis .3s cubic-bezier(.4, 0, .2, 1), width .3s cubic-bezier(.4, 0, .2, 1); }
 body.collapsed #sidebar { flex-basis: 60px; width: 60px; }
+/* fully hidden: the panel is removed entirely. Its collapsed/expanded width is
+   kept (only the class differs), so revealing restores that state. The floating
+   horse is the only thing left on screen. */
+body.sb-hidden #sidebar { flex-basis: 0; width: 0; border-right-width: 0; }
 
 .sb-head { display: flex; align-items: center; gap: 9px; padding: 13px 12px 11px;
   border-bottom: 1px solid var(--line-soft); transition: padding .3s cubic-bezier(.4, 0, .2, 1); }
@@ -78,8 +82,8 @@ body.collapsed .word { opacity: 0; }
   flex: 0 0 auto; transition: background .12s, color .12s, border-color .12s, opacity .16s ease; }
 .icon-btn:hover { background: var(--card-hi); color: var(--text); border-color: var(--line); }
 .icon-btn svg { width: 14px; height: 14px; display: block; }
-/* collapse keeps the header a row so the logo stays put; only the chevron fades */
-body.collapsed #collapse { opacity: 0; pointer-events: none; }
+/* collapse keeps the header a row so the logo stays put; the buttons fade */
+body.collapsed #collapse, body.collapsed #hide { opacity: 0; pointer-events: none; }
 
 .spacer { flex: 1; }
 .live { display: inline-flex; align-items: center; gap: 6px; letter-spacing: .04em;
@@ -173,8 +177,19 @@ body.collapsed #gridsel { display: none; }
 /* ── stage / wall ─────────────────────────────────────────────────────── */
 #stage { position: relative; flex: 1; min-width: 0; background: var(--bg); }
 
-#grid { position: absolute; inset: 0; display: grid; gap: 3px;
-  justify-content: center; align-content: center; }
+/* floating horse — shown only when the panel is hidden; click to reveal it.
+   Fixed over the bottom-left of the wall, where the panel lives. */
+.reveal { position: fixed; left: 16px; bottom: 16px; z-index: 50;
+  width: 40px; height: 40px; padding: 0; border-radius: 11px; display: none;
+  place-items: center; cursor: pointer; background: var(--brand); color: #fff;
+  font-size: 21px; line-height: 1; border: 1px solid rgba(0,0,0,.25);
+  box-shadow: 0 4px 14px rgba(0,0,0,.4); transition: transform .14s ease, box-shadow .14s ease; }
+body.sb-hidden .reveal { display: grid; animation: revealIn .22s ease both; }
+.reveal:hover { transform: translateY(-2px); box-shadow: 0 7px 20px rgba(0,0,0,.5); }
+.reveal:active { transform: translateY(0); }
+@keyframes revealIn { from { opacity: 0; transform: translateY(10px) scale(.9); } to { opacity: 1; transform: none; } }
+
+#grid { position: absolute; inset: 0; display: grid; gap: 3px; }
 
 .pane { --accent: var(--faint); position: relative; overflow: hidden; min-width: 0; min-height: 0;
   background: #000; cursor: pointer; border-radius: 3px; animation: paneIn .3s ease both; }

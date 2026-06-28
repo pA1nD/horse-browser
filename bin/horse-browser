@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# horse-browser — ensure the dedicated agent browser is running.
+# horse-browser — start the dedicated agent browser, and optionally drive it.
 #
-# Idempotent: no-op if CDP is already up on the port; otherwise launches the
-# browser (dedicated profile + tab-grouper extension) and BLOCKS until CDP is
-# ready. So callers can run this and then immediately drive the browser.
+# Two modes, chosen automatically from stdin:
+#   • bare    `horse-browser`             → ensure the browser is up (+ self-heal), exit.
+#   • driver  `horse-browser <<'PY' … PY` → ensure it's up, then run the script through
+#             browser-harness against it. A drop-in for `browser-harness` that always
+#             pre-flights the browser first. Args forward too, e.g. `horse-browser --doctor`.
 #
-# Config is written by install.sh to ~/.config/horse-browser/config. Env vars
-# override it: HORSE_BROWSER_BIN, HORSE_BROWSER_PORT, HORSE_BROWSER_PROFILE.
+# Driver mode sets BU_CDP_URL itself, so the CDP port is owned entirely by this tool —
+# callers never hardcode it. Change PORT in the config and the whole fleet follows.
+#
+# Idempotent. Config is written by install.sh to ~/.config/horse-browser/config.
+# Env vars override it: HORSE_BROWSER_BIN, HORSE_BROWSER_PORT, HORSE_BROWSER_PROFILE.
 set -euo pipefail
 
 CONFIG="$HOME/.config/horse-browser/config"
@@ -18,26 +23,151 @@ PROFILE="${HORSE_BROWSER_PROFILE:-${PROFILE:-$HOME/.config/horse-browser/profile
 BIN="${HORSE_BROWSER_BIN:-${BROWSER_BIN:-}}"
 EXT="${EXTENSION_DIR:-}"
 
+# Capture a script ONLY when stdin is a heredoc / file / pipe (a regular file or a
+# FIFO) — those always reach EOF, so the read can't block. A bare invocation's stdin
+# is a tty, /dev/null, or the caller's open socket (none of which is -f/-p), so we
+# never read — and so never hang — when there's no script to run.
+script=""
+if [ -f /dev/fd/0 ] || [ -p /dev/fd/0 ]; then script="$(cat)"; fi
+# Driver mode = a script on stdin OR args to forward to browser-harness.
+PASSTHROUGH=
+if [ -n "$script" ] || [ "$#" -gt 0 ]; then PASSTHROUGH=1; fi
+
+# Pre-flight info goes to stdout in bare mode, but to stderr in driver mode so the
+# script's stdout stays pure browser-harness output.
+say() { if [ -n "$PASSTHROUGH" ]; then echo "$@" >&2; else echo "$@"; fi; }
+
 cdp_up() { curl -sf "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
 
-if cdp_up; then
-  echo "horse-browser: already up on :$PORT"
-  exit 0
-fi
+# ── self-heal: GPU-process wedge after macOS sleep/wake ──────────────────────
+# After the machine or an external display sleeps, Chrome for Testing's GPU process
+# can get stuck in the frame-present path and never re-acquire its window-server
+# surface on wake. The renderer keeps running — JS, timers, non-render CDP all work —
+# but NOTHING paints: the window is frozen and Page.captureScreenshot hangs forever.
+# Stable Chrome/Brave auto-recover via a Finch seed + GPU watchdog; Chrome for Testing
+# (Null variations seed) does not, so the wedge is permanent until the GPU process is
+# restarted. RECOVERY (proven, non-destructive — no tabs/data lost): kill ONLY this
+# profile's GPU child; Chrome respawns it and the compositor rebuilds. So every
+# `horse-browser` invocation probes paint and heals a frozen browser automatically.
 
-if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
-  echo "horse-browser: no browser configured (BROWSER_BIN missing or not executable)." >&2
-  echo "  Run the repo's ./install.sh first, or set HORSE_BROWSER_BIN." >&2
-  exit 1
-fi
+# gpu_healthy [timeout]: 0 = paints fine, 1 = wedged (screenshot hangs), 2 = can't
+# tell. Probes with a 1x1 Page.captureScreenshot — it needs a composited frame, so
+# it hangs exactly when the GPU is wedged — over a dependency-free stdlib websocket.
+gpu_healthy() {
+  python3 - "$PORT" "${1:-5}" <<'PY'
+import sys, os, json, socket, base64, struct, urllib.request
+port, timeout = sys.argv[1], float(sys.argv[2])
+def http_json(p):
+    return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}{p}", timeout=4))
+def ws_connect(path):
+    s = socket.create_connection(("127.0.0.1", int(port)), timeout=5)
+    key = base64.b64encode(os.urandom(16)).decode()
+    s.sendall((f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+               "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        c = s.recv(1024)
+        if not c: raise ConnectionError("handshake closed")
+        buf += c
+    if b" 101 " not in buf.split(b"\r\n", 1)[0]: raise ConnectionError("no upgrade")
+    return s
+def ws_send_text(s, payload):
+    d = payload.encode(); n = len(d); m = os.urandom(4); h = bytearray([0x81])
+    if n < 126: h.append(0x80 | n)
+    elif n < 65536: h.append(0x80 | 126); h += struct.pack(">H", n)
+    else: h.append(0x80 | 127); h += struct.pack(">Q", n)
+    h += m; s.sendall(bytes(h) + bytes(b ^ m[i % 4] for i, b in enumerate(d)))
+def ws_recv_frame(s):
+    def rd(n):
+        b = b""
+        while len(b) < n:
+            c = s.recv(n - len(b))
+            if not c: raise ConnectionError("closed")
+            b += c
+        return b
+    ln = rd(2)[1] & 0x7f
+    if ln == 126: ln = struct.unpack(">H", rd(2))[0]
+    elif ln == 127: ln = struct.unpack(">Q", rd(8))[0]
+    return rd(ln)
+try:
+    pages = [t for t in http_json("/json/list")
+             if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
+    if not pages: sys.exit(2)
+    s = ws_connect("/devtools/" + pages[0]["webSocketDebuggerUrl"].split("/devtools/", 1)[1])
+except Exception:
+    sys.exit(2)
+req = json.dumps({"id": 1, "method": "Page.captureScreenshot",
+                  "params": {"format": "png",
+                             "clip": {"x": 0, "y": 0, "width": 1, "height": 1, "scale": 1}}})
+try:
+    ws_send_text(s, req); s.settimeout(timeout)
+    while True:
+        if json.loads(ws_recv_frame(s)).get("id") == 1: sys.exit(0)  # any reply = GPU alive
+except (socket.timeout, TimeoutError):
+    sys.exit(1)   # no frame within timeout = wedged
+except Exception:
+    sys.exit(2)
+PY
+}
 
-# Pin the extension's toolbar button. Pinned state lives in the profile's
-# Preferences (extensions.pinned_extensions); Chrome owns that file, so we only touch it
-# here — while the browser is stopped. The unpacked extension's id is a hash of
-# its absolute path, so we compute it rather than hardcode. Creates Preferences
-# if absent, so a first install is pinned too. (Re-pins each launch by design.)
-if [ -n "$EXT" ] && command -v python3 >/dev/null 2>&1; then
-  python3 - "$PROFILE/Default/Preferences" "$EXT" <<'PY' || true
+# heal_gpu: restart ONLY this profile's wedged GPU process; Chrome respawns it.
+heal_gpu() {
+  local pids
+  pids=$(ps -ww -o pid,command -ax | grep -- "--type=gpu-process" \
+           | grep -F -- "--user-data-dir=$PROFILE" | grep -v grep | awk '{print $1}') || true
+  if [ -z "$pids" ]; then
+    echo "horse-browser: GPU wedged but no matching GPU process found — quit the browser and re-run." >&2
+    return 1
+  fi
+  echo "horse-browser: GPU wedged after sleep — restarting GPU process ($pids); Chrome will respawn it." >&2
+
+  # One-line record of each heal, so leaving the browser running quietly tracks how
+  # often the wedge actually fires. No polling daemon.
+  HEAL_LOG="${HORSE_BROWSER_HEAL_LOG:-$HOME/.config/horse-browser/heal.log}"
+  mkdir -p "$(dirname "$HEAL_LOG")" 2>/dev/null || true
+  printf '%s\twedge-healed\tgpu_pid=%s\n' \
+    "$(date '+%Y-%m-%dT%H:%M:%S%z')" "${pids//$'\n'/,}" >> "$HEAL_LOG" 2>/dev/null || true
+
+  # shellcheck disable=SC2086
+  kill $pids 2>/dev/null || true
+  for _ in $(seq 1 15); do
+    sleep 1
+    cdp_up || continue
+    if gpu_healthy 6; then echo "horse-browser: GPU recovered on :$PORT" >&2; return 0; fi
+  done
+  echo "horse-browser: GPU did not recover — quit the browser and re-run horse-browser." >&2
+  return 1
+}
+
+# ensure_browser: bring the browser up (launching if needed) and self-heal a GPU
+# wedge. Returns 0 when CDP is live and painting; non-zero if it can't recover.
+ensure_browser() {
+  if cdp_up; then
+    say "horse-browser: already up on :$PORT"
+    local rc=0
+    gpu_healthy 6 || rc=$?
+    if [ "$rc" = 1 ]; then heal_gpu || return 1; fi   # wedged — restart the GPU process
+    return 0                                          # 0 = paints fine, 2 = no page to probe
+  fi
+
+  if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
+    echo "horse-browser: no browser configured (BROWSER_BIN missing or not executable)." >&2
+    echo "  Run the repo's ./install.sh first, or set HORSE_BROWSER_BIN." >&2
+    return 1
+  fi
+
+  # Seed profile defaults that make this feel like a dedicated agent browser: pin the
+  # extension's toolbar button (extensions.pinned_extensions), switch on the vertical
+  # (left) tab strip (vertical_tabs), turn off "save password?" popups (they steal focus
+  # and aren't gated by focus emulation), and skip the confirm dialog when closing/
+  # removing/deleting a tab group (it would block an agent mid-cleanup). All live in the
+  # profile's Preferences, which Chrome owns — so we only touch it here, while the browser
+  # is stopped. The unpacked extension's id is a hash of its absolute path, so we compute
+  # it. Creates Preferences if absent, so a fresh install gets them all. (Pin is re-asserted
+  # each launch; the rest are set-if-absent, so a user who changes them keeps their choice.)
+  if [ -n "$EXT" ] && command -v python3 >/dev/null 2>&1; then
+    python3 - "$PROFILE/Default/Preferences" "$EXT" <<'PY' || true
 import hashlib, json, os, sys
 pref, ext = sys.argv[1], sys.argv[2]
 eid = "".join(chr(ord("a") + int(c, 16)) for c in hashlib.sha256(ext.encode()).hexdigest()[:32])
@@ -50,31 +180,68 @@ tb = d.setdefault("extensions", {}).get("pinned_extensions")
 if not isinstance(tb, list): tb = []
 if eid not in tb: tb.append(eid)
 d["extensions"]["pinned_extensions"] = tb
+# Default a fresh profile to the vertical (left) tab strip — the dedicated "agent
+# browser" feel. Set-if-absent, so a user who turns it off keeps it off.
+if "vertical_tabs" not in d:
+    d["vertical_tabs"] = {"enabled": True, "collapsed_state": False,
+                          "uncollapsed_width": 240, "enabled_first_time": True}
+# Agent-browser defaults (set-if-absent, so a user can re-enable them):
+d.setdefault("credentials_enable_service", False)   # no "save password?" popups
+_tg = d.setdefault("tab_groups", {}).setdefault("deletion", {})
+for _k in ("skip_dialog_on_close_tab", "skip_dialog_on_delete", "skip_dialog_on_remove_tab"):
+    _tg.setdefault(_k, True)                         # no confirm dialog closing a tab group
 json.dump(d, open(pref, "w"))
 PY
+  fi
+
+  # NB: the post-sleep freeze is the GPU-process wedge healed above, NOT occlusion
+  # throttling — the old keep-alive flags (--disable-backgrounding-occluded-windows,
+  # --disable-renderer-backgrounding, --disable-background-timer-throttling,
+  # --disable-features=CalculateNativeWinOcclusion) do NOT prevent it (verified), and
+  # Page.captureScreenshot forces a frame on demand regardless, so they're not set.
+  args=( --remote-debugging-port="$PORT" --user-data-dir="$PROFILE"
+         --test-type             # suppresses the "unsupported command-line flag" infobar
+         --disable-infobars      # hides the Chrome-for-Testing infobar (per Playwright's chromiumSwitches)
+         --remote-allow-origins=* # lets the in-browser Monitor page open the CDP socket (:9223)
+         --no-first-run --no-default-browser-check )
+  [ -n "$EXT" ] && args+=( --load-extension="$EXT" )
+
+  # Launch WITHOUT stealing focus. `open -g` starts the app in the background, so
+  # the window appears but your current app keeps keyboard focus. Falls back to a
+  # direct exec if the binary isn't inside a .app bundle.
+  APP="${BIN%/Contents/MacOS/*}"
+  if [ "$APP" != "$BIN" ] && [ -d "$APP" ]; then
+    open -g -a "$APP" --args "${args[@]}"
+  else
+    "$BIN" "${args[@]}" >/dev/null 2>&1 &
+  fi
+
+  say "horse-browser: launching… (waiting for CDP :$PORT)"
+  for _ in $(seq 1 30); do
+    cdp_up && { say "horse-browser: ready on :$PORT"; return 0; }
+    sleep 1
+  done
+  echo "horse-browser: timed out waiting for CDP :$PORT — check the browser window." >&2
+  return 1
+}
+
+ensure_browser || exit 1
+
+# Driver mode: run the captured script (and/or forwarded args) through browser-harness
+# against our browser. exec replaces this process, so browser-harness inherits the
+# here-string as its stdin exactly as if it had been called directly.
+if [ -n "$PASSTHROUGH" ]; then
+  if ! command -v browser-harness >/dev/null 2>&1; then
+    echo "horse-browser: browser-harness not found on PATH — needed to run a script." >&2
+    echo "  Install browser-harness, or run bare 'horse-browser' just to start the browser." >&2
+    exit 1
+  fi
+  export BU_CDP_URL="http://127.0.0.1:$PORT"
+  if [ -n "$script" ]; then
+    exec browser-harness "$@" <<<"$script"   # feed the captured heredoc as stdin
+  else
+    exec browser-harness "$@"                # args only (e.g. --doctor) — inherit stdin
+  fi
 fi
 
-args=( --remote-debugging-port="$PORT" --user-data-dir="$PROFILE"
-       --test-type             # suppresses the "unsupported command-line flag" infobar
-       --disable-infobars      # hides the Chrome-for-Testing infobar (per Playwright's chromiumSwitches)
-       --remote-allow-origins=* # lets the in-browser Monitor page open the CDP socket (:9223)
-       --no-first-run --no-default-browser-check )
-[ -n "$EXT" ] && args+=( --load-extension="$EXT" )
-
-# Launch WITHOUT stealing focus. `open -g` starts the app in the background, so
-# the window appears but your current app keeps keyboard focus. Falls back to a
-# direct exec if the binary isn't inside a .app bundle.
-APP="${BIN%/Contents/MacOS/*}"
-if [ "$APP" != "$BIN" ] && [ -d "$APP" ]; then
-  open -g -a "$APP" --args "${args[@]}"
-else
-  "$BIN" "${args[@]}" >/dev/null 2>&1 &
-fi
-
-echo "horse-browser: launching… (waiting for CDP :$PORT)"
-for _ in $(seq 1 30); do
-  cdp_up && { echo "horse-browser: ready on :$PORT"; exit 0; }
-  sleep 1
-done
-echo "horse-browser: timed out waiting for CDP :$PORT — check the browser window." >&2
-exit 1
+exit 0

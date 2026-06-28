@@ -39,7 +39,6 @@ const pending = new Map();          // request id → resolver
 const sessionHandlers = new Map();  // CDP sessionId → frame handler
 const panes = new Map();            // targetId → pane (only for tabs currently on the wall)
 let slots = [];                     // slot index → targetId | null  (the persistent wall)
-let frameAspect = 16 / 10;          // live content aspect (w/h), refined from real frames
 
 // Every CDP request times out. Right after a browser restart the freshly-restored
 // renderer sometimes never answers an attach/screencast call; without a timeout
@@ -278,8 +277,6 @@ function draw(pane, b64) {
     const c = pane.canvas;
     if (c.width !== img.naturalWidth) { c.width = img.naturalWidth; c.height = img.naturalHeight; }
     pane.ctx.drawImage(img, 0, 0);
-    const a = img.naturalWidth / img.naturalHeight;
-    if (a > 0.1 && Math.abs(a - frameAspect) / frameAspect > 0.02) { frameAspect = a; scheduleLayout(); }
   };
   img.src = "data:image/jpeg;base64," + b64;
 }
@@ -422,63 +419,63 @@ for (const ev of [chrome.tabs.onCreated, chrome.tabs.onRemoved, chrome.tabs.onUp
 setInterval(reconcile, 1000);
 
 // ── fixed N×N layout ─────────────────────────────────────────────────────────
-// All N×N cells always exist (explicit template-rows/cols), so a tab keeps its
-// cell even when other slots are empty. Cells are sized to the content aspect and
-// the grid is centred, so each pane fills edge-to-edge with no letterbox.
+// The wall is a uniform N×N grid that always FILLS the stage: every cell is an
+// equal fraction (1fr), so a cell's size depends only on the stage size and N —
+// never on what's playing in it. Each feed is letterboxed inside its own cell by
+// the canvas's object-fit:contain, so panes never jump or re-ratio as frames
+// arrive. CSS reflows the 1fr cells on its own as the stage resizes (window
+// resize, sidebar collapse), so there's no per-frame JS layout to drive.
 function layout() {
   const N = +gridSel.value || 2;
-  const gap = 3;
-  const W = grid.clientWidth, H = grid.clientHeight;
-  if (W < 2 || H < 2) return;
-  const ar = frameAspect;
-  const cw = (W - (N - 1) * gap) / N, ch = (H - (N - 1) * gap) / N;
-  if (cw <= 0 || ch <= 0) return;
-  let w = cw, h = cw / ar;
-  if (h > ch) { h = ch; w = ch * ar; }
-  grid.style.gridTemplateColumns = `repeat(${N}, ${Math.floor(w)}px)`;
-  grid.style.gridTemplateRows = `repeat(${N}, ${Math.floor(h)}px)`;
+  grid.style.gridTemplateColumns = `repeat(${N}, 1fr)`;
+  grid.style.gridTemplateRows = `repeat(${N}, 1fr)`;
 }
-let layoutTimer;
-function scheduleLayout() { clearTimeout(layoutTimer); layoutTimer = setTimeout(layout, 120); }
 // persist the grid size across reloads / browser restarts
 const GRID_KEY = "hb-monitor-grid";
 const savedGrid = localStorage.getItem(GRID_KEY);
 if (savedGrid === "2" || savedGrid === "3") gridSel.value = savedGrid;
 gridSel.addEventListener("change", () => { // grid size changes the cap → resize slots
   localStorage.setItem(GRID_KEY, gridSel.value);
+  layout();
   reconcile();
 });
-window.addEventListener("resize", layout);
 
-// ── sidebar collapse (persisted) ─────────────────────────────────────────────
+// ── sidebar collapse + hide (persisted) ──────────────────────────────────────
+// Two independent affordances:
+//   • collapse — shrink between the full panel (248px) and the icon rail (60px);
+//     toggled by the chevron or the logo.
+//   • hide — remove the panel entirely so the wall fills the window; only a
+//     floating horse remains, which reveals it again. The collapsed/expanded
+//     state is kept while hidden, so revealing restores it. ⌘B toggles hide.
 const COLLAPSE_KEY = "hb-monitor-collapsed";
+const HIDDEN_KEY = "hb-monitor-hidden";
 const logoEl = document.querySelector(".logo");
+const hideBtn = document.getElementById("hide");
+const revealBtn = document.getElementById("reveal");
 
-// Re-run layout on every frame for `ms`, so the grid tracks the sidebar width as
-// it animates — panes resize continuously instead of snapping between two sizes.
-let layoutAnim = 0;
-function animateLayout(ms) {
-  cancelAnimationFrame(layoutAnim);
-  const start = performance.now();
-  const step = (now) => {
-    layout();
-    if (now - start < ms) layoutAnim = requestAnimationFrame(step);
-  };
-  layoutAnim = requestAnimationFrame(step);
-}
 function setCollapsed(c) {
   document.body.classList.toggle("collapsed", c);
   localStorage.setItem(COLLAPSE_KEY, c ? "1" : "0");
-  animateLayout(340); // a touch longer than the .3s width transition, to catch the settle
+  // the 1fr cells track the stage width as the sidebar animates — pure CSS, no JS.
 }
+function setHidden(h) {
+  document.body.classList.toggle("sb-hidden", h);
+  localStorage.setItem(HIDDEN_KEY, h ? "1" : "0");
+}
+const isHidden = () => document.body.classList.contains("sb-hidden");
+
 if (localStorage.getItem(COLLAPSE_KEY) === "1") document.body.classList.add("collapsed");
+if (localStorage.getItem(HIDDEN_KEY) === "1") document.body.classList.add("sb-hidden");
+
 collapseBtn.addEventListener("click", () => setCollapsed(!document.body.classList.contains("collapsed")));
 logoEl.addEventListener("click", () => setCollapsed(!document.body.classList.contains("collapsed")));
-// ⌘B / Ctrl+B toggles the sidebar (Chrome-native side-panel shortcut feel)
+hideBtn.addEventListener("click", () => setHidden(true));
+revealBtn.addEventListener("click", () => setHidden(false));
+// ⌘B / Ctrl+B fully hides / reveals the panel (VS Code / Chrome side-panel feel)
 window.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "b" || e.key === "B")) {
     e.preventDefault();
-    setCollapsed(!document.body.classList.contains("collapsed"));
+    setHidden(!isHidden());
   }
 });
 

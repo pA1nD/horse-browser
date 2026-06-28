@@ -72,11 +72,19 @@ Built around **stable slots**: a tab keeps its cell, so the picture never shuffl
 
 ## How agents drive it
 
-`horse-browser` runs a dedicated browser with CDP on `:9223`. Anything that speaks CDP can drive it — [browser-harness](https://github.com/browser-use/browser-harness) is the natural fit:
+`horse-browser` is a drop-in for [browser-harness](https://github.com/browser-use/browser-harness) that brings the dedicated browser up first (launching if down, self-healing a frozen GPU after sleep) and points the harness at it — so agents never touch a port:
 
 ```bash
-horse-browser                            # idempotent: launches if down, no-op if up
-export BU_CDP_URL=http://127.0.0.1:9223  # point your CDP client at it
+horse-browser <<'PY'
+bh_open("https://example.com")   # own colored tab group, no focus steal
+print(page_info())
+PY
+```
+
+It owns the CDP endpoint, so the port lives in exactly one place (its config) — change it there and every agent follows. Under the hood it's just a dedicated browser speaking CDP, so any other CDP client can still attach the classic way:
+
+```bash
+horse-browser && export BU_CDP_URL=http://127.0.0.1:9223   # for an arbitrary CDP client
 ```
 
 Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) rather than bare `goto_url` (which clobbers whoever's focused). The discipline lives in [SKILL.md](SKILL.md) — import it into a `CLAUDE.md` ([see Setup](#teaching-agents-the-discipline)) and agents follow it automatically.
@@ -84,9 +92,8 @@ Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) r
 ## What's inside
 
 - **`extension/`** — MV3 extension: the tab grouper + the Agent Monitor.
-- **`bin/horse-browser`** — idempotent launcher; ensures the browser is up on `:9223`.
-- **`install.sh`** — one-time setup; fetches the browser, registers the launcher + statusline.
-- **`statusline.sh`** — Claude Code statusline; shows `ses:XXXX` = your tab-group label.
+- **`bin/horse-browser`** — the launcher *and* a browser-harness drop-in: ensures the browser is up (self-heals a GPU wedge after sleep), then runs your script against it.
+- **`install.sh`** — one-time setup; fetches the browser, registers the launcher.
 - **`SKILL.md`** — the agent's playbook (the `bh_open` discipline + a helper recipe it self-installs).
 
 A thin, self-contained setup — browser-harness (or anything else speaking CDP) is just a *consumer* on port 9223.

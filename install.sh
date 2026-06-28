@@ -6,8 +6,7 @@
 #      nothing by hand. Override with HORSE_BROWSER_BIN=/path/to/chromium to use
 #      your own Chromium instead.
 #   2. Writes config + symlinks the `horse-browser` launcher onto your PATH.
-#   3. Registers statusline.sh in Claude Code settings (~/.claude/settings.json).
-#   4. Launches the browser for the first time (sign into your apps — logins
+#   3. Launches the browser for the first time (sign into your apps — logins
 #      persist), then smoke-tests the whole chain via browser-harness if present.
 #
 # Env overrides: HORSE_BROWSER_BIN, HORSE_BROWSER_PORT (9223),
@@ -21,7 +20,6 @@ CONFIG_DIR="$HOME/.config/horse-browser"
 CONFIG="$CONFIG_DIR/config"
 CACHE="$HOME/.cache/horse-browser"
 BINDIR="$HOME/.local/bin"
-SETTINGS="$HOME/.claude/settings.json"
 EXT="$HERE/extension"
 
 mkdir -p "$CONFIG_DIR" "$BINDIR" "$CACHE"
@@ -59,20 +57,7 @@ ln -sf "$HERE/bin/horse-browser" "$BINDIR/horse-browser"
 echo "✓ launcher: $BINDIR/horse-browser  (config: $CONFIG)"
 case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "  note: $BINDIR isn't on your PATH — add it so 'horse-browser' resolves";; esac
 
-# 3. statusline ────────────────────────────────────────────────────────────────
-if command -v jq >/dev/null 2>&1; then
-  mkdir -p "$(dirname "$SETTINGS")"
-  [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-  cp "$SETTINGS" "$SETTINGS.bak" 2>/dev/null || true
-  tmp="$(mktemp)"
-  jq --arg cmd "$HERE/statusline.sh" '.statusLine = {type:"command", command:$cmd}' "$SETTINGS" > "$tmp"
-  mv "$tmp" "$SETTINGS"
-  echo "✓ statusline registered in $SETTINGS (previous saved to $SETTINGS.bak)"
-else
-  echo "! jq not found — add to $SETTINGS:  \"statusLine\": {\"type\":\"command\",\"command\":\"$HERE/statusline.sh\"}"
-fi
-
-# 4. bh_open helpers into browser-harness ───────────────────────────────────────
+# 3. bh_open helpers into browser-harness ───────────────────────────────────────
 # browser-harness auto-loads agent-workspace/agent_helpers.py on every call. We
 # append our bh_open/bh_list/bh_switch_tab helpers there so they exist on the
 # FIRST run — no agent has to install the recipe by hand. Append-once: skip if
@@ -82,7 +67,7 @@ fi
 HELPERS_SRC="$HERE/agent-helpers.py"
 BH_DIR="${BROWSER_HARNESS_DIR:-}"
 if [ -z "$BH_DIR" ]; then
-  for c in "$HOME/Developer/browser-harness" "$HOME/pro/browser-harness" "$HOME/browser-harness"; do
+  for c in "$HOME/Developer/browser-harness" "$HOME/browser-harness"; do
     [ -f "$c/agent-workspace/agent_helpers.py" ] && { BH_DIR="$c"; break; }
   done
 fi
@@ -106,10 +91,10 @@ else
   echo "✓ installed bh_open helpers → $HELPERS_DST"
 fi
 
-# 5. first launch + smoke test ─────────────────────────────────────────────────
+# 4. first launch + smoke test ─────────────────────────────────────────────────
 # HORSE_SKIP_LAUNCH=1 skips this whole step — used by the "update" path (re-running
 # install for a fresh pull) where relaunching the browser + a 40s smoke test would
-# be noise. Steps 1–4 (browser fetch, config, launcher, statusline, helpers) still run.
+# be noise. Steps 1–3 (browser fetch, config, launcher, helpers) still run.
 if [ -n "${HORSE_SKIP_LAUNCH:-}" ]; then
   echo "✓ setup refreshed (skipped launch/smoke-test: HORSE_SKIP_LAUNCH set)"
   echo "  Restart to pick up changes:  horse-browser"

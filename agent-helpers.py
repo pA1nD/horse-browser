@@ -40,11 +40,21 @@ def _label():
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "")[-4:]
 
 
+def _session_id():
+    # The FULL session id — passed to the extension so the browser derives the tab
+    # group's codename (emoji + colour + last-4) itself. Passing the whole id (not just
+    # the last-4) lets any companion tool that renders the same codename — a terminal
+    # statusline, a dashboard — match this group byte-for-byte.
+    return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+
+
 def bh_switch_tab(target_id):
     # Drop-in replacement for helpers.switch_tab that does NOT call
     # Target.activateTarget (which fires [NSApp activate] on macOS and yanks
-    # the browser over your current app). Tab-strip activation goes through the
-    # extension; focus emulation makes the page believe it's foregrounded.
+    # the browser over your current app) AND does NOT change the window's visible
+    # tab: focus emulation lets us drive it fully in the background (navigate,
+    # click, screenshot), so concurrent agents never flip each other's view. The
+    # horse-browser monitor surfaces the busiest tabs for follow-along.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
@@ -52,21 +62,74 @@ def bh_switch_tab(target_id):
     cdp("Emulation.setFocusEmulationEnabled", enabled=True)
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
-    ext_call("activateTab", target_id)
     return sid
 
 
+_hb_reported = False  # surface the group's open tabs once per browser-harness process
+
+
+def _tab_report(tabs):
+    # Once per process, tell the agent which tabs its session group has open — on
+    # stderr, so it never pollutes a script's stdout. Always reports the count; when
+    # a lot have gone idle, adds a nudge to close what's no longer needed (agents
+    # accumulate tabs otherwise). Tune via HORSE_BROWSER_TAB_NUDGE (default 5) and
+    # HORSE_BROWSER_TAB_IDLE_MIN (default 10); set TAB_NUDGE to a huge number to mute.
+    global _hb_reported
+    if _hb_reported:
+        return
+    _hb_reported = True
+    try:
+        import time, sys
+        if not tabs:
+            return
+        idle_min = float(os.environ.get("HORSE_BROWSER_TAB_IDLE_MIN", "10"))
+        nudge_at = int(os.environ.get("HORSE_BROWSER_TAB_NUDGE", "5"))
+        now = time.time() * 1000
+        stale = sum(1 for t in tabs
+                    if t.get("lastAccessed") and (now - t["lastAccessed"]) >= idle_min * 60000)
+        line = (f"\U0001F434 horse-browser: {len(tabs)} tab(s) open in your group "
+                f"({stale} idle ≥{int(idle_min)}m)")
+        if stale > nudge_at:
+            line += (" — close what you don't need: "
+                     "cdp('Target.closeTarget', targetId=t['targetId']) per tab (ids via bh_list())")
+        print(line, file=sys.stderr)
+    except Exception:
+        pass
+
+
 def bh_open(url):
-    # background=True on createTarget keeps [NSApp activate] from firing.
-    tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
-    bh_switch_tab(tid)
-    if url != "about:blank":
-        goto_url(url)
-    wait_for_load()
-    if _label():
-        ext_call("groupTab", tid, _label())
+    # Reuse a blank tab already in MY group (e.g. the one the daemon opened on
+    # attach, when this session had no tab yet) instead of leaving it stray; else
+    # mint a fresh background tab. background=True keeps [NSApp activate] from firing.
+    tid = None
+    if _session_id():
+        tabs = bh_list()
+        _tab_report(tabs)   # once per call: surface the group's tabs (+ nudge if hoarding)
+        for t in tabs:
+            if (t.get("url") or "") in ("", "about:blank") and t.get("targetId"):
+                tid = t["targetId"]
+                break
+    created = tid is None
+    if created:
+        tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+    try:
+        # group BEFORE navigating: an open that fails (or a session killed
+        # mid-navigation) still lands in the session group, so bh_list()-based
+        # cleanup can see it instead of leaking an ungrouped about:blank tab.
+        if _session_id() and created:
+            ext_call("groupTab", tid, _session_id())
+        bh_switch_tab(tid)
+        if url != "about:blank":
+            goto_url(url)
+        wait_for_load()
+    except Exception:
+        # don't leak a tab WE created (never close a reused, pre-existing one)
+        if created:
+            try: cdp("Target.closeTarget", targetId=tid)
+            except Exception: pass
+        raise
     return tid
 
 
 def bh_list():
-    return ext_call("listTabs", _label()) or [] if _label() else []
+    return ext_call("listTabs", _session_id()) or [] if _session_id() else []
