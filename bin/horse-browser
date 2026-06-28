@@ -140,6 +140,73 @@ heal_gpu() {
   return 1
 }
 
+# reap_orphan_daemons: stop per-session browser-harness daemons (BU_NAME cc-*) whose
+# anchoring Claude session has exited. Conservative by design: it only touches daemons
+# whose env carries BOTH a cc-* BU_NAME (i.e. one WE named, in driver mode below) and a
+# BH_ANCHOR_PID, and only when that anchor PID is gone — so it never reaps the shared
+# "default" daemon, an explicit BU_NAME lane, or any live session. A browser-harness with
+# the self-reap patch already cleans up its own daemons; this covers a stock one, which
+# otherwise leaks one daemon per ended session. HORSE_BROWSER_REAP_DRYRUN=1 logs only.
+reap_orphan_daemons() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - <<'PY' || true
+import os, sys, signal, subprocess
+def main():
+    dry = bool(os.environ.get("HORSE_BROWSER_REAP_DRYRUN"))
+    def envof(pid):
+        try:
+            out = subprocess.run(["ps", "eww", "-o", "command=", "-p", str(pid)],
+                                 capture_output=True, text=True, timeout=3).stdout
+        except Exception:
+            return {}
+        e = {}
+        for tok in out.split():
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                if k.isupper():
+                    e[k] = v
+        return e
+    def alive(pid):
+        try:
+            os.kill(int(pid), 0); return True
+        except Exception:
+            return False
+    try:
+        pids = subprocess.run(["pgrep", "-f", "browser_harness.daemon"],
+                              capture_output=True, text=True, timeout=3).stdout.split()
+    except Exception:
+        return
+    for pid in pids:
+        e = envof(pid)
+        if not e.get("BU_NAME", "").startswith("cc-"):  # only daemons we per-session-named
+            continue
+        anchor = e.get("BH_ANCHOR_PID")
+        if not anchor or alive(anchor):                  # unverifiable or session live -> keep
+            continue
+        if not dry:
+            try: os.kill(int(pid), signal.SIGTERM)
+            except Exception: continue
+        # log on stderr so it's visible but never pollutes a driver script's stdout
+        print(f"horse-browser: {'would reap' if dry else 'reaped'} orphan daemon "
+              f"pid={pid} {e['BU_NAME']} (anchor {anchor} gone)", file=sys.stderr, flush=True)
+try: main()
+except Exception: pass
+PY
+}
+
+# maybe_reap: run reap_orphan_daemons at most once per interval (cheap stamp-file throttle),
+# so it costs nothing on the hot path. HORSE_BROWSER_NO_REAP=1 disables it entirely.
+maybe_reap() {
+  [ -n "${HORSE_BROWSER_NO_REAP:-}" ] && return 0
+  local stamp="${HORSE_BROWSER_REAP_STAMP:-$HOME/.config/horse-browser/.last-reap}"
+  local interval="${HORSE_BROWSER_REAP_INTERVAL:-600}" now last
+  now=$(date +%s); last=$(cat "$stamp" 2>/dev/null || echo 0)
+  [ $(( now - last )) -lt "$interval" ] && return 0
+  mkdir -p "$(dirname "$stamp")" 2>/dev/null || true
+  echo "$now" > "$stamp" 2>/dev/null || true
+  reap_orphan_daemons
+}
+
 # ensure_browser: bring the browser up (launching if needed) and self-heal a GPU
 # wedge. Returns 0 when CDP is live and painting; non-zero if it can't recover.
 ensure_browser() {
@@ -226,6 +293,7 @@ PY
 }
 
 ensure_browser || exit 1
+maybe_reap   # opportunistically clean up daemons from ended sessions (throttled)
 
 # Driver mode: run the captured script (and/or forwarded args) through browser-harness
 # against our browser. exec replaces this process, so browser-harness inherits the
@@ -237,6 +305,31 @@ if [ -n "$PASSTHROUGH" ]; then
     exit 1
   fi
   export BU_CDP_URL="http://127.0.0.1:$PORT"
+
+  # Per-Claude-session daemon, so concurrent agents never share one daemon and clobber
+  # each other's current tab. browser-harness keys the daemon off BU_NAME; we derive a
+  # per-session one (the same scheme browser-harness uses internally). An explicit
+  # BU_NAME — e.g. a subagent lane — always wins.
+  if [ -z "${BU_NAME:-}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    export BU_NAME="cc-${CLAUDE_CODE_SESSION_ID##*-}"
+  fi
+  # Anchor that daemon to this Claude session's process: a self-reaping browser-harness
+  # exits with the session, and reap_orphan_daemons can clean it up on a stock one. Walk
+  # up to the nearest `claude` ancestor; if not found, leave it unset (reaper skips it).
+  if [ -z "${BH_ANCHOR_PID:-}" ]; then
+    _ap=$$
+    for _ in $(seq 1 12); do
+      _comm=$(ps -o comm= -p "$_ap" 2>/dev/null) || break
+      case "$_comm" in
+        *claude*) export BH_ANCHOR_PID="$_ap"
+                  export BH_ANCHOR_START="$(ps -o lstart= -p "$_ap" 2>/dev/null)"; break ;;
+      esac
+      _pp=$(ps -o ppid= -p "$_ap" 2>/dev/null | tr -d ' ')
+      if [ -z "$_pp" ] || [ "$_pp" -le 1 ]; then break; fi
+      _ap="$_pp"
+    done
+  fi
+
   if [ -n "$script" ]; then
     exec browser-harness "$@" <<<"$script"   # feed the captured heredoc as stdin
   else
