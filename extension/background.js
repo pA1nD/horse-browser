@@ -106,49 +106,34 @@ self.listTabs = async (session) => {
     }));
 };
 
-// Toolbar click → open (or focus) the Agent Monitor — a CCTV grid of every
-// session's live tabs. The monitor page is a normal extension page; it does its
-// own CDP work as a second client on :9223.
+// The Agent Monitor — a CCTV grid of every session's live tabs. It's a normal extension
+// page that does its own CDP work as a second client on :9223. We keep exactly one, pinned
+// as the first tab, "permanently": Chrome already shields pinned tabs from "Close other
+// tabs", and showMonitor() reopens it if it's closed any other way. Defined as a const arrow
+// (not a function declaration) right after MONITOR_URL — both bind reliably in the worker.
 const MONITOR_URL = chrome.runtime.getURL("monitor.html");
-chrome.action.onClicked.addListener(async () => {
-  const existing = await chrome.tabs.query({ url: MONITOR_URL });
-  if (existing.length) {
-    await chrome.tabs.update(existing[0].id, { active: true });
-    await chrome.windows.update(existing[0].windowId, { focused: true });
-  } else {
-    await chrome.tabs.create({ url: MONITOR_URL });
-  }
-});
-
-// Ship the "dedicated agent browser" feel: keep the Agent Monitor as a pinned tab at
-// the front of the strip, always there. Re-asserted whenever the profile starts (or the
-// extension (re)loads); query first so we never duplicate it, and just pin one that's
-// already restored. active:false so it never steals the foreground on launch.
-async function ensureMonitorPinned() {
+const showMonitor = async (focus) => {
   const tabs = await chrome.tabs.query({ url: MONITOR_URL });
-  if (!tabs.length) {
-    await chrome.tabs.create({ url: MONITOR_URL, pinned: true, active: false, index: 0 });
-  } else if (!tabs[0].pinned) {
-    await chrome.tabs.update(tabs[0].id, { pinned: true });
+  if (tabs.length === 0) {
+    await chrome.tabs.create({ url: MONITOR_URL, pinned: true, active: !!focus, index: 0 });
+    return;
   }
-}
-chrome.runtime.onStartup.addListener(ensureMonitorPinned);
-chrome.runtime.onInstalled.addListener(ensureMonitorPinned);
-// Keep the Monitor permanent: if it's closed (e.g. "Close other tabs", or an explicit close),
-// reopen it pinned — unless the whole window is going away. Debounced so a burst of closures
-// coalesces into a single reopen. (Pinned tabs already survive "Close other tabs" in Chrome;
-// this covers the explicit-close case too, so the Monitor is effectively un-closeable.)
-let _reopenTimer;
-chrome.tabs.onRemoved.addListener((_id, info) => {
-  if (info.isWindowClosing) return;
-  clearTimeout(_reopenTimer);
-  _reopenTimer = setTimeout(ensureMonitorPinned, 200);
-});
+  if (!tabs[0].pinned) await chrome.tabs.update(tabs[0].id, { pinned: true });
+  if (focus) {
+    await chrome.tabs.update(tabs[0].id, { active: true });
+    await chrome.windows.update(tabs[0].windowId, { focused: true });
+  }
+  // de-dup: keep one Monitor (a closure burst can briefly mint two before either query returns)
+  for (const t of tabs.slice(1)) { try { await chrome.tabs.remove(t.id); } catch (e) {} }
+};
 
-// First run on a fresh profile (reason "install" — not on updates/restarts): open the
-// horse-browser welcome page so a new user knows what this browser is for.
+chrome.action.onClicked.addListener(() => showMonitor(true));     // toolbar button → focus it
+chrome.runtime.onStartup.addListener(() => showMonitor(false));   // profile start → ensure pinned
+// Closed any other way (explicit close, etc.) → reopen, unless the window itself is going away.
+// Called directly (no setTimeout): chrome.tabs.* keeps the MV3 worker alive to finish; a timer wouldn't.
+chrome.tabs.onRemoved.addListener((_id, info) => { if (!info.isWindowClosing) showMonitor(false); });
 chrome.runtime.onInstalled.addListener((details) => {
-  if (details.reason === "install") {
-    chrome.tabs.create({ url: chrome.runtime.getURL("hello.html"), active: true });
-  }
+  showMonitor(false);                                             // install/update → ensure pinned
+  // First run on a fresh profile only: open the welcome page (not on updates/restarts).
+  if (details.reason === "install") chrome.tabs.create({ url: chrome.runtime.getURL("hello.html"), active: true });
 });
