@@ -57,10 +57,44 @@ def _hb_home():
         cur = None
     if cur and cur in own_ids:
         return                              # already on one of my own tabs — leave it be
-    if own:
-        bh_switch_tab(max(own, key=lambda t: t.get("lastAccessed") or 0)["targetId"])
-    else:
-        bh_open("about:blank")              # no tab yet → create + home a blank in my group
+    if not own:
+        bh_open("about:blank")             # no tab yet → create + home a blank in my group
+        return
+    # Foreign: restore the EXACT tab I last drove (persisted on every bh_switch_tab). agents
+    # drive tabs in the background, so lastAccessed doesn't track which tab is "current" — the
+    # persisted id does. Only if that tab is truly gone do we fall back to the newest own tab.
+    want = _hb_recall()
+    if want and want not in own_ids:
+        import sys
+        print("\U0001F434 horse-browser: the tab you were driving has closed — switched to "
+              "another of your tabs (bh_list() to see them)", file=sys.stderr)
+        want = None
+    if want not in own_ids:
+        want = max(own, key=lambda t: t.get("lastAccessed") or 0)["targetId"]
+    bh_switch_tab(want)
+
+
+def _hb_current_file():
+    return os.path.join(os.path.expanduser("~/.config/horse-browser/current"),
+                        os.environ.get("BU_NAME", "default"))
+
+
+def _hb_remember(target_id):
+    # Persist the tab this session is currently driving, so _hb_home can put us back on the
+    # SAME tab (not a guess) after the daemon drifts onto a foreign tab.
+    try:
+        f = _hb_current_file()
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        open(f, "w").write(target_id or "")
+    except Exception:
+        pass
+
+
+def _hb_recall():
+    try:
+        return (open(_hb_current_file()).read().strip() or None)
+    except Exception:
+        return None
 
 
 def ext_call(fn, *args):
@@ -104,6 +138,7 @@ def bh_switch_tab(target_id):
     except Exception: pass
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
+    _hb_remember(target_id)   # remember the tab I'm now driving, so a drift can restore THIS one
     cdp("Emulation.setFocusEmulationEnabled", enabled=True)
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
