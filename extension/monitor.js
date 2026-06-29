@@ -118,6 +118,8 @@ async function discover() {
       return {
         tabId: t.id, targetId: tgtByTab.get(t.id), title: t.title, url: t.url, host,
         favIconUrl: t.favIconUrl || "", active: !!t.active,
+        groupId: (t.groupId != null && t.groupId >= 0) ? t.groupId : -1,
+        groupTitle: g ? g.title : "",
         color: g ? (GROUP_COLORS[g.color] || "#9aa0a6") : "#5b6470",
         lastActivity: lastActivity.get(t.id),
       };
@@ -202,8 +204,21 @@ function standbyId(slots, agents, byId, now, guard) {
   return null;
 }
 
-// ── sidebar: slot order on top (numbered), divider, then bench by recency ──────
-const tabEls = new Map(); // targetId → entry element
+// ── sidebar: tabs grouped by session — Chrome-style coloured groups ────────────
+// (emoji + code header, a coloured spine, favicon rows). The wall is computed
+// separately; this is display-only. Reorders are minimal so rows don't re-animate.
+const groupEls = new Map(); // groupId → { wrap, name, head, tabsEl }
+const tabEls = new Map();   // targetId → row element
+
+function makeGroup() {
+  const wrap = document.createElement("div");
+  wrap.className = "sb-group";
+  wrap.innerHTML =
+    '<div class="sb-ghead"><span class="sb-gname"></span>' +
+    '<svg class="sb-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4"/></svg></div>' +
+    '<div class="sb-gtabs"></div>';
+  return { wrap, name: wrap.querySelector(".sb-gname"), head: wrap.querySelector(".sb-ghead"), tabsEl: wrap.querySelector(".sb-gtabs") };
+}
 
 function makeEntry(key) {
   const el = document.createElement("div");
@@ -211,8 +226,8 @@ function makeEntry(key) {
   el.dataset.key = key;
   el.innerHTML =
     '<span class="tab-ico"><img alt="" /></span>' +
-    '<span class="tab-body"><span class="tab-title"></span><span class="tab-host"></span></span>' +
-    '<span class="tab-meta"><span class="slot-no"></span><span class="tab-time"></span></span>';
+    '<span class="tab-title"></span>' +
+    '<span class="tab-dot"></span>';
   el.querySelector("img").addEventListener("error", (e) => {
     e.target.removeAttribute("src"); e.target.closest(".tab-ico").classList.remove("has-ico");
   });
@@ -229,45 +244,57 @@ function setIco(el, favIconUrl) {
 }
 
 function renderSidebar(slots, agents, byId, cap) {
-  // slotNo: targetId → 1-based slot number (shown tabs only)
-  const slotNo = new Map();
-  slots.forEach((id, i) => { if (id != null) slotNo.set(id, i + 1); });
-  const shown = slots.filter((id) => id != null).map((id) => byId.get(id)); // slot order
-  const shownSet = new Set(shown.map((a) => a.targetId));
-  const bench = agents.filter((a) => !shownSet.has(a.targetId))
-                      .sort((x, y) => y.lastActivity - x.lastActivity);
-  const order = [...shown, ...bench];
-  const standby = standbyId(slots, agents, byId, Date.now(), HOT_MS);
+  try {
+    // bucket tabs by their session tab-group
+    const groups = new Map(); // gid → { gid, title, color, tabs }
+    for (const a of agents) {
+      if (!groups.has(a.groupId)) groups.set(a.groupId, { gid: a.groupId, title: a.groupTitle || "", color: a.color, tabs: [] });
+      groups.get(a.groupId).tabs.push(a);
+    }
+    const glist = [...groups.values()];
+    for (const g of glist) g.tabs.sort((x, y) => y.lastActivity - x.lastActivity);
+    // stable order by group id (creation order); ungrouped (-1) sinks to the bottom
+    glist.sort((A, B) => (A.gid === -1) - (B.gid === -1) || A.gid - B.gid);
 
-  // drop rows for tabs that vanished
-  const want = new Set(order.map((a) => a.targetId));
-  for (const [k, el] of [...tabEls]) if (!want.has(k)) { el.remove(); tabEls.delete(k); }
+    // drop groups / rows that vanished
+    const liveGids = new Set(glist.map((g) => g.gid));
+    for (const [gid, ge] of [...groupEls]) if (!liveGids.has(gid)) { ge.wrap.remove(); groupEls.delete(gid); }
+    const liveTids = new Set(agents.map((a) => a.targetId));
+    for (const [tid, el] of [...tabEls]) if (!liveTids.has(tid)) { el.remove(); tabEls.delete(tid); }
 
-  order.forEach((a, i) => {
-    let el = tabEls.get(a.targetId);
-    if (!el) { el = makeEntry(a.targetId); tabListEl.appendChild(el); tabEls.set(a.targetId, el); }
-    const n = slotNo.get(a.targetId);
-    el.style.setProperty("--c", a.color);
-    setIco(el, a.favIconUrl);
-    el.querySelector(".tab-title").textContent = a.title || a.host || a.url;
-    el.querySelector(".tab-host").textContent = a.host;
-    el.querySelector(".tab-time").textContent = ago(a.lastActivity);
-    el.querySelector(".slot-no").textContent = n ? n : "";
-    el.classList.toggle("on-grid", !!n);
-    el.classList.toggle("active", (Date.now() - a.lastActivity) < HOT_MS);
-    el.classList.toggle("standby", a.targetId === standby);
-    // cutoff divider: under the last shown row, only when a bench exists below it
-    el.classList.toggle("grid-edge", i === shown.length - 1 && bench.length > 0);
-  });
-  // reorder DOM minimally (moving a node restarts its entrance animation, so a
-  // steady order touches nothing).
-  let node = tabListEl.firstChild;
-  for (const a of order) {
-    const el = tabEls.get(a.targetId);
-    if (node === el) node = node.nextSibling;
-    else tabListEl.insertBefore(el, node);
-  }
-  statTabs.textContent = agents.length;
+    glist.forEach((g) => {
+      let ge = groupEls.get(g.gid);
+      if (!ge) { ge = makeGroup(); groupEls.set(g.gid, ge); }
+      ge.wrap.classList.toggle("ungrouped", g.gid === -1);
+      ge.name.textContent = g.title;
+      ge.head.style.background = g.color;
+      ge.tabsEl.style.boxShadow = "inset 2px 0 0 " + g.color;
+      g.tabs.forEach((a) => {
+        let el = tabEls.get(a.targetId);
+        if (!el) { el = makeEntry(a.targetId); tabEls.set(a.targetId, el); }
+        if (el.parentElement !== ge.tabsEl) ge.tabsEl.appendChild(el);
+        el.style.setProperty("--c", a.color);
+        setIco(el, a.favIconUrl);
+        el.querySelector(".tab-title").textContent = a.title || a.host || a.url;
+        el.classList.toggle("active", (Date.now() - a.lastActivity) < HOT_MS);
+      });
+      // minimal reorder of rows within the group
+      let node = ge.tabsEl.firstChild;
+      for (const a of g.tabs) {
+        const el = tabEls.get(a.targetId);
+        if (node === el) node = node.nextSibling;
+        else ge.tabsEl.insertBefore(el, node);
+      }
+    });
+    // minimal reorder of the groups themselves
+    let gnode = tabListEl.firstChild;
+    for (const g of glist) {
+      const ge = groupEls.get(g.gid);
+      if (gnode === ge.wrap) gnode = gnode.nextSibling;
+      else tabListEl.insertBefore(ge.wrap, gnode);
+    }
+    statTabs.textContent = agents.length;
+  } catch (e) { /* a sidebar hiccup must never break the wall reconcile */ }
 }
 
 // ── screencast panes ─────────────────────────────────────────────────────────
