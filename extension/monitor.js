@@ -227,6 +227,7 @@ function makeEntry(key) {
   el.innerHTML =
     '<span class="tab-ico"><img alt="" /></span>' +
     '<span class="tab-title"></span>' +
+    '<span class="slot-no"></span>' +
     '<span class="tab-dot"></span>';
   el.querySelector("img").addEventListener("error", (e) => {
     e.target.removeAttribute("src"); e.target.closest(".tab-ico").classList.remove("has-ico");
@@ -245,6 +246,9 @@ function setIco(el, favIconUrl) {
 
 function renderSidebar(slots, agents, byId, cap) {
   try {
+    // which wall cell each tab sits in (1-based, matches the pane's slot badge)
+    const slotNo = new Map();
+    slots.forEach((id, i) => { if (id != null) slotNo.set(id, i + 1); });
     // bucket tabs by their session tab-group
     const groups = new Map(); // gid → { gid, title, color, tabs }
     for (const a of agents) {
@@ -276,6 +280,9 @@ function renderSidebar(slots, agents, byId, cap) {
         el.style.setProperty("--c", a.color);
         setIco(el, a.favIconUrl);
         el.querySelector(".tab-title").textContent = a.title || a.host || a.url;
+        const n = slotNo.get(a.targetId);
+        el.classList.toggle("on-wall", n != null);
+        el.querySelector(".slot-no").textContent = n != null ? String(n) : "";
         el.classList.toggle("active", (Date.now() - a.lastActivity) < HOT_MS);
       });
       // minimal reorder of rows within the group
