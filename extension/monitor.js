@@ -117,7 +117,7 @@ async function discover() {
       else if (t.lastAccessed && t.lastAccessed > lastActivity.get(t.id)) lastActivity.set(t.id, t.lastAccessed);
       return {
         tabId: t.id, targetId: tgtByTab.get(t.id), title: t.title, url: t.url, host,
-        favIconUrl: t.favIconUrl || "", active: !!t.active,
+        favIconUrl: t.favIconUrl || "", active: !!t.active, index: t.index,
         groupId: (t.groupId != null && t.groupId >= 0) ? t.groupId : -1,
         groupTitle: g ? g.title : "",
         color: g ? (GROUP_COLORS[g.color] || "#9aa0a6") : "#5b6470",
@@ -250,15 +250,16 @@ function renderSidebar(slots, agents, byId, cap) {
     const slotNo = new Map();
     slots.forEach((id, i) => { if (id != null) slotNo.set(id, i + 1); });
     // bucket tabs by their session tab-group
-    const groups = new Map(); // gid → { gid, title, color, tabs }
+    const groups = new Map(); // gid → { gid, title, color, tabs, minIndex }
     for (const a of agents) {
-      if (!groups.has(a.groupId)) groups.set(a.groupId, { gid: a.groupId, title: a.groupTitle || "", color: a.color, tabs: [] });
-      groups.get(a.groupId).tabs.push(a);
+      if (!groups.has(a.groupId)) groups.set(a.groupId, { gid: a.groupId, title: a.groupTitle || "", color: a.color, tabs: [], minIndex: a.index });
+      const g = groups.get(a.groupId); g.tabs.push(a); if (a.index < g.minIndex) g.minIndex = a.index;
     }
     const glist = [...groups.values()];
-    for (const g of glist) g.tabs.sort((x, y) => y.lastActivity - x.lastActivity);
-    // stable order by group id (creation order); ungrouped (-1) sinks to the bottom
-    glist.sort((A, B) => (A.gid === -1) - (B.gid === -1) || A.gid - B.gid);
+    // tab-strip order, within a group and across groups, so it matches Chrome's own sidebar;
+    // ungrouped (-1) sinks to the bottom
+    for (const g of glist) g.tabs.sort((x, y) => x.index - y.index);
+    glist.sort((A, B) => (A.gid === -1) - (B.gid === -1) || A.minIndex - B.minIndex);
 
     // drop groups / rows that vanished
     const liveGids = new Set(glist.map((g) => g.gid));
