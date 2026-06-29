@@ -10,6 +10,10 @@
 # Driver mode sets BU_CDP_URL itself, so the CDP port is owned entirely by this tool —
 # callers never hardcode it. Change PORT in the config and the whole fleet follows.
 #
+# Subcommands:
+#   horse-browser status            versions (chrome / browser-harness / horse-browser) + state
+#   horse-browser update [--restart] fetch the latest Chrome for Testing; --restart applies it now
+#
 # Idempotent. Config is written by install.sh to ~/.config/horse-browser/config.
 # Env vars override it: HORSE_BROWSER_BIN, HORSE_BROWSER_PORT, HORSE_BROWSER_PROFILE.
 set -euo pipefail
@@ -22,6 +26,7 @@ PORT="${HORSE_BROWSER_PORT:-${PORT:-9223}}"
 PROFILE="${HORSE_BROWSER_PROFILE:-${PROFILE:-$HOME/.config/horse-browser/profile}}"
 BIN="${HORSE_BROWSER_BIN:-${BROWSER_BIN:-}}"
 EXT="${EXTENSION_DIR:-}"
+CACHE="${HORSE_BROWSER_CACHE:-$HOME/.cache/horse-browser}"
 
 # Capture a script ONLY when stdin is a heredoc / file / pipe (a regular file or a
 # FIFO) — those always reach EOF, so the read can't block. A bare invocation's stdin
@@ -207,6 +212,57 @@ maybe_reap() {
   reap_orphan_daemons
 }
 
+# ── status / update ──────────────────────────────────────────────────────────
+_chrome_ver() { echo "${1:-}" | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1; }
+
+hb_status() {
+  local self repo ver running
+  self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
+  repo="$(cd "$(dirname "$self")/.." 2>/dev/null && pwd || true)"
+  ver="$(git -C "$repo" describe --tags --always 2>/dev/null || echo '?')"
+  running="$(curl -s "http://127.0.0.1:$PORT/json/version" 2>/dev/null \
+             | grep -oE '"Browser": *"[^"]*"' | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1)"
+  echo "horse-browser $ver"
+  printf '  %-18s %s\n' "chrome (pinned)"  "$(_chrome_ver "$BIN")"
+  if cdp_up; then printf '  %-18s %s  (live on :%s)\n' "chrome (running)" "${running:-?}" "$PORT"
+  else            printf '  %-18s %s\n'               "chrome (running)" "down"; fi
+  printf '  %-18s %s\n' "browser-harness"  "$(browser-harness --version 2>/dev/null || echo '?')"
+  printf '  %-18s %s\n' "profile"  "$PROFILE"
+  printf '  %-18s %s\n' "config"   "$CONFIG"
+}
+
+hb_update() {
+  command -v npx >/dev/null 2>&1 || { echo "horse-browser: npx (Node) not found — needed to fetch Chrome." >&2; return 1; }
+  local oldver out newbin newver
+  oldver="$(_chrome_ver "$BIN")"
+  echo "horse-browser: resolving the latest Chrome for Testing (chrome@stable)…"
+  out="$(npx -y @puppeteer/browsers install chrome@stable --path "$CACHE")" \
+    || { echo "horse-browser: fetch failed." >&2; return 1; }
+  newbin="$(printf '%s\n' "$out" | grep '^chrome@' | tail -1 | sed 's/^[^ ]* //')"
+  [ -n "$newbin" ] && [ -x "$newbin" ] || { echo "horse-browser: couldn't resolve the new binary." >&2; return 1; }
+  newver="$(_chrome_ver "$newbin")"
+  if [ "$newbin" = "$BIN" ]; then echo "horse-browser: already on the latest stable ($newver)."; return 0; fi
+  python3 - "$CONFIG" "$newbin" <<'PY'
+import os, sys
+cfg, newbin = sys.argv[1], sys.argv[2]
+lines = open(cfg).read().splitlines() if os.path.exists(cfg) else []
+out, seen = [], False
+for l in lines:
+    if l.startswith("BROWSER_BIN="): out.append(f'BROWSER_BIN="{newbin}"'); seen = True
+    else: out.append(l)
+if not seen: out.append(f'BROWSER_BIN="{newbin}"')
+open(cfg, "w").write("\n".join(out) + "\n")
+PY
+  echo "horse-browser: Chrome ${oldver:-?} → $newver  (updated $CONFIG)"
+  if [ "${1:-}" = "--restart" ]; then
+    echo "horse-browser: restarting to apply…"
+    osascript -e 'quit app "Google Chrome for Testing"' >/dev/null 2>&1 || true
+    for _ in $(seq 1 20); do cdp_up || break; sleep 0.5; done
+    exec "$0"   # bare relaunch → re-sources config (new BIN) → launches the new Chrome
+  fi
+  echo "  restart to apply:  quit the browser, then 'horse-browser'  (or: horse-browser update --restart)"
+}
+
 # ensure_browser: bring the browser up (launching if needed) and self-heal a GPU
 # wedge. Returns 0 when CDP is live and painting; non-zero if it can't recover.
 ensure_browser() {
@@ -291,6 +347,12 @@ PY
   echo "horse-browser: timed out waiting for CDP :$PORT — check the browser window." >&2
   return 1
 }
+
+# horse-browser's own subcommands — handled here, never forwarded to browser-harness.
+case "${1:-}" in
+  status) hb_status; exit 0 ;;
+  update) shift; hb_update "$@" && exit 0 || exit 1 ;;
+esac
 
 ensure_browser || exit 1
 maybe_reap   # opportunistically clean up daemons from ended sessions (throttled)
