@@ -70,16 +70,17 @@ if ! command -v browser-harness >/dev/null 2>&1; then
   exit 1
 fi
 HELPERS_SRC="$HERE/agent-helpers.py"
-install_helpers_into() {  # $1 = workspace dir; appends our helpers once
-  local dst="$1/agent_helpers.py"
+HELPERS_MARKER="# ── horse-browser helpers (installed by horse-browser/install.sh) ──"
+install_helpers_into() {  # $1 = workspace dir; (re)syncs our helpers block — idempotent, so
+  local dst="$1/agent_helpers.py"  # re-running install.sh deploys helper UPDATES, not just the first time.
   mkdir -p "$1" 2>/dev/null || return 0
-  if grep -q "def bh_open" "$dst" 2>/dev/null; then
-    echo "✓ bh_open already in $dst"
-  else
-    printf '\n\n# ── horse-browser helpers (installed by horse-browser/install.sh) ──\n' >> "$dst"
-    cat "$HELPERS_SRC" >> "$dst"
-    echo "✓ installed bh_open helpers → $dst"
+  # drop any previously-installed block (marker → EOF), trim trailing blanks, then re-append
+  if [ -f "$dst" ] && grep -qF "$HELPERS_MARKER" "$dst"; then
+    awk -v m="$HELPERS_MARKER" 'index($0,m){exit} {print}' "$dst" \
+      | awk 'NF{last=NR} {b[NR]=$0} END{for(i=1;i<=last;i++)print b[i]}' > "$dst.tmp" && mv "$dst.tmp" "$dst"
   fi
+  { [ -s "$dst" ] && printf '\n\n'; printf '%s\n' "$HELPERS_MARKER"; cat "$HELPERS_SRC"; } >> "$dst"
+  echo "✓ synced bh_open helpers → $dst"
 }
 # (a) the workspace browser-harness ACTUALLY loads from — ask it via its own python
 # (the CLI's shebang points at it); helpers.AGENT_WORKSPACE honours BH_AGENT_WORKSPACE and
