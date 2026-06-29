@@ -134,6 +134,16 @@ async function ensureMonitorPinned() {
 }
 chrome.runtime.onStartup.addListener(ensureMonitorPinned);
 chrome.runtime.onInstalled.addListener(ensureMonitorPinned);
+// Keep the Monitor permanent: if it's closed (e.g. "Close other tabs", or an explicit close),
+// reopen it pinned — unless the whole window is going away. Debounced so a burst of closures
+// coalesces into a single reopen. (Pinned tabs already survive "Close other tabs" in Chrome;
+// this covers the explicit-close case too, so the Monitor is effectively un-closeable.)
+let _reopenTimer;
+chrome.tabs.onRemoved.addListener((_id, info) => {
+  if (info.isWindowClosing) return;
+  clearTimeout(_reopenTimer);
+  _reopenTimer = setTimeout(ensureMonitorPinned, 200);
+});
 
 // First run on a fresh profile (reason "install" — not on updates/restarts): open the
 // horse-browser welcome page so a new user knows what this browser is for.

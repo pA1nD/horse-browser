@@ -34,6 +34,9 @@
   .card b { color: var(--text); font-weight: 600; }
   .foot { text-align: center; color: var(--faint); font-size: 12.5px; margin-top: 34px; }
   .foot .brand { color: var(--brand); font-weight: 600; }
+  .cta { display: inline-block; margin-top: 13px; padding: 7px 15px; border-radius: 9px;
+    background: var(--brand); color: #fff; font-size: 13px; font-weight: 600; border: 0; cursor: pointer; }
+  .cta:hover { filter: brightness(1.1); }
 </style>
 </head>
 <body>
@@ -65,8 +68,29 @@
           <p>Sign into Gmail, GitHub, your dashboards <b>once</b> — every agent inherits those logins. Install any extension, change any setting. It's a normal Chrome profile, yours to set up however helps your agents.</p>
         </div>
       </div>
+      <div class="card">
+        <div class="ico">📺</div>
+        <div>
+          <h2>Watch them — the Agent Monitor</h2>
+          <p>A live wall of every agent's tabs on stable tiles — watch them all at once, no reshuffling, each session in its own colour. The <b>sidebar</b> lists every tab; collapse it to a rail to maximise the wall, and <b>click the 🐴 at the top of the sidebar</b> to expand or collapse it. The Monitor stays pinned as your first tab.</p>
+          <button id="open-monitor" class="cta">Open the Monitor →</button>
+        </div>
+      </div>
     </div>
     <p class="foot">Close this tab whenever — your agents are ready. <span class="brand">🐴 Horse Browser</span></p>
   </main>
+  <script>
+    // "Open the Monitor →" — focus the pinned Monitor tab if it's there, else open it pinned.
+    document.getElementById("open-monitor").addEventListener("click", async () => {
+      const url = chrome.runtime.getURL("monitor.html");
+      const tabs = await chrome.tabs.query({ url });
+      if (tabs.length) {
+        await chrome.tabs.update(tabs[0].id, { active: true });
+        await chrome.windows.update(tabs[0].windowId, { focused: true });
+      } else {
+        await chrome.tabs.create({ url, pinned: true, index: 0 });
+      }
+    });
+  </script>
 </body>
 </html>
