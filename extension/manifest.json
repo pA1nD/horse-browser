@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Agent Tab Grouper",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "Groups CDP-driven automation tabs into a per-session tab group, and serves the Agent Monitor — a live CCTV grid of all sessions' tabs. Driven over CDP via Runtime.evaluate against this extension's service worker.",
   "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
   "background": { "service_worker": "background.js" },
