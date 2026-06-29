@@ -79,18 +79,6 @@
     </div>
     <p class="foot">Close this tab whenever — your agents are ready. <span class="brand">🐴 Horse Browser</span></p>
   </main>
-  <script>
-    // "Open the Monitor →" — focus the pinned Monitor tab if it's there, else open it pinned.
-    document.getElementById("open-monitor").addEventListener("click", async () => {
-      const url = chrome.runtime.getURL("monitor.html");
-      const tabs = await chrome.tabs.query({ url });
-      if (tabs.length) {
-        await chrome.tabs.update(tabs[0].id, { active: true });
-        await chrome.windows.update(tabs[0].windowId, { focused: true });
-      } else {
-        await chrome.tabs.create({ url, pinned: true, index: 0 });
-      }
-    });
-  </script>
+  <script src="hello.js"></script>
 </body>
 </html>
