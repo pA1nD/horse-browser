@@ -11,8 +11,8 @@
 # callers never hardcode it. Change PORT in the config and the whole fleet follows.
 #
 # Subcommands:
-#   horse-browser status            versions (chrome / browser-harness / horse-browser) + state
-#   horse-browser update [--restart] fetch the latest Chrome for Testing; --restart applies it now
+#   horse-browser status   versions (chrome / browser-harness / horse-browser) + state
+#   horse-browser update   fetch the latest Chrome for Testing and restart onto it
 #
 # Idempotent. Config is written by install.sh to ~/.config/horse-browser/config.
 # Env vars override it: HORSE_BROWSER_BIN, HORSE_BROWSER_PORT, HORSE_BROWSER_PROFILE.
@@ -241,8 +241,8 @@ hb_update() {
   newbin="$(printf '%s\n' "$out" | grep '^chrome@' | tail -1 | sed 's/^[^ ]* //')"
   [ -n "$newbin" ] && [ -x "$newbin" ] || { echo "horse-browser: couldn't resolve the new binary." >&2; return 1; }
   newver="$(_chrome_ver "$newbin")"
-  if [ "$newbin" = "$BIN" ]; then echo "horse-browser: already on the latest stable ($newver)."; return 0; fi
-  python3 - "$CONFIG" "$newbin" <<'PY'
+  if [ "$newbin" != "$BIN" ]; then
+    python3 - "$CONFIG" "$newbin" <<'PY'
 import os, sys
 cfg, newbin = sys.argv[1], sys.argv[2]
 lines = open(cfg).read().splitlines() if os.path.exists(cfg) else []
@@ -253,14 +253,19 @@ for l in lines:
 if not seen: out.append(f'BROWSER_BIN="{newbin}"')
 open(cfg, "w").write("\n".join(out) + "\n")
 PY
-  echo "horse-browser: Chrome ${oldver:-?} → $newver  (updated $CONFIG)"
-  if [ "${1:-}" = "--restart" ]; then
-    echo "horse-browser: restarting to apply…"
-    osascript -e 'quit app "Google Chrome for Testing"' >/dev/null 2>&1 || true
-    for _ in $(seq 1 20); do cdp_up || break; sleep 0.5; done
-    exec "$0"   # bare relaunch → re-sources config (new BIN) → launches the new Chrome
+    echo "horse-browser: Chrome ${oldver:-?} → $newver  (updated $CONFIG)"
+  else
+    echo "horse-browser: latest stable is $newver."
   fi
-  echo "  restart to apply:  quit the browser, then 'horse-browser'  (or: horse-browser update --restart)"
+  # Apply it: restart onto the latest, unless the browser is already running that version.
+  local running
+  running="$(curl -s "http://127.0.0.1:$PORT/json/version" 2>/dev/null \
+             | grep -oE '"Browser": *"[^"]*"' | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1)"
+  if [ "$running" = "$newver" ]; then echo "horse-browser: already running $newver — nothing to apply."; return 0; fi
+  echo "horse-browser: restarting onto ${newver}…"
+  osascript -e 'quit app "Google Chrome for Testing"' >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do cdp_up || break; sleep 0.5; done
+  exec "$0"   # bare relaunch → re-sources config (new BIN) → launches $newver
 }
 
 # ensure_browser: bring the browser up (launching if needed) and self-heal a GPU
@@ -351,7 +356,7 @@ PY
 # horse-browser's own subcommands — handled here, never forwarded to browser-harness.
 case "${1:-}" in
   status) hb_status; exit 0 ;;
-  update) shift; hb_update "$@" && exit 0 || exit 1 ;;
+  update) hb_update && exit 0 || exit 1 ;;
 esac
 
 ensure_browser || exit 1
