@@ -99,7 +99,7 @@ Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) r
 
 ## What's inside
 
-- **`extension/`** — MV3 extension: the tab grouper + the Agent Monitor.
+- **`extension/`** — MV3 extension: the tab grouper, the Agent Monitor (sidebar collapsed by default), and a first-run welcome page.
 - **`bin/horse-browser`** — the launcher *and* a browser-harness drop-in: ensures the browser is up (self-heals a GPU wedge after sleep), then runs your script against it. Also `horse-browser status` (versions + state) and `horse-browser update` (fetch the latest Chrome for Testing — it has no auto-updater — and restart onto it).
 - **`install.sh`** — one-time setup; fetches the browser, registers the launcher + helpers.
 - **`claude-md.sh`** — registers horse-browser's guidance in your `~/.claude/CLAUDE.md` (`apply`/`print`/`check`), via a version-proof symlink to the browser-harness SKILL.

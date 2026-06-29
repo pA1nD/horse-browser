@@ -464,7 +464,8 @@ function setHidden(h) {
 }
 const isHidden = () => document.body.classList.contains("sb-hidden");
 
-if (localStorage.getItem(COLLAPSE_KEY) === "1") document.body.classList.add("collapsed");
+// Collapsed by default (maximise the wall); expanded only if the user explicitly chose it.
+if (localStorage.getItem(COLLAPSE_KEY) !== "0") document.body.classList.add("collapsed");
 if (localStorage.getItem(HIDDEN_KEY) === "1") document.body.classList.add("sb-hidden");
 
 collapseBtn.addEventListener("click", () => setCollapsed(!document.body.classList.contains("collapsed")));

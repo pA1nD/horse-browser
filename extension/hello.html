@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🐴 Horse Browser</title>
+<style>
+  :root {
+    --bg: #202124; --card: #2b2c2f; --line: #3c4043;
+    --text: #e8eaed; --dim: #9aa0a6; --faint: #5f6368;
+    --accent: #8ab4f8; --brand: #34a06b;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1100px 560px at 50% -12%, #23311f 0%, var(--bg) 58%);
+    color: var(--text); font-family: var(--font); line-height: 1.55;
+    display: flex; align-items: center; justify-content: center; padding: 56px 24px;
+  }
+  .wrap { width: 100%; max-width: 660px; }
+  .hero { text-align: center; margin-bottom: 40px; }
+  .horse { font-size: 60px; line-height: 1; filter: drop-shadow(0 6px 18px rgba(52,160,107,.45)); }
+  h1 { font-size: 33px; font-weight: 650; letter-spacing: -.02em; margin: 16px 0 8px; }
+  .sub { color: var(--dim); font-size: 16px; }
+  .cards { display: grid; gap: 13px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 19px 22px; display: flex; gap: 16px; align-items: flex-start;
+  }
+  .ico { font-size: 23px; line-height: 1.45; flex: 0 0 auto; }
+  .card h2 { font-size: 15.5px; font-weight: 600; margin-bottom: 4px; }
+  .card p { color: var(--dim); font-size: 14px; }
+  .card b { color: var(--text); font-weight: 600; }
+  .foot { text-align: center; color: var(--faint); font-size: 12.5px; margin-top: 34px; }
+  .foot .brand { color: var(--brand); font-weight: 600; }
+</style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="hero">
+      <div class="horse">🐴</div>
+      <h1>Welcome to Horse Browser</h1>
+      <p class="sub">A real browser — dedicated to your AI agents.</p>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="ico">🤖</div>
+        <div>
+          <h2>It's for your agents</h2>
+          <p>A dedicated Chrome your agents drive over CDP, separate from your daily browser so they never collide with your work.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="ico">🗂️</div>
+        <div>
+          <h2>They open &amp; close tabs</h2>
+          <p>Each agent session gets its own coloured tab group. Click the <b>🐴</b> toolbar button anytime for the <b>Agent Monitor</b> — a live grid of every session's tabs.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="ico">🔑</div>
+        <div>
+          <h2>It's just Chrome</h2>
+          <p>Sign into Gmail, GitHub, your dashboards <b>once</b> — every agent inherits those logins. Install any extension, change any setting. It's a normal Chrome profile, yours to set up however helps your agents.</p>
+        </div>
+      </div>
+    </div>
+    <p class="foot">Close this tab whenever — your agents are ready. <span class="brand">🐴 Horse Browser</span></p>
+  </main>
+</body>
+</html>

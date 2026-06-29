@@ -134,3 +134,11 @@ async function ensureMonitorPinned() {
 }
 chrome.runtime.onStartup.addListener(ensureMonitorPinned);
 chrome.runtime.onInstalled.addListener(ensureMonitorPinned);
+
+// First run on a fresh profile (reason "install" — not on updates/restarts): open the
+// horse-browser welcome page so a new user knows what this browser is for.
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === "install") {
+    chrome.tabs.create({ url: chrome.runtime.getURL("hello.html"), active: true });
+  }
+});
