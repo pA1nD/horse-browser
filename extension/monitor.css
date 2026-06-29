@@ -85,6 +85,11 @@ body.collapsed .word { opacity: 0; }
 /* collapse keeps the header a row so the logo stays put; the buttons fade */
 body.collapsed #collapse, body.collapsed #hide { opacity: 0; pointer-events: none; }
 
+/* help "?" — pinned at the foot of the rail; stays visible in BOTH expanded and collapsed
+   (it's the one affordance that survives collapse, so a new user can always reopen the
+   welcome page). Centred via auto margins; opens hello.html on click. */
+.sb-help { margin: 4px auto 10px; font-size: 14px; font-weight: 700; line-height: 1; color: var(--faint); }
+
 .spacer { flex: 1; }
 .live { display: inline-flex; align-items: center; gap: 6px; letter-spacing: .04em;
   font-size: 11px; color: var(--accent-br); }

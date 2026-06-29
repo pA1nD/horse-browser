@@ -472,6 +472,12 @@ collapseBtn.addEventListener("click", () => setCollapsed(!document.body.classLis
 logoEl.addEventListener("click", () => setCollapsed(!document.body.classList.contains("collapsed")));
 hideBtn.addEventListener("click", () => setHidden(true));
 revealBtn.addEventListener("click", () => setHidden(false));
+// "?" → open the welcome page (same one shown on first install)
+document.getElementById("help").addEventListener("click", () => {
+  const url = chrome.runtime.getURL("hello.html");
+  if (chrome.tabs && chrome.tabs.create) chrome.tabs.create({ url, active: true });
+  else window.open(url, "_blank");
+});
 // ⌘B / Ctrl+B fully hides / reveals the panel (VS Code / Chrome side-panel feel)
 window.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "b" || e.key === "B")) {
