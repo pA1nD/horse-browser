@@ -76,7 +76,7 @@ Sign into Gmail, GitHub, your dashboards, whatever — **once** — and every ag
 
 Click the 🐴 toolbar button for a live **2×2 / 3×3 wall** of screencasts — one tab per cell — so you can watch every agent browse at once on a big screen.
 
-Built around **stable slots**: a tab keeps its cell, so the picture never shuffles under you. Activity lights up *in place* (a green pulse on the tab an agent just acted on) instead of reordering everything; the wall only changes membership when a tab has gone idle and a busier one is waiting. A theme-aware sidebar lists every tab — slot-numbered, recency-ranked, with a cutoff line marking what's on the wall vs. waiting. Click any pane to jump to that tab. Pure read-only over CDP (a *second* client alongside whatever's driving), so it costs the agents nothing.
+Built around **stable slots**: a tab keeps its cell, so the picture never shuffles under you. Activity lights up *in place* (a green pulse on the tab an agent just acted on) instead of reordering everything; the wall only changes membership when a tab has gone idle and a busier one is waiting. A theme-aware sidebar **groups every tab by session** — coloured Chrome-style groups (emoji + code), favicon rows, and a slot number on each on-wall tab so a row maps straight to its preview. Click any pane to jump to that tab. Pure read-only over CDP (a *second* client alongside whatever's driving), so it costs the agents nothing.
 
 ## How agents drive it
 
