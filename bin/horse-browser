@@ -219,7 +219,18 @@ hb_status() {
   local self repo ver running
   self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
   repo="$(cd "$(dirname "$self")/.." 2>/dev/null && pwd || true)"
-  ver="$(git -C "$repo" describe --tags --always 2>/dev/null || echo '?')"
+  ver="$(git -C "$repo" describe --tags 2>/dev/null || true)"
+  # No git checkout (e.g. an `npm i -g` install)? Fall back to package.json's version.
+  if [ -z "$ver" ]; then
+    ver="$(python3 - "$0" <<'PY' 2>/dev/null || true
+import json, os, sys
+root = os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[1])))
+try: print("v" + json.load(open(os.path.join(root, "package.json")))["version"])
+except Exception: pass
+PY
+)"
+  fi
+  ver="${ver:-?}"
   running="$(curl -s "http://127.0.0.1:$PORT/json/version" 2>/dev/null \
              | grep -oE '"Browser": *"[^"]*"' | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1)"
   echo "horse-browser $ver"
@@ -281,7 +292,8 @@ ensure_browser() {
 
   if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
     echo "horse-browser: no browser configured (BROWSER_BIN missing or not executable)." >&2
-    echo "  Run the repo's ./install.sh first, or set HORSE_BROWSER_BIN." >&2
+    echo "  Fetch Chrome for Testing with 'horse-browser update', run the repo's ./install.sh," >&2
+    echo "  or point HORSE_BROWSER_BIN at your own Chromium." >&2
     return 1
   fi
 

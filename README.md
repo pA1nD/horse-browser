@@ -23,7 +23,30 @@ Every other tool hands each agent a *throwaway* browser. But you don't want thro
 
 ## Setup
 
-You don't install this by hand. Hand the repo to your agent and let it do the work — paste into **Claude Code** or **Codex**:
+**Install (macOS, Node 18+):**
+
+```bash
+npm install -g @pa1nd/horse-browser
+```
+
+That fetches a dedicated **Chrome for Testing** (lives alongside your daily browser, never fights it for the dock), puts the `horse-browser` launcher on your PATH, and wires in the extension. Then start it and **sign into your apps once** — those logins persist for every agent:
+
+```bash
+horse-browser        # launches the dedicated browser, no focus steal
+```
+
+To *drive* it, you also need **browser-harness** (a small Python tool horse-browser wraps) — a one-time prereq:
+
+```bash
+uv tool install browser-harness      # or: pipx install browser-harness
+```
+
+Prefer your own Chromium? `export HORSE_BROWSER_BIN=/path/to/chromium` before installing.
+
+<details>
+<summary>Or hand the repo to your agent (clone + <code>./install.sh</code>)</summary>
+
+You don't have to install by hand. Paste into **Claude Code** or **Codex**:
 
 ```text
 Set up https://github.com/pA1nD/horse-browser for me.
@@ -32,7 +55,8 @@ Clone it, run ./install.sh, then add SKILL.md to my CLAUDE.md so you always use
 bh_open to open tabs from now on.
 ```
 
-That's it. `install.sh` fetches a dedicated **Chrome for Testing** (lives alongside your daily browser, never fights it for the dock), puts the `horse-browser` launcher on your PATH, and opens the browser so you can **sign into your apps once** — those logins persist for every agent.
+`install.sh` does the same setup as the npm install, and additionally wires `SKILL.md` into your `CLAUDE.md` (the npm install prints that import line for you to add — see below).
+</details>
 
 ### Teaching agents the discipline
 
@@ -56,7 +80,7 @@ It imports both playbooks — horse-browser's, and browser-harness's via a **sta
 
 (Codex users: `~/.codex/AGENTS.md` works the same way.) Either way, the agent loads the `bh_open` discipline automatically from then on.
 
-Prefer your own Chromium? `export HORSE_BROWSER_BIN=/path/to/chromium` before setup.
+> **Installed via npm?** `SKILL.md` lives inside the global package — the installer prints the exact `@…/SKILL.md` line to paste, or find it with `echo "$(npm root -g)/@pa1nd/horse-browser/SKILL.md"`.
 
 ## How it stays out of your way
 

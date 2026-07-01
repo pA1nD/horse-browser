@@ -53,9 +53,15 @@ EXTENSION_DIR="$EXT"
 PORT="$PORT"
 PROFILE="$PROFILE"
 EOF
-ln -sf "$HERE/bin/horse-browser" "$BINDIR/horse-browser"
-echo "✓ launcher: $BINDIR/horse-browser  (config: $CONFIG)"
-case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "  note: $BINDIR isn't on your PATH — add it so 'horse-browser' resolves";; esac
+# When installed via npm (`npm i -g @pa1nd/horse-browser`), npm owns the launcher
+# symlink (package.json "bin") — don't lay down a second, competing one in ~/.local/bin.
+if [ -n "${HORSE_FROM_NPM:-}" ]; then
+  echo "✓ launcher: managed by npm (bin: horse-browser)  (config: $CONFIG)"
+else
+  ln -sf "$HERE/bin/horse-browser" "$BINDIR/horse-browser"
+  echo "✓ launcher: $BINDIR/horse-browser  (config: $CONFIG)"
+  case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "  note: $BINDIR isn't on your PATH — add it so 'horse-browser' resolves";; esac
+fi
 
 # 3. bh_open helpers into browser-harness ───────────────────────────────────────
 # browser-harness auto-loads <workspace>/agent_helpers.py on every call; we append our
@@ -65,8 +71,14 @@ case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "  note: $BINDIR isn't on your PATH 
 # BH_AGENT_WORKSPACE points at) — so instead of guessing, we ASK browser-harness itself
 # where it loads from via its own python (helpers.AGENT_WORKSPACE). Append-once.
 if ! command -v browser-harness >/dev/null 2>&1; then
-  echo "ERROR: browser-harness not found on PATH — can't install the bh_open helpers." >&2
-  echo "  Install it first (https://github.com/browser-use/browser-harness), then re-run." >&2
+  # browser-harness is a separate (Python) prerequisite. In a hand/curl install it's
+  # required up front. Under npm it's a *declared* prereq the user may not have yet — so
+  # warn and finish cleanly (config + Chrome are already in place; re-run setup once
+  # browser-harness is installed to get the bh_open helpers) rather than failing the install.
+  echo "! browser-harness not found on PATH — skipping the bh_open helper sync." >&2
+  echo "  Install it (e.g. 'uv tool install browser-harness'), then re-run setup." >&2
+  [ -n "${HORSE_FROM_NPM:-}" ] && exit 0
+  echo "  (https://github.com/browser-use/browser-harness)" >&2
   exit 1
 fi
 HELPERS_SRC="$HERE/agent-helpers.py"
@@ -102,7 +114,11 @@ fi
 # Keep the stable symlink that ~/.claude/CLAUDE.md's @-import points at aimed at the current
 # (Python-version-specific) packaged SKILL, so the import never rots across reinstalls. We
 # only refresh the symlink — registering the block in CLAUDE.md is opt-in (./claude-md.sh apply).
-"$HERE/claude-md.sh" symlink || echo "  (skipped CLAUDE.md SKILL symlink — see ./claude-md.sh)" >&2
+# Under npm we don't reach into ~/.claude from a silent postinstall — the next-steps
+# note tells the user how to wire SKILL.md into their CLAUDE.md themselves.
+if [ -z "${HORSE_FROM_NPM:-}" ]; then
+  "$HERE/claude-md.sh" symlink || echo "  (skipped CLAUDE.md SKILL symlink — see ./claude-md.sh)" >&2
+fi
 
 # 4. first launch + smoke test ─────────────────────────────────────────────────
 # HORSE_SKIP_LAUNCH=1 skips this whole step — used by the "update" path (re-running
