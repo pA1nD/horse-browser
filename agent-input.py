@@ -215,6 +215,12 @@ _DETECT_JS = r"""
   const q = (s) => document.querySelector(s);
   const txt = (document.body ? document.body.innerText : '').toLowerCase();
   const seen = (...ss) => ss.find(s => q(s));
+  // An image/interactive challenge popup that's OPEN — reCAPTCHA bframe or hCaptcha
+  // challenge iframe. It's a top-document iframe (cross-origin, can't read inside) but
+  // we can see it's visibly expanded. That means a checkbox already escalated to the
+  // perception kind → hard, escalate (don't re-report the checkbox behind it).
+  const pop = q('iframe[src*="recaptcha/api2/bframe"], iframe[src*="hcaptcha.com/captcha"][title*="hallenge"], iframe[title*="recaptcha challenge"]');
+  if (pop) { const pb = pop.getBoundingClientRect(); if (pb.height > 120 && pb.width > 120 && getComputedStyle(pop).visibility !== 'hidden') return {kind:'hard', why:'image challenge popup is open'}; }
   // HARD first — if a perception challenge is present, don't attempt a gesture.
   const hardTxt = /select all|click each|images? (with|containing)|type the (characters|text)|what does this say|rotate|listen and|audio challenge/;
   if (hardTxt.test(txt) || q('table.rc-imageselect-table') || q('.geetest_item_wrap')) return {kind:'hard', why:'image/text/audio challenge'};
