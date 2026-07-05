@@ -260,3 +260,18 @@ def capture_screenshot(path=None, full=False, max_dim=None):
             suffix=".png", dir=str(_bh_ipc._TMP))
         os.close(fd)
     return _real_capture_screenshot(path, full=full, max_dim=max_dim)
+
+
+# ── Tier 2 trusted-input layer — shipped as the sibling horse_input.py ───────────
+# horse-browser splits its managed helpers by concern: THIS file drives tabs (focus-safe
+# open/switch/list, per-call screenshots); horse_input.py does trusted, correct INPUT
+# (real click/key events, easy-challenge gestures). We exec the sibling here so the single
+# "do not edit" loader stub in agent_helpers.py bootstraps both. `_hb_path` is the path to
+# THIS file, set by that stub; horse_input.py sits next to it. Missing/failed → skipped, so
+# tab-driving still works even if the input file didn't ship.
+try:
+    _hb_input = os.path.join(os.path.dirname(_hb_path), "horse_input.py")
+    exec(compile(open(_hb_input).read(), _hb_input, "exec"))
+except Exception as _hb_input_err:
+    import sys as _hb_isys
+    print("horse-browser: couldn't load horse_input.py (%r) — re-run horse-browser's install.sh" % (_hb_input_err,), file=_hb_isys.stderr)

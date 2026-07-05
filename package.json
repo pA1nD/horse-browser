@@ -1,6 +1,6 @@
 {
   "name": "@pa1nd/horse-browser",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publishConfig": {
     "access": "public"
   },
@@ -12,6 +12,7 @@
     "bin",
     "extension",
     "agent-helpers.py",
+    "agent-input.py",
     "scripts",
     "install.sh",
     "claude-md.sh",

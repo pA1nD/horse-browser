@@ -84,6 +84,7 @@ if ! command -v browser-harness >/dev/null 2>&1; then
   exit 1
 fi
 HELPERS_SRC="$HERE/agent-helpers.py"
+INPUT_SRC="$HERE/agent-input.py"   # Tier 2 trusted-input layer → workspace/horse_input.py
 # Legacy marker: pre-0.4.1 installs appended the helpers INLINE under this line, and
 # re-syncs replaced marker→EOF — silently eating anything a user had added below the
 # block. Kept only so those files can be migrated once.
@@ -93,6 +94,7 @@ install_helpers_into() {  # $1 = workspace dir; (re)syncs the helpers — idempo
   local ws="$1" dst="$1/agent_helpers.py"  # re-running install.sh deploys helper UPDATES too.
   mkdir -p "$ws" 2>/dev/null || return 0
   cp "$HELPERS_SRC" "$ws/horse_helpers.py"
+  cp "$INPUT_SRC" "$ws/horse_input.py"   # loaded by horse_helpers.py (chain-exec)
   # one-time migration of a legacy inline block: strip it ONLY on an exact byte match
   # with the shipped source, so user additions below it survive. A modified/unknown
   # block is left in place — harmless, the loader runs after it and its defs win.

@@ -42,6 +42,37 @@ If `horse-browser` isn't on your PATH, the one-time setup hasn't been run — te
 to run the repo's `./install.sh` (fetches the browser, registers the launcher). Don't
 attempt setup yourself.
 
+## Input — use trusted, real events
+
+Drive clicks and typing with **`click(css)`** and **`type_into(css, text)`** (or
+`type_text(text)` into the already-focused field). They fire the same key/mouse events a
+real browser generates, so the page's `keyup`/`input`/`mousedown` listeners actually run —
+submit buttons enable, autocompletes fire, React/Vue state updates, menus open. **Never
+drive a form with `el.value = …` or `el.click()` in `js(...)`**: those fire *no* events, so
+the value or click *looks* applied while the page's logic never ran (disabled submit, dead
+dropdown, stale state). This is **correctness, not just bot-evasion** — plain sites break
+too; the anti-detection win rides along free.
+
+- `click(css)` — trusted mousedown→mouseup→click (+pointer). `click_xy(x, y)` for coords /
+  shadow DOM / cross-iframe (CDP input passes through iframes).
+- `type_into(css, text, clear=?, enter=?)` — real per-char keys, fast. `type_text(text)`
+  types the focused element. `press("Enter"|"Tab"|"Escape"|"Arrow…")` for a named key.
+- Escape hatch: `insert_text_fast(text)` dumps via insertText (no key events) — only for a
+  plain `<textarea>` with no listeners where speed matters.
+- Fast untrusted (`js("el.click()")`) is fine on trivial internal/dev pages, but **always**
+  use trusted input on any **login / signup / checkout**, anything behind a **bot vendor**
+  (Akamai / PerimeterX / DataDome / Cloudflare / hCaptcha / reCAPTCHA), or **after any
+  challenge appeared**.
+
+### Easy challenges: solve them, don't halt
+
+Many "captchas" are just a gesture — **click a checkbox, press-&-hold, slide-to-verify**.
+Do them; don't escalate. With a real fingerprint (always-on) plus a trusted click, the easy
+ones usually clear. Call **`solve_challenge()`** — it classifies the challenge and solves the
+easy kind, or returns `escalate:<why>` for the **perception** kind (identify images, read
+distorted text, rotate, audio) — and *only those* go to the operator. The gesture verbs:
+`press_hold(css, seconds)` and `drag(css, dx=… / to=(x,y))`.
+
 ## Extension
 
 Gives each Claude session its own coloured tab group (label = last 4 chars of `CLAUDE_CODE_SESSION_ID`; subagents inherit it and share the group). Keeps RAM and tab-strip clutter from bleeding across parallel sessions, and lets you reason about "my tabs" as a real set. `chrome.tabGroups` is extension-only — no CDP equivalent — which is why an extension exists at all.
