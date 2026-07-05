@@ -1,14 +1,28 @@
 {
   "manifest_version": 3,
   "name": "Agent Tab Grouper",
-  "version": "0.5.12",
-  "description": "Groups CDP-driven automation tabs into a per-session tab group, and serves the Agent Monitor — a live CCTV grid of all sessions' tabs. Driven over CDP via Runtime.evaluate against this extension's service worker.",
+  "version": "0.6.0",
+  "description": "Groups CDP-driven automation tabs into a per-session tab group and serves the Agent Monitor (a live CCTV grid). Also carries Tier 1 realness: an always-on Chrome-real fingerprint (UA-CH + sec-ch-ua) and a passive per-tab network log. Driven over CDP via Runtime.evaluate against this extension's service worker.",
   "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
   "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["realchrome.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      { "id": "realness_headers", "enabled": true, "path": "rules.json" }
+    ]
+  },
   "action": {
     "default_title": "Open Agent Monitor",
     "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
   },
-  "permissions": ["tabs", "tabGroups", "debugger", "alarms"],
-  "host_permissions": ["http://127.0.0.1:9223/*"]
+  "permissions": ["tabs", "tabGroups", "debugger", "alarms", "webRequest", "declarativeNetRequest"],
+  "host_permissions": ["http://*/*", "https://*/*"]
 }

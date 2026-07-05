@@ -137,3 +137,42 @@ chrome.runtime.onInstalled.addListener((details) => {
   // First run on a fresh profile only: open the welcome page (not on updates/restarts).
   if (details.reason === "install") chrome.tabs.create({ url: chrome.runtime.getURL("hello.html"), active: true });
 });
+
+// ── Passive network monitor ── Tier 1 realness debug aid. chrome.webRequest observes every
+// request WITHOUT touching the page — no window.fetch/XHR wrapper, which would itself be a
+// fingerprint tell (a non-native fetch.toString). We buffer the last N *outcomes* per tab
+// (onCompleted carries the status; onErrorOccurred carries blocks/aborts), so an agent can
+// see what a click actually fired — decisive for spotting silent gating. State lives in the
+// SW's memory: the 30s keepalive alarm keeps it warm during a session, but a hard SW
+// eviction resets it — fine for a read-right-after-you-act ring buffer.
+const NETLOG = new Map();          // tabId -> [{ t, method, url, type, status, fromCache, error }]
+const NETLOG_MAX = 200;
+function netPush(tabId, entry) {
+  if (tabId == null || tabId < 0) return;   // -1 = not tied to a tab (SW/extension fetches)
+  let buf = NETLOG.get(tabId);
+  if (!buf) { buf = []; NETLOG.set(tabId, buf); }
+  buf.push(entry);
+  if (buf.length > NETLOG_MAX) buf.shift();
+}
+const NET_URLS = { urls: ["http://*/*", "https://*/*"] };
+chrome.webRequest.onCompleted.addListener(
+  (d) => netPush(d.tabId, { t: d.timeStamp, method: d.method, url: d.url, type: d.type, status: d.statusCode, fromCache: d.fromCache }),
+  NET_URLS,
+);
+chrome.webRequest.onErrorOccurred.addListener(
+  (d) => netPush(d.tabId, { t: d.timeStamp, method: d.method, url: d.url, type: d.type, status: null, error: d.error }),
+  NET_URLS,
+);
+chrome.tabs.onRemoved.addListener((tabId) => NETLOG.delete(tabId));   // don't leak buffers
+
+// getNetLog(targetId) / clearNetLog(targetId) — CDP-callable like groupTab/listTabs. Agents
+// pass a CDP targetId; we bridge to the chrome tabId the same way the grouper does.
+self.getNetLog = async (targetId) => {
+  const tabId = await tabIdForTargetId(targetId);
+  return NETLOG.get(tabId) || [];
+};
+self.clearNetLog = async (targetId) => {
+  const tabId = await tabIdForTargetId(targetId);
+  NETLOG.delete(tabId);
+  return true;
+};
