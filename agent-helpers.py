@@ -1,8 +1,10 @@
 # horse-browser helpers for browser-harness.
 #
-# install.sh appends these into browser-harness's agent-workspace/agent_helpers.py
-# (which auto-loads on every browser-harness call), so bh_open() is available on
-# the first run — no agent has to install the recipe by hand.
+# install.sh installs this file as <workspace>/horse_helpers.py and appends a
+# load-once stub to agent_helpers.py (which browser-harness auto-loads on every
+# call), so bh_open() is available on the first run — no agent has to install the
+# recipe by hand. Updates overwrite horse_helpers.py only; anything a user keeps
+# in agent_helpers.py itself is never touched.
 #
 # What they give you (pass CDP targetIds; the extension bridges to chrome tabIds):
 #   bh_open(url)         open a tab WITHOUT raising the browser over your macOS app,
@@ -213,3 +215,48 @@ def bh_open(url):
 
 def bh_list():
     return ext_call("listTabs", _session_id()) or [] if _session_id() else []
+
+
+# ── screenshots: a unique file per call ──────────────────────────────────────────
+# Stock capture_screenshot() defaults every call — from EVERY session's daemon — to
+# the ONE shared file <tmp>/shot.png. With concurrent sessions, a neighbour overwrites
+# it between this session writing the shot and the agent Reading the path it printed,
+# so the "screenshot" shows another session's tab. Same namespace-merge trick as cdp()
+# above: defining capture_screenshot here replaces the stock one everywhere. Each call
+# mints its own file (named after the session's daemon lane) and returns that path, so
+# the agent's existing print-the-path-then-Read flow just works.
+from browser_harness.helpers import capture_screenshot as _real_capture_screenshot
+from browser_harness import _ipc as _bh_ipc
+
+_hb_shots_swept = False
+
+
+def _hb_sweep_shots(max_age_s=86400):
+    # Unique names accumulate where the single shot.png didn't — drop day-old ones.
+    # Once per process, and only in processes that actually screenshot.
+    global _hb_shots_swept
+    if _hb_shots_swept:
+        return
+    _hb_shots_swept = True
+    import time
+    now = time.time()
+    try:
+        for e in os.scandir(_bh_ipc._TMP):
+            if e.name.startswith("shot-") and e.name.endswith(".png") and now - e.stat().st_mtime > max_age_s:
+                try: os.remove(e.path)
+                except OSError: pass
+    except OSError:
+        pass
+
+
+def capture_screenshot(path=None, full=False, max_dim=None):
+    """Save a PNG of the current viewport to a per-call unique file; returns the path.
+    Args as stock browser-harness: full=capture beyond viewport, max_dim=downscale."""
+    if path is None:
+        _hb_sweep_shots()
+        import tempfile
+        fd, path = tempfile.mkstemp(
+            prefix=f"shot-{os.environ.get('BU_NAME', 'default')}-",
+            suffix=".png", dir=str(_bh_ipc._TMP))
+        os.close(fd)
+    return _real_capture_screenshot(path, full=full, max_dim=max_dim)

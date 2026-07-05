@@ -64,12 +64,14 @@ else
 fi
 
 # 3. bh_open helpers into browser-harness ───────────────────────────────────────
-# browser-harness auto-loads <workspace>/agent_helpers.py on every call; we append our
-# bh_open/bh_list/bh_switch_tab helpers there so they exist on the first run — no agent
-# installs the recipe by hand. The workspace location varies by version/install (≤0.1.0:
-# <repo>/agent-workspace; 0.1.1+: ~/.config/browser-harness/agent-workspace; or whatever
-# BH_AGENT_WORKSPACE points at) — so instead of guessing, we ASK browser-harness itself
-# where it loads from via its own python (helpers.AGENT_WORKSPACE). Append-once.
+# browser-harness auto-loads <workspace>/agent_helpers.py on every call. Our helpers
+# ship as horse_helpers.py — a file THIS installer owns and overwrites outright on
+# every sync — plus a load-once stub appended to agent_helpers.py exactly once and
+# never rewritten, so anything a user adds to agent_helpers.py is never touched.
+# The workspace location varies by version/install (≤0.1.0: <repo>/agent-workspace;
+# 0.1.1+: ~/.config/browser-harness/agent-workspace; or whatever BH_AGENT_WORKSPACE
+# points at) — so instead of guessing, we ASK browser-harness itself where it loads
+# from via its own python (helpers.AGENT_WORKSPACE).
 if ! command -v browser-harness >/dev/null 2>&1; then
   # browser-harness is a separate (Python) prerequisite. In a hand/curl install it's
   # required up front. Under npm it's a *declared* prereq the user may not have yet — so
@@ -82,17 +84,54 @@ if ! command -v browser-harness >/dev/null 2>&1; then
   exit 1
 fi
 HELPERS_SRC="$HERE/agent-helpers.py"
+# Legacy marker: pre-0.4.1 installs appended the helpers INLINE under this line, and
+# re-syncs replaced marker→EOF — silently eating anything a user had added below the
+# block. Kept only so those files can be migrated once.
 HELPERS_MARKER="# ── horse-browser helpers (installed by horse-browser/install.sh) ──"
-install_helpers_into() {  # $1 = workspace dir; (re)syncs our helpers block — idempotent, so
-  local dst="$1/agent_helpers.py"  # re-running install.sh deploys helper UPDATES, not just the first time.
-  mkdir -p "$1" 2>/dev/null || return 0
-  # drop any previously-installed block (marker → EOF), trim trailing blanks, then re-append
+LOADER_MARKER="# >>> horse-browser: bh_open helpers (managed loader — do not edit) >>>"
+install_helpers_into() {  # $1 = workspace dir; (re)syncs the helpers — idempotent, so
+  local ws="$1" dst="$1/agent_helpers.py"  # re-running install.sh deploys helper UPDATES too.
+  mkdir -p "$ws" 2>/dev/null || return 0
+  cp "$HELPERS_SRC" "$ws/horse_helpers.py"
+  # one-time migration of a legacy inline block: strip it ONLY on an exact byte match
+  # with the shipped source, so user additions below it survive. A modified/unknown
+  # block is left in place — harmless, the loader runs after it and its defs win.
   if [ -f "$dst" ] && grep -qF "$HELPERS_MARKER" "$dst"; then
-    awk -v m="$HELPERS_MARKER" 'index($0,m){exit} {print}' "$dst" \
-      | awk 'NF{last=NR} {b[NR]=$0} END{for(i=1;i<=last;i++)print b[i]}' > "$dst.tmp" && mv "$dst.tmp" "$dst"
+    python3 - "$dst" "$HELPERS_SRC" "$HELPERS_MARKER" <<'PY' || true
+import sys
+dst, src, marker = sys.argv[1], sys.argv[2], sys.argv[3]
+text, block = open(dst).read(), open(src).read()
+i = text.find(marker)
+legacy = marker + "\n" + block
+if i >= 0 and text[i:].startswith(legacy):
+    head = text[:i].rstrip("\n")
+    rest = text[i + len(legacy):].lstrip("\n")
+    parts = [p for p in (head, rest) if p]
+    open(dst, "w").write("\n\n".join(parts) + ("\n" if parts else ""))
+    print("  migrated: legacy inline helper block removed (everything else kept)")
+elif i >= 0:
+    print("  note: a legacy horse-browser block is present but doesn't match the shipped", file=sys.stderr)
+    print("        source — left in place (the horse_helpers.py loader below supersedes", file=sys.stderr)
+    print("        it); remove it from " + dst + " by hand when convenient.", file=sys.stderr)
+PY
   fi
-  { [ -s "$dst" ] && printf '\n\n'; printf '%s\n' "$HELPERS_MARKER"; cat "$HELPERS_SRC"; } >> "$dst"
-  echo "✓ synced bh_open helpers → $dst"
+  if ! grep -qF "$LOADER_MARKER" "$dst" 2>/dev/null; then
+    if [ -s "$dst" ]; then printf '\n' >> "$dst"; fi
+    printf '%s\n' "$LOADER_MARKER" >> "$dst"
+    cat >> "$dst" <<'LOADER'
+# The helpers live in horse_helpers.py next to this file. install.sh overwrites THAT
+# file on every sync and never rewrites this one — your own code here is safe.
+try:
+    import os as _hb_os
+    _hb_path = _hb_os.path.join(_hb_os.path.dirname(_hb_os.path.abspath(__file__)), "horse_helpers.py")
+    exec(compile(open(_hb_path).read(), _hb_path, "exec"))
+except Exception as _hb_err:
+    import sys as _hb_sys
+    print("horse-browser: couldn't load horse_helpers.py (%r) — re-run horse-browser's install.sh" % (_hb_err,), file=_hb_sys.stderr)
+# <<< horse-browser: bh_open helpers <<<
+LOADER
+  fi
+  echo "✓ synced bh_open helpers → $ws/horse_helpers.py (loaded via stub in $dst)"
 }
 # (a) the workspace browser-harness ACTUALLY loads from — ask it via its own python
 # (the CLI's shebang points at it); helpers.AGENT_WORKSPACE honours BH_AGENT_WORKSPACE and

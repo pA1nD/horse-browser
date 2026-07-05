@@ -78,7 +78,7 @@ self.listTabs(label: string) -> Promise<Tab[]>
 //   }
 ```
 
-**`bh_open` / `bh_list` / `bh_switch_tab` are pre-installed.** `install.sh` writes them into browser-harness's `agent-workspace/agent_helpers.py` (which auto-loads on every call), so they're available immediately — just call `bh_open(url)`.
+**`bh_open` / `bh_list` / `bh_switch_tab` are pre-installed.** `install.sh` writes them to browser-harness's `agent-workspace/horse_helpers.py`, loaded on every call via a small stub it adds once to `agent_helpers.py` (your own additions to that file are never touched), so they're available immediately — just call `bh_open(url)`.
 
 If `bh_open` is somehow undefined (a browser-harness checkout that never ran our `install.sh`), re-run `horse-browser`'s `install.sh` to install them — don't hand-roll your own; the focus-safe behaviour is subtle. You pass CDP `targetId`s only — the extension bridges to chrome `tabId`s internally.
 
