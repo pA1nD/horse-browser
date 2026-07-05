@@ -2,9 +2,24 @@
 
 <!-- Wire this into Codex by appending it to ~/.codex/AGENTS.md (global) or your
      project's AGENTS.md:  cat integrations/codex/AGENTS.md >> ~/.codex/AGENTS.md
-     Requires a session that can reach localhost (the default seatbelt sandbox
-     cannot): run codex with network-enabled workspace-write or
-     `--sandbox danger-full-access`. One-time setup: this repo's ./install.sh. -->
+     One-time setup: this repo's ./install.sh.
+
+     Sandbox requirement (verified on codex-cli 0.142.5): the default seatbelt
+     sandbox cannot drive the browser (no localhost, no ps, not even heredoc temp
+     files — commands fail immediately and legibly). Two working setups:
+
+       codex --sandbox danger-full-access
+
+     or workspace-write with network AND the two horse-browser config dirs made
+     writable (the daemon keeps its runtime files there — absolute paths, no ~):
+
+       codex --sandbox workspace-write \
+         -c sandbox_workspace_write.network_access=true \
+         -c 'sandbox_workspace_write.writable_roots=["/Users/YOU/.config/browser-harness","/Users/YOU/.config/horse-browser"]'
+
+     (equivalently persist both keys under [sandbox_workspace_write] in
+     ~/.codex/config.toml). Network alone is NOT enough — the daemon fails to
+     start without the writable roots. -->
 
 A dedicated, persistent browser for agents. Your session automatically gets its own
 coloured tab group and driver — nothing to configure. Drive it with heredoc scripts:
