@@ -28,6 +28,28 @@ BIN="${HORSE_BROWSER_BIN:-${BROWSER_BIN:-}}"
 EXT="${EXTENSION_DIR:-}"
 CACHE="${HORSE_BROWSER_CACHE:-$HOME/.cache/horse-browser}"
 
+# Repo root (resolves the ~/.local/bin symlink) — integrations/ lives here.
+SELF="$0"; [ -L "$SELF" ] && SELF="$(readlink "$SELF")"
+ROOT="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd || true)"
+
+# ── --lane: harness-internal sub-identity ─────────────────────────────────────
+# Splits one agent session into isolated lanes (own daemon, own tab group) so
+# parallel agents sharing an env never clobber each other. Agents never pass it
+# themselves — an integration (e.g. the claude-code PreToolUse hook) injects it.
+# Stripped here, BEFORE mode/subcommand handling, so it composes with anything.
+LANE="${HORSE_LANE:-}"
+_args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --lane)   shift; LANE="${1:-}" ;;
+    --lane=*) LANE="${1#--lane=}" ;;
+    *)        _args+=("$1") ;;
+  esac
+  shift
+done
+set -- ${_args[@]+"${_args[@]}"}
+case "$LANE" in *[!A-Za-z0-9_-]*|"") LANE="" ;; esac   # sane token or nothing
+
 # Capture a script ONLY when stdin is a heredoc / file / pipe (a regular file or a
 # FIFO) — those always reach EOF, so the read can't block. A bare invocation's stdin
 # is a tty, /dev/null, or the caller's open socket (none of which is -f/-p), so we
@@ -145,9 +167,9 @@ heal_gpu() {
   return 1
 }
 
-# reap_orphan_daemons: stop per-session browser-harness daemons (BU_NAME cc-*) whose
-# anchoring Claude session has exited. Conservative by design: it only touches daemons
-# whose env carries BOTH a cc-* BU_NAME (i.e. one WE named, in driver mode below) and a
+# reap_orphan_daemons: stop per-session browser-harness daemons (BU_NAME hb-*, or the
+# legacy cc-*) whose anchoring agent session has exited. Conservative by design: it only
+# touches daemons whose env carries BOTH a BU_NAME WE named (in driver mode below) and a
 # BH_ANCHOR_PID, and only when that anchor PID is gone — so it never reaps the shared
 # "default" daemon, an explicit BU_NAME lane, or any live session. A browser-harness with
 # the self-reap patch already cleans up its own daemons; this covers a stock one, which
@@ -183,7 +205,7 @@ def main():
         return
     for pid in pids:
         e = envof(pid)
-        if not e.get("BU_NAME", "").startswith("cc-"):  # only daemons we per-session-named
+        if not e.get("BU_NAME", "").startswith(("hb-", "cc-")):  # only daemons we named
             continue
         anchor = e.get("BH_ANCHOR_PID")
         if not anchor or alive(anchor):                  # unverifiable or session live -> keep
@@ -216,16 +238,13 @@ maybe_reap() {
 _chrome_ver() { echo "${1:-}" | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1; }
 
 hb_status() {
-  local self repo ver running
-  self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
-  repo="$(cd "$(dirname "$self")/.." 2>/dev/null && pwd || true)"
-  ver="$(git -C "$repo" describe --tags 2>/dev/null || true)"
+  local ver running
+  ver="$(git -C "$ROOT" describe --tags 2>/dev/null || true)"
   # No git checkout (e.g. an `npm i -g` install)? Fall back to package.json's version.
   if [ -z "$ver" ]; then
-    ver="$(python3 - "$0" <<'PY' 2>/dev/null || true
+    ver="$(python3 - "$ROOT" <<'PY' 2>/dev/null || true
 import json, os, sys
-root = os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[1])))
-try: print("v" + json.load(open(os.path.join(root, "package.json")))["version"])
+try: print("v" + json.load(open(os.path.join(sys.argv[1], "package.json")))["version"])
 except Exception: pass
 PY
 )"
@@ -385,28 +404,33 @@ if [ -n "$PASSTHROUGH" ]; then
   fi
   export BU_CDP_URL="http://127.0.0.1:$PORT"
 
-  # Per-Claude-session daemon, so concurrent agents never share one daemon and clobber
-  # each other's current tab. browser-harness keys the daemon off BU_NAME; we derive a
-  # per-session one (the same scheme browser-harness uses internally). An explicit
-  # BU_NAME — e.g. a subagent lane — always wins.
-  if [ -z "${BU_NAME:-}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
-    export BU_NAME="cc-${CLAUDE_CODE_SESSION_ID##*-}"
-  fi
-  # Anchor that daemon to this Claude session's process: a self-reaping browser-harness
-  # exits with the session, and reap_orphan_daemons can clean it up on a stock one. Walk
-  # up to the nearest `claude` ancestor; if not found, leave it unset (reaper skips it).
-  if [ -z "${BH_ANCHOR_PID:-}" ]; then
-    _ap=$$
-    for _ in $(seq 1 12); do
-      _comm=$(ps -o comm= -p "$_ap" 2>/dev/null) || break
-      case "$_comm" in
-        *claude*) export BH_ANCHOR_PID="$_ap"
-                  export BH_ANCHOR_START="$(ps -o lstart= -p "$_ap" 2>/dev/null)"; break ;;
-      esac
-      _pp=$(ps -o ppid= -p "$_ap" 2>/dev/null | tr -d ' ')
-      if [ -z "$_pp" ] || [ "$_pp" -le 1 ]; then break; fi
-      _ap="$_pp"
+  # ── identity: a generic contract, filled in by integrations ─────────────────
+  # Core knows three things: HORSE_SESSION (who this agent session is — tab group +
+  # daemon derive from it), HORSE_LANE (optional sub-identity within a session, set
+  # via --lane above), and BH_ANCHOR_PID/BH_ANCHOR_START (the process this session's
+  # daemon should die with). Explicit env always wins; otherwise each agent system's
+  # integrations/<system>/detect.sh gets a chance to derive them from its own
+  # environment (claude-code today; codex etc. are one detect.sh away). No identity
+  # at all is fine too — grouping is skipped and browser-harness runs stock.
+  if [ -z "${HORSE_SESSION:-}" ] && [ -n "$ROOT" ]; then
+    for _detect in "$ROOT"/integrations/*/detect.sh; do
+      [ -f "$_detect" ] || continue
+      # shellcheck disable=SC1090
+      . "$_detect"
+      [ -n "${HORSE_SESSION:-}" ] && break
     done
+  fi
+  if [ -n "${HORSE_SESSION:-}" ]; then
+    export HORSE_SESSION
+    [ -n "$LANE" ] && export HORSE_LANE="$LANE"
+    # Per-identity daemon, so concurrent agents never share one daemon and clobber
+    # each other's current tab. browser-harness keys the daemon off BU_NAME; a lane
+    # gets its own. An explicit BU_NAME always wins.
+    if [ -z "${BU_NAME:-}" ]; then
+      _tail="${HORSE_SESSION##*-}"
+      [ "${#_tail}" -gt 12 ] && _tail="$(printf '%s' "$_tail" | tail -c 12)"
+      export BU_NAME="hb-${_tail}${LANE:+-$LANE}"
+    fi
   fi
 
   if [ -n "$script" ]; then

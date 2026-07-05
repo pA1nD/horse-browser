@@ -117,16 +117,20 @@ def ext_call(fn, *args):
         cdp("Target.detachFromTarget", sessionId=s)
 
 
-def _label():
-    return os.environ.get("CLAUDE_CODE_SESSION_ID", "")[-4:]
-
-
 def _session_id():
-    # The FULL session id — passed to the extension so the browser derives the tab
+    # The FULL identity string — passed to the extension so the browser derives the tab
     # group's codename (emoji + colour + last-4) itself. Passing the whole id (not just
     # the last-4) lets any companion tool that renders the same codename — a terminal
     # statusline, a dashboard — match this group byte-for-byte.
-    return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    #
+    # bin/horse-browser resolves the agent system's identity (integrations/*/detect.sh)
+    # and exports HORSE_SESSION, plus HORSE_LANE when this call belongs to a subagent
+    # lane (own daemon + own group; injected by the harness, invisible to agents). The
+    # CLAUDE_CODE_SESSION_ID fallback covers direct browser-harness calls that bypass
+    # the launcher — it mirrors integrations/claude-code/detect.sh.
+    sid = os.environ.get("HORSE_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    lane = os.environ.get("HORSE_LANE", "")
+    return f"{sid}#{lane}" if sid and lane else sid
 
 
 def bh_switch_tab(target_id):

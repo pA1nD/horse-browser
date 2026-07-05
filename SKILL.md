@@ -75,7 +75,7 @@ distorted text, rotate, audio) — and *only those* go to the operator. The gest
 
 ## Extension
 
-Gives each Claude session its own coloured tab group (label = last 4 chars of `CLAUDE_CODE_SESSION_ID`; subagents inherit it and share the group). Keeps RAM and tab-strip clutter from bleeding across parallel sessions, and lets you reason about "my tabs" as a real set. `chrome.tabGroups` is extension-only — no CDP equivalent — which is why an extension exists at all.
+Gives each Claude session — and each subagent within it — its own coloured tab group, automatically; you never manage this. Keeps RAM and tab-strip clutter from bleeding across parallel sessions and parallel subagents, and lets you reason about "my tabs" as a real set. `chrome.tabGroups` is extension-only — no CDP equivalent — which is why an extension exists at all.
 
 The service worker exposes three async functions on `self`:
 
