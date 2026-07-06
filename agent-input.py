@@ -267,9 +267,15 @@ _DETECT_JS = r"""
   // HARD first — if a perception challenge is present, don't attempt a gesture.
   const hardTxt = /select all|click each|images? (with|containing)|type the (characters|text)|what does this say|rotate|listen and|audio challenge/;
   if (hardTxt.test(txt) || q('table.rc-imageselect-table') || q('.geetest_item_wrap')) return {kind:'hard', why:'image/text/audio challenge'};
-  // Press & Hold (PerimeterX / DataDome)
-  if (/press\s*&?\s*and?\s*hold|press and hold/.test(txt) || q('#px-captcha') || q('[id*="px-captcha"]'))
-    { const el = q('#px-captcha [role=button]') || q('#px-captcha') || q('[id*="press"]'); return {kind:'hold', sel: el ? _sel(el) : '#px-captcha', why:'press & hold'}; }
+  // Press & Hold (PerimeterX / DataDome). The button is usually inside a CROSS-ORIGIN iframe
+  // (unselectable), and #px-captcha is the MODAL — its center sits ~90px ABOVE the button, so a
+  // selector-hold on the container misses. PX centers the modal; the button is at ~(0.486w,
+  // 0.553h) of the viewport — hold THERE (verified live). Same-origin button → use its rect.
+  if (/press\s*&?\s*and?\s*hold|press and hold/.test(txt) || q('#px-captcha') || q('[id*="px-captcha"]')) {
+    const el = q('#px-captcha [role=button]');
+    if (el) { const r = el.getBoundingClientRect(); return {kind:'hold', sel:_sel(el), xy:[Math.round(r.left+r.width/2), Math.round(r.top+r.height/2)], why:'press & hold'}; }
+    return {kind:'hold', sel:'#px-captcha', xy:[Math.round(0.486*innerWidth), Math.round(0.553*innerHeight)], why:'press & hold (button in sealed iframe → coord)'};
+  }
   // Slider / slide-to-verify
   const slider = q('.slider, [class*="slide"] [class*="btn"], [class*="drag"][class*="btn"], .yidun_slider, .nc_iconfont');
   if (/slide to|drag the slider|slide right|slide to verify/.test(txt) || slider)
@@ -357,10 +363,12 @@ def challenge_cleared():
         return "cleared:recaptcha token present (%d chars)" % r["rc"]
     if not r.get("iframe"):
         return "cleared:challenge iframe gone"
-    return "still:challenge iframe present, no token yet — re-screenshot and adjust, or escalate"
+    return ("still:challenge iframe present, no token yet — after a Press & Hold, PX shows a "
+            "'●●●' spinner for a few seconds before it proceeds, so poll a few more seconds; "
+            "if still stuck, re-screenshot and adjust, or escalate")
 
 
-def solve_challenge(act=True, hold_seconds=6.0):
+def solve_challenge(act=True, hold_seconds=7.0):
     """Detect a challenge and clear it. A same-document gesture (Press & Hold on #px-captcha, a
     slider element we can select) is solved directly and verified. Anything sealed in a
     cross-origin iframe (Turnstile, DataDome, hCaptcha) can't be reached by querySelector, so
@@ -377,15 +385,24 @@ def solve_challenge(act=True, hold_seconds=6.0):
             return "easy:%s (%s) sel=%s" % (kind, why, sel)
         xo = _xorigin_challenge()
         return ("easy:cross-origin %s challenge (sealed iframe) — solve by vision" % xo["vendor"]) if xo else "none"
-    # same-document element we can select → trusted gesture directly, then verify (fast path)
-    if sel and kind in ("hold", "drag"):
+    # a gesture we can aim (a selectable element, or a coord DETECT computed) → do it, then verify
+    if kind in ("hold", "drag") and (sel or d.get("xy")):
         try:
             if kind == "hold":
-                press_hold(sel, seconds=hold_seconds)
-            else:
-                drag(sel, dx=320)                                # simple sliders latch at the right
+                target = tuple(d["xy"]) if d.get("xy") else sel
+                press_hold(target, seconds=hold_seconds)
+                # PX turns the button solid blue with a "●●●" processing spinner for a few seconds
+                # AFTER a good hold, before the page proceeds — poll, don't judge the first read.
+                for _ in range(9):
+                    _it.sleep(1.0)
+                    res = challenge_cleared()
+                    if res.startswith("cleared"):
+                        return "solved:hold %s — %s" % (target, res)
+                # held but didn't clear → hand to vision so the agent can look and adjust by eye
+                return _vision_handoff(_xorigin_challenge(), "perimeterx")
+            drag(sel, dx=320)                                    # simple sliders latch at the right
             _it.sleep(2.0)
-            return "solved:%s %s — %s" % (kind, sel, challenge_cleared())
+            return "solved:drag %s — %s" % (sel, challenge_cleared())
         except Exception as e:
             return "escalate:gesture failed (%r) — ask the operator" % (e,)
     # sealed cross-origin (checkbox iframe, a slider/hold we couldn't select, or one DETECT
