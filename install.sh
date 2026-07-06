@@ -162,14 +162,13 @@ if [ -z "$BH_DIR" ]; then
 fi
 [ -n "$BH_DIR" ] && [ "$BH_DIR/agent-workspace" != "$WS_NEW" ] && install_helpers_into "$BH_DIR/agent-workspace"
 
-# Keep the stable symlink that ~/.claude/CLAUDE.md's @-import points at aimed at the current
-# (Python-version-specific) packaged SKILL, so the import never rots across reinstalls. We
-# only refresh the symlink — registering the block in CLAUDE.md is opt-in (./claude-md.sh apply).
-# Under npm we don't reach into ~/.claude from a silent postinstall — the next-steps
-# note tells the user how to wire SKILL.md into their CLAUDE.md themselves.
-if [ -z "${HORSE_FROM_NPM:-}" ]; then
-  "$HERE/claude-md.sh" symlink || echo "  (skipped CLAUDE.md SKILL symlink — see ./claude-md.sh)" >&2
-fi
+# Keep the stable symlink aimed at the current (Python-version-specific) packaged
+# browser-harness SKILL, so the @-import never rots across reinstalls. This writes only
+# ~/.config (never ~/.claude), and browser-harness is guaranteed present by the hard prereq
+# above — so it runs in BOTH modes (npm too; the atelier browser module reads this symlink to
+# locate browser-harness's docs). Registering the block in ~/.claude/CLAUDE.md stays opt-in
+# via ./claude-md.sh apply; the npm next-steps note tells the user how to wire the import.
+"$HERE/claude-md.sh" symlink || echo "  (skipped browser-harness SKILL symlink — see ./claude-md.sh)" >&2
 
 # Wire the claude-code lane hook into ~/.claude/settings.json: PreToolUse gives each
 # SUBAGENT's horse-browser calls their own lane (own daemon + tab group — parallel
