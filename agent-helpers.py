@@ -266,6 +266,65 @@ def capture_screenshot(path=None, full=False, max_dim=None):
     return _real_capture_screenshot(path, full=full, max_dim=max_dim)
 
 
+# ── page hints: a generic per-navigation plug point ──────────────────────────────
+# Anything EXECUTABLE in ~/.config/horse-browser/hints.d/ is called on navigation as
+#     <hook> <url>          (env carries HORSE_SESSION / HORSE_LANE; 2.5s cap)
+# and whatever it prints is surfaced to the agent — once per host per process, like
+# the tab nudge. horse-browser knows nothing about the data source: one operator's
+# hook curls their credential index ("this site has a stored login"), another's
+# checks an internal wiki or a CRM. Hooks that are empty, slow, or failing are
+# silently skipped — a hint must never break or stall browsing.
+_hb_hinted = set()
+_hb_hint_hooks_cache = None
+
+
+def _hb_hint_hooks():
+    global _hb_hint_hooks_cache
+    if _hb_hint_hooks_cache is None:
+        d = os.path.expanduser("~/.config/horse-browser/hints.d")
+        try:
+            _hb_hint_hooks_cache = sorted(
+                e.path for e in os.scandir(d) if e.is_file() and os.access(e.path, os.X_OK))
+        except OSError:
+            _hb_hint_hooks_cache = []
+    return _hb_hint_hooks_cache
+
+
+def _hb_hints(url):
+    if not (url or "").startswith("http") or not _hb_hint_hooks():
+        return
+    from urllib.parse import urlsplit
+    host = urlsplit(url).hostname or ""
+    if not host or host in _hb_hinted:
+        return
+    _hb_hinted.add(host)
+    import subprocess
+    import sys
+    for hook in _hb_hint_hooks():
+        try:
+            out = subprocess.run([hook, url], capture_output=True, text=True, timeout=2.5).stdout.strip()
+        except Exception:
+            continue
+        for line in out.splitlines():
+            print(line if line.startswith("\U0001F434") else "\U0001F434 horse-browser: " + line,
+                  file=sys.stderr)
+
+
+# Fire hints at the "I just navigated" moment: wrapping wait_for_load catches both
+# bh_open (which calls it) and the bh_switch_tab → goto_url → wait_for_load flow.
+# Same namespace-merge trick as cdp()/capture_screenshot() above.
+from browser_harness.helpers import wait_for_load as _real_wait_for_load
+
+
+def wait_for_load(*args, **kwargs):
+    r = _real_wait_for_load(*args, **kwargs)
+    try:
+        _hb_hints((current_tab() or {}).get("url") or "")
+    except Exception:
+        pass
+    return r
+
+
 # ── Tier 2 trusted-input layer — shipped as the sibling horse_input.py ───────────
 # horse-browser splits its managed helpers by concern: THIS file drives tabs (focus-safe
 # open/switch/list, per-call screenshots); horse_input.py does trusted, correct INPUT
