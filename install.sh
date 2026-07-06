@@ -152,6 +152,12 @@ if [ -z "$BH_DIR" ]; then
 fi
 [ -n "$BH_DIR" ] && [ "$BH_DIR/agent-workspace" != "$WS_NEW" ] && install_helpers_into "$BH_DIR/agent-workspace"
 
+# Our own SKILL.md lives in the package dir — under `npm -g` that's a volatile Node-version
+# path (…/fnm/node-versions/vX/…). Keep a stable copy in ~/.config so the CLAUDE.md @-import
+# (and the next-steps hint) never point into the Node tree. Writes ~/.config only — safe
+# even from a silent npm postinstall, so it runs in both modes.
+"$HERE/claude-md.sh" skill >/dev/null 2>&1 || true
+
 # Keep the stable symlink that ~/.claude/CLAUDE.md's @-import points at aimed at the current
 # (Python-version-specific) packaged SKILL, so the import never rots across reinstalls. We
 # only refresh the symlink — registering the block in CLAUDE.md is opt-in (./claude-md.sh apply).

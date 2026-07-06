@@ -70,7 +70,7 @@ bh_open to open tabs from now on.
 ./claude-md.sh check     # is CLAUDE.md up to date? (exit 1 if drifted — good for a cron)
 ```
 
-It imports both playbooks — horse-browser's, and browser-harness's via a **stable symlink** it keeps aimed at the current install, so the `@`-import never rots when browser-harness is reinstalled on a different Python (`install.sh` refreshes that symlink too).
+It imports both playbooks via **stable paths** that don't rot across reinstalls: browser-harness's through a symlink kept aimed at the current install (survives a different Python), and horse-browser's own — when installed via npm — through a Node-independent copy in `~/.config` (the package dir sits under your Node-version manager and moves when Node changes; a checkout imports its `SKILL.md` live). `install.sh` refreshes both.
 
 **By hand** — or just add the import yourself (global `~/.claude/CLAUDE.md`, or a single repo's `CLAUDE.md`):
 
@@ -80,7 +80,7 @@ It imports both playbooks — horse-browser's, and browser-harness's via a **sta
 
 (Codex users: `~/.codex/AGENTS.md` works the same way.) Either way, the agent loads the `bh_open` discipline automatically from then on.
 
-> **Installed via npm?** `SKILL.md` lives inside the global package — the installer prints the exact `@…/SKILL.md` line to paste, or find it with `echo "$(npm root -g)/@pa1nd/horse-browser/SKILL.md"`.
+> **Installed via npm?** Don't import the package dir directly — it lives under your Node-version manager (`…/fnm/node-versions/vX/…`) and vanishes when Node changes. The installer prints a **stable path** to paste instead: `@~/.config/horse-browser/skill.md` (a Node-independent copy it keeps current).
 
 ## How it stays out of your way
 

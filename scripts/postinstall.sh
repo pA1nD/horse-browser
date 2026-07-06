@@ -28,7 +28,8 @@ horse-browser installed. Next:
   • Sign into your apps once — logins persist for every agent.
   • Prereq for driving it: browser-harness (a Python tool) —
       uv tool install browser-harness      # or: pipx install browser-harness
-  • Teach agents the bh_open discipline — add this to your ~/.claude/CLAUDE.md:
-      @$PKG/SKILL.md
+  • Teach agents the bh_open discipline — add this line to your ~/.claude/CLAUDE.md
+    (a stable path, independent of your Node version):
+      @~/.config/horse-browser/skill.md
 EOF
 exit 0

@@ -13,13 +13,15 @@
 #   ./claude-md.sh check      is CLAUDE.md's block + the symlink current? (exit 0=yes, 1=drifted)
 #   ./claude-md.sh apply      (re)point the symlink + write the block into ~/.claude/CLAUDE.md
 #   ./claude-md.sh symlink    only (re)point the stable symlink at the current SKILL
+#   ./claude-md.sh skill      copy our own SKILL.md to a stable, Node-independent path
 #
-# Env overrides: CLAUDE_MD, HORSE_BROWSER_BH_SKILL_LINK.
+# Env overrides: CLAUDE_MD, HORSE_BROWSER_BH_SKILL_LINK, HORSE_BROWSER_SKILL.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_MD="${CLAUDE_MD:-$HOME/.claude/CLAUDE.md}"
 LINK="${HORSE_BROWSER_BH_SKILL_LINK:-$HOME/.config/horse-browser/browser-harness-skill.md}"
+SKILL_COPY="${HORSE_BROWSER_SKILL:-$HOME/.config/horse-browser/skill.md}"
 BEGIN="<!-- horse-browser:begin (managed by claude-md.sh — edits between markers are overwritten) -->"
 END="<!-- horse-browser:end -->"
 
@@ -44,6 +46,25 @@ ensure_symlink() {
   ln -sfn "$target" "$LINK"
 }
 
+# Our OWN SKILL.md ships inside the package dir. Under `npm -g` that dir is deep in a
+# Node-version-specific tree (…/fnm/node-versions/vX.Y.Z/…/node_modules/…) that moves or
+# vanishes when Node is switched or upgraded — so a literal @-import of it rots. Copy it to
+# a stable, Node-independent home; CLAUDE.md points there instead of into the install dir.
+ensure_skill() {
+  mkdir -p "$(dirname "$SKILL_COPY")"
+  cp "$HERE/SKILL.md" "$SKILL_COPY"
+}
+
+# Where CLAUDE.md should @-import our SKILL from. A stable checkout is imported live (handy
+# for dev); an npm-installed package (path contains /node_modules/) is volatile, so we point
+# at the stable copy instead. Pure — the copy itself is (re)made by ensure_skill.
+skill_import_path() {
+  case "$HERE" in
+    */node_modules/*) _tilde "$SKILL_COPY" ;;
+    *)                echo "$(_tilde "$HERE")/SKILL.md" ;;
+  esac
+}
+
 # The canonical block. Kept tiny on purpose — it's loaded into every session's context; the
 # @-imports pull the full SKILLs on demand.
 block() {
@@ -56,7 +77,7 @@ focus steal). Drive it with \`horse-browser <<'PY' … PY\` — a drop-in for br
 open tabs with \`bh_open(url)\`, then navigate, scrape, render, screenshot.
 
 @$(_tilde "$LINK")
-@$(_tilde "$HERE")/SKILL.md
+@$(skill_import_path)
 $END
 EOF
 }
@@ -69,6 +90,7 @@ _current_block() {
 
 apply() {
   ensure_symlink
+  case "$HERE" in */node_modules/*) ensure_skill ;; esac
   mkdir -p "$(dirname "$CLAUDE_MD")"; [ -f "$CLAUDE_MD" ] || : > "$CLAUDE_MD"
   local tmp; tmp="$(mktemp)"
   # drop any existing managed block, then trim trailing blank lines
@@ -90,6 +112,12 @@ check() {
   elif [ "$have" != "$want" ]; then
     echo "claude-md: symlink stale — points at '${have:-<none>}', should be '$want'" >&2; rc=1
   fi
+  case "$HERE" in
+    */node_modules/*)
+      cmp -s "$HERE/SKILL.md" "$SKILL_COPY" 2>/dev/null || {
+        echo "claude-md: skill copy stale/missing — $(_tilde "$SKILL_COPY") ≠ packaged SKILL.md" >&2; rc=1; }
+      ;;
+  esac
   [ "$rc" = 0 ] && echo "claude-md: up to date" || echo "claude-md: run './claude-md.sh apply' to fix" >&2
   return $rc
 }
@@ -99,5 +127,6 @@ case "${1:-print}" in
   apply)   apply ;;
   check)   check ;;
   symlink) ensure_symlink && echo "claude-md: symlink $(_tilde "$LINK") → $(readlink "$LINK")" ;;
-  *) echo "usage: $(basename "$0") [print|apply|check|symlink]" >&2; exit 2 ;;
+  skill)   ensure_skill && echo "claude-md: skill copy $(_tilde "$SKILL_COPY") ← $(_tilde "$HERE")/SKILL.md" ;;
+  *) echo "usage: $(basename "$0") [print|apply|check|symlink|skill]" >&2; exit 2 ;;
 esac
