@@ -68,10 +68,33 @@ too; the anti-detection win rides along free.
 
 Many "captchas" are just a gesture — **click a checkbox, press-&-hold, slide-to-verify**.
 Do them; don't escalate. With a real fingerprint (always-on) plus a trusted click, the easy
-ones usually clear. Call **`solve_challenge()`** — it classifies the challenge and solves the
-easy kind, or returns `escalate:<why>` for the **perception** kind (identify images, read
-distorted text, rotate, audio) — and *only those* go to the operator. The gesture verbs:
-`press_hold(css, seconds)` and `drag(css, dx=… / to=(x,y))`.
+ones usually clear. Call **`solve_challenge()`** — a same-document gesture (a Press & Hold on
+`#px-captcha`, a slider it can select) is performed and verified for you; a **perception**
+challenge (identify images, read distorted text, rotate, audio) returns `escalate:<why>` and
+*only those* go to the operator. The gesture verbs take a CSS selector **or an `(x, y)`
+coordinate**: `press_hold(css_or_xy, seconds)`, `drag(css_or_xy, dx=… / to=(x,y))`,
+`click_xy(x, y)`.
+
+**Cross-origin iframe challenges → vision is primary.** A challenge sealed in a cross-origin
+iframe (Cloudflare Turnstile, DataDome, hCaptcha) can't be reached by `querySelector` — but
+CDP input still lands on the pixel. So `solve_challenge()` hands these back as
+`vision:<vendor> … Screenshot: <path> …`: **Read the screenshot, find the control, act by
+coordinate** (`click_xy` / `press_hold((x,y),s)` / `drag((x,y),to=(x2,y2))`), then confirm with
+**`challenge_cleared()`** — which reads the top-document side-effects a solve leaves (token
+input populated, challenge iframe removed). If it didn't clear, screenshot again and adjust.
+We do **not** keep a table of widget offsets — vendors redesign, and vision + verify is
+self-correcting where a hardcoded pixel is not.
+
+**Solve it — don't reload and hope.** A challenge is a reputation checkpoint, not a wall,
+and solving *deposits* credit at three levels: a long-lived trust cookie for this browser
+(DataDome hands out a ~1-year `datadome` cookie), the fingerprint that solved it, and — the
+big one — the whole **IP / network**. That last one is why solving beats retrying: a single
+human-grade solve lifts the IP's reputation for *everyone* on it. Observed live: solving a
+DataDome slide-check on our IP made a fresh, cookieless browser on the same IP sail straight
+through and bank its own year-long trust cookie. Reloading to re-roll the odds banks nothing,
+and a streak of *unsolved* challenges reads as bot-like and can *lower* the score. So when a
+challenge appears, spend the few seconds to solve it — the credit pays forward across the
+session, across browsers on the LAN, and for months.
 
 ## Extension
 

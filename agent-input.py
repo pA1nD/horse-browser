@@ -81,33 +81,54 @@ def click(css):
     click_xy(c[0], c[1])
 
 
-def press_hold(css, seconds=6.0):
-    """Trusted press-and-hold at `css` — for Press & Hold challenges (PerimeterX/DataDome).
-    Holds the button down with tiny jitter for `seconds`, which real widgets require."""
-    c = _center(css)
+def _pt(target):
+    """Resolve a gesture target to viewport (x, y): a CSS selector (its centre) OR an (x, y)
+    tuple you read off a screenshot — the tuple is how you drive a control sealed inside a
+    cross-origin iframe, where querySelector can't reach but CDP input still lands on the pixel."""
+    if isinstance(target, (tuple, list)) and len(target) == 2:
+        return float(target[0]), float(target[1])
+    c = _center(target)
+    return (float(c[0]), float(c[1])) if c else None
+
+
+def press_hold(target, seconds=6.0):
+    """Trusted press-and-hold at `target` (CSS selector or (x, y) coords) — for Press & Hold
+    challenges (PerimeterX/DataDome). A REAL hold is almost perfectly STILL: measured against a
+    human, the hand emits only a handful of pointermove events over the whole hold, at wildly
+    irregular times (~5 moves, inter-event timing CV ~1.1). A continuous jitter loop is the
+    opposite — a metronomic ~15 Hz stream (CV ~0.06) that reads as a machine instantly. So we
+    press, then STAY PUT, with just a few small, irregularly-timed micro-nudges; the pressed
+    bitmask stays held on every event so the widget never cancels the hold."""
+    c = _pt(target)
     if not c:
-        raise RuntimeError("press_hold: no visible element " + css)
+        raise RuntimeError("press_hold: no visible element " + str(target))
     x, y = c
     _move(x, y)
-    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", clickCount=1)
-    end = _it.time() + seconds
-    while _it.time() < end:
-        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x + _ir.uniform(-1.4, 1.4), y=y + _ir.uniform(-1.4, 1.4), button="left")
-        _it.sleep(_ir.uniform(0.08, 0.2))
-    cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", clickCount=1)
+    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", buttons=1, clickCount=1)
+    t0 = _it.time(); end = t0 + seconds
+    nudges = sorted(_ir.uniform(0.4, max(0.5, seconds - 0.3)) for _ in range(_ir.randint(2, 4)))
+    for nt in nudges:                                          # a few irregular micro-tremors, else still
+        dt = (t0 + nt) - _it.time()
+        if dt > 0:
+            _it.sleep(dt)
+        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x + _ir.uniform(-2.0, 2.0), y=y + _ir.uniform(-2.0, 2.0), buttons=1)
+    rem = end - _it.time()
+    if rem > 0:
+        _it.sleep(rem)
+    cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", buttons=0, clickCount=1)
 
 
-def drag(css, to=None, dx=None, dy=0):
-    """Trusted drag from `css` — for slide-to-verify sliders. Give an absolute `to`=(x,y)
-    target, or a relative `dx`/`dy`. Moves in small held-button steps (ease-in-out + tiny
-    jitter) so the site sees a real pointer drag, not a teleport."""
-    c = _center(css)
+def drag(target, to=None, dx=None, dy=0):
+    """Trusted drag from `target` (CSS selector or (x, y) start coords) — for slide-to-verify.
+    Give an absolute `to`=(x,y) target, or a relative `dx`/`dy`. Moves in small held-button
+    steps (ease-in-out + tiny jitter, pressed bitmask held) so the site sees a real drag."""
+    c = _pt(target)
     if not c:
-        raise RuntimeError("drag: no visible element " + css)
+        raise RuntimeError("drag: no visible element " + str(target))
     x0, y0 = c
     x1, y1 = (to if to else (x0 + (dx or 0), y0 + dy))
     _move(x0, y0)
-    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x0, y=y0, button="left", clickCount=1)
+    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x0, y=y0, button="left", buttons=1, clickCount=1)
     _it.sleep(_ir.uniform(0.05, 0.12))
     steps = max(14, int(_im.hypot(x1 - x0, y1 - y0) / 10))
     for i in range(1, steps + 1):
@@ -115,18 +136,32 @@ def drag(css, to=None, dx=None, dy=0):
         e = t * t * (3 - 2 * t)                                   # smoothstep ease
         px = x0 + (x1 - x0) * e + (_ir.uniform(-1.0, 1.0) if i < steps else 0)
         py = y0 + (y1 - y0) * e + (_ir.uniform(-1.0, 1.0) if i < steps else 0)
-        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py, button="left")
+        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py, buttons=1)
         _it.sleep(_ir.uniform(0.008, 0.022))
-    cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x1, y=y1, button="left", clickCount=1)
+    cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x1, y=y1, button="left", buttons=0, clickCount=1)
     _mouse["x"], _mouse["y"] = x1, y1
 
 
 # ── keyboard ─────────────────────────────────────────────────────────────────────
-_PUNCT = {'/': ('Slash', 191), '.': ('Period', 190), ',': ('Comma', 188), '-': ('Minus', 189),
-          ' ': ('Space', 32), ';': ('Semicolon', 186), ':': ('Semicolon', 186), "'": ('Quote', 222),
-          '"': ('Quote', 222), '@': ('Digit2', 50), '_': ('Minus', 189), '=': ('Equal', 187),
-          '+': ('Equal', 187), '(': ('Digit9', 57), ')': ('Digit0', 48), '!': ('Digit1', 49),
-          '?': ('Slash', 191), '#': ('Digit3', 51)}
+# printable symbol -> (code, windowsVirtualKeyCode, needs_shift) on a US-QWERTY layout, so a
+# shifted char ('$', '@', '?', an uppercase letter) is typed with a real Shift keydown held —
+# event.shiftKey is then true, exactly as a physical keyboard produces it. Typing '$' or 'A'
+# with shiftKey=false is physically impossible and is a tell that input inspectors flag.
+_SYM = {'`': ('Backquote', 192, False),    '~': ('Backquote', 192, True),
+        '-': ('Minus', 189, False),        '_': ('Minus', 189, True),
+        '=': ('Equal', 187, False),        '+': ('Equal', 187, True),
+        '[': ('BracketLeft', 219, False),  '{': ('BracketLeft', 219, True),
+        ']': ('BracketRight', 221, False), '}': ('BracketRight', 221, True),
+        '\\': ('Backslash', 220, False),   '|': ('Backslash', 220, True),
+        ';': ('Semicolon', 186, False),    ':': ('Semicolon', 186, True),
+        "'": ('Quote', 222, False),        '"': ('Quote', 222, True),
+        ',': ('Comma', 188, False),        '<': ('Comma', 188, True),
+        '.': ('Period', 190, False),       '>': ('Period', 190, True),
+        '/': ('Slash', 191, False),        '?': ('Slash', 191, True),
+        '!': ('Digit1', 49, True),  '@': ('Digit2', 50, True),  '#': ('Digit3', 51, True),
+        '$': ('Digit4', 52, True),  '%': ('Digit5', 53, True),  '^': ('Digit6', 54, True),
+        '&': ('Digit7', 55, True),  '*': ('Digit8', 56, True),  '(': ('Digit9', 57, True),
+        ')': ('Digit0', 48, True),  ' ': ('Space', 32, False)}
 _SPECIAL = {'Enter': ('Enter', 13, '\r'), 'Tab': ('Tab', 9, '\t'), 'Backspace': ('Backspace', 8, ''),
             'Escape': ('Escape', 27, ''), 'Delete': ('Delete', 46, ''), 'Space': ('Space', 32, ' '),
             'ArrowDown': ('ArrowDown', 40, ''), 'ArrowUp': ('ArrowUp', 38, ''),
@@ -136,22 +171,30 @@ _SPECIAL = {'Enter': ('Enter', 13, '\r'), 'Tab': ('Tab', 9, '\t'), 'Backspace': 
 def _keyinfo(ch):
     if ch.isalpha():
         u = ch.upper()
-        return (ch, 'Key' + u, ord(u))
+        return (ch, 'Key' + u, ord(u), ch.isupper())          # Shift for capitals
     if ch.isdigit():
-        return (ch, 'Digit' + ch, ord(ch))
-    if ch in _PUNCT:
-        code, vk = _PUNCT[ch]
-        return (ch, code, vk)
-    return (ch, '', 0)
+        return (ch, 'Digit' + ch, ord(ch), False)
+    if ch in _SYM:
+        code, vk, shift = _SYM[ch]
+        return (ch, code, vk, shift)
+    return (ch, '', 0, False)
 
 
 def _key(ch):
-    key, code, vk = _keyinfo(ch)
+    key, code, vk, shift = _keyinfo(ch)
     base = dict(key=key, code=code, windowsVirtualKeyCode=vk, nativeVirtualKeyCode=vk)
     # keyDown WITH text makes Chrome actually insert the char (fires a native `input`
     # event); keyUp without text. Real, fully-formed events → site keyup/input listeners fire.
-    cdp("Input.dispatchKeyEvent", type="keyDown", text=ch, **base)
-    cdp("Input.dispatchKeyEvent", type="keyUp", **base)
+    if shift:
+        # hold a real Shift keydown around the char so event.shiftKey is true, like a keyboard
+        sk = dict(key='Shift', code='ShiftLeft', windowsVirtualKeyCode=16, nativeVirtualKeyCode=16)
+        cdp("Input.dispatchKeyEvent", type="keyDown", modifiers=8, **sk)
+        cdp("Input.dispatchKeyEvent", type="keyDown", text=ch, modifiers=8, **base)
+        cdp("Input.dispatchKeyEvent", type="keyUp", modifiers=8, **base)
+        cdp("Input.dispatchKeyEvent", type="keyUp", **sk)
+    else:
+        cdp("Input.dispatchKeyEvent", type="keyDown", text=ch, **base)
+        cdp("Input.dispatchKeyEvent", type="keyUp", **base)
 
 
 def press(name, times=1):
@@ -240,36 +283,114 @@ _DETECT_JS = r"""
 """
 
 
+def _vision_shot():
+    """Capture the viewport to a UNIQUE png (never the shared shot.png) and return its path, so
+    the driving agent can Read it and locate the sealed control by eye."""
+    try:
+        import os as _os, base64 as _b64
+        d = _os.path.expanduser("~/.config/browser-harness/tmp")
+        _os.makedirs(d, exist_ok=True)
+        p = _os.path.join(d, "challenge-%d.png" % int(_it.time() * 1000))
+        data = (cdp("Page.captureScreenshot", format="png") or {}).get("data")
+        if data:
+            open(p, "wb").write(_b64.b64decode(data))
+            return p
+    except Exception:
+        pass
+    return None
+
+
+def _xorigin_challenge():
+    """A visible cross-origin challenge iframe (DOM sealed) → {vendor,x,y,w,h} or None. We can
+    read the iframe ELEMENT's rect from the top document even though its contents are off-limits;
+    that rect tells the agent where on screen to look."""
+    return _eval(r"""(function(){
+      var pats=[['cloudflare','challenges.cloudflare.com'],['datadome','captcha-delivery'],
+                ['hcaptcha','hcaptcha.com'],['perimeterx','perimeterx'],['arkose','arkoselabs'],
+                ['recaptcha','recaptcha/api2/bframe'],['recaptcha','recaptcha/api2/anchor']];
+      var fr=[].slice.call(document.querySelectorAll('iframe'));
+      for(var i=0;i<fr.length;i++){var f=fr[i],s=f.src||'';
+        for(var j=0;j<pats.length;j++){ if(s.indexOf(pats[j][1])>=0){
+          var b=f.getBoundingClientRect();
+          if(b.width>40&&b.height>20&&getComputedStyle(f).visibility!=='hidden')
+            return {vendor:pats[j][0],x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.width),h:Math.round(b.height)};
+        }}}
+      return null;})()""")
+
+
+# per-vendor READING hint for the agent's eyes — a starting guess, NEVER authoritative coords
+# (widgets get redesigned; you always look at the screenshot and verify the result instead).
+_VISION_HINT = {
+    "cloudflare": "a checkbox near the left of the widget — click_xy(x, y) it",
+    "datadome": "slide-to-verify: read the handle (left of the track) and the track's right end, then drag((hx, hy), to=(ex, ey))",
+    "perimeterx": "a Press & Hold button — press_hold((x, y), 6)",
+    "hcaptcha": "a checkbox — click_xy(x, y); if an image grid opens after, that's the HARD kind → escalate",
+    "recaptcha": "a checkbox — click_xy(x, y); if an image grid opens after, that's HARD → escalate",
+    "arkose": "a FunCaptcha (pick/rotate images) — HARD; escalate, don't guess",
+}
+
+
+def _vision_handoff(xo, kind_hint=None):
+    shot = _vision_shot()
+    rect = ("iframe at rect(x=%d, y=%d, w=%d, h=%d)" % (xo["x"], xo["y"], xo["w"], xo["h"])) if xo else "the challenge widget"
+    vendor = (xo or {}).get("vendor") or (kind_hint or "unknown")
+    hint = _VISION_HINT.get((xo or {}).get("vendor"), "read the control (checkbox / slider / press-hold) and act by its coordinates")
+    return ("vision:%s — challenge sealed in a cross-origin iframe; the DOM can't be read, but CDP "
+            "input passes through by coordinate. %s. Hint: %s. Screenshot: %s. Act by COORDS "
+            "(click_xy / press_hold((x,y),s) / drag((x,y),to=(x2,y2))), then confirm with "
+            "challenge_cleared(); if it didn't clear, re-screenshot and adjust."
+            % (vendor, rect, hint, shot or "capture one with capture_screenshot()"))
+
+
+def challenge_cleared():
+    """Close the loop after a vision-driven gesture: read the top-document side-effects a
+    cross-origin challenge leaves when it passes. 'cleared:<signal>' or 'still:<why>'."""
+    r = _eval(r"""(function(){
+      var cf=document.querySelector('input[name=cf-turnstile-response]');
+      var rc=document.querySelector('textarea[name=g-recaptcha-response],#g-recaptcha-response');
+      var f=document.querySelector('iframe[src*="challenges.cloudflare.com"],iframe[src*="captcha-delivery"],iframe[src*="perimeterx"],iframe[src*="hcaptcha.com/captcha"],iframe[src*="recaptcha/api2/bframe"],#px-captcha');
+      return {cf: cf?(cf.value||'').length:-1, rc: rc?(rc.value||'').length:-1, iframe: !!f};
+    })()""") or {}
+    if (r.get("cf") or -1) > 20:
+        return "cleared:turnstile token present (%d chars)" % r["cf"]
+    if (r.get("rc") or -1) > 20:
+        return "cleared:recaptcha token present (%d chars)" % r["rc"]
+    if not r.get("iframe"):
+        return "cleared:challenge iframe gone"
+    return "still:challenge iframe present, no token yet — re-screenshot and adjust, or escalate"
+
+
 def solve_challenge(act=True, hold_seconds=6.0):
-    """Detect a challenge and, if it's EASY (a trusted gesture — checkbox click, press-&-hold,
-    slide-to-verify), solve it; return a short status string. For HARD challenges (identify
-    images, read text, rotate, audio) it does NOT guess — it returns 'escalate:<why>' so you
-    stop and ask the operator. Returns 'none' if no challenge is found. act=False = classify
-    only (don't perform the gesture)."""
+    """Detect a challenge and clear it. A same-document gesture (Press & Hold on #px-captcha, a
+    slider element we can select) is solved directly and verified. Anything sealed in a
+    cross-origin iframe (Turnstile, DataDome, hCaptcha) can't be reached by querySelector, so
+    VISION is primary: this returns a 'vision:...' brief with a screenshot + the iframe rect —
+    you read the control and act by coordinates, then confirm with challenge_cleared(). HARD
+    perception (identify images, read text, rotate, audio) returns 'escalate:'. 'none' if clear.
+    act=False = classify only."""
     d = _eval(_DETECT_JS) or {"kind": "none"}
     kind, sel, why = d.get("kind"), d.get("sel"), d.get("why", "")
-    if kind == "none":
-        return "none"
     if kind == "hard":
         return "escalate:" + why + " — needs perception; ask the operator, don't guess"
     if not act:
-        return "easy:%s (%s) sel=%s" % (kind, why, sel)
-    try:
-        if kind == "hold":
-            press_hold(sel, seconds=hold_seconds)
-            return "solved:hold — press-held %s (verify it cleared; retry once, else escalate)" % sel
-        if kind == "drag":
-            if not sel:
-                return "easy:drag (%s) — found a slider but couldn't pin a selector; drag it by hand with drag(sel, dx=<track width>)" % why
-            c = _center(sel)
-            if c:
-                drag(sel, dx=320)                                # slide well to the right; simple sliders latch at the end
-                return "solved:drag — slid %s right (verify; if it snapped back, escalate)" % sel
-            return "easy:drag — slider not locatable; escalate if it blocks you"
-        if kind == "checkbox":
-            return ("easy:checkbox (%s) — it's in a cross-origin iframe. Screenshot, read the checkbox pixel, "
-                    "then click_xy(x, y) (a trusted click passes through the iframe). If an image grid appears "
-                    "after, that's the HARD kind — escalate." % why)
-    except Exception as e:
-        return "escalate:gesture failed (%r) — ask the operator" % (e,)
+        if kind != "none":
+            return "easy:%s (%s) sel=%s" % (kind, why, sel)
+        xo = _xorigin_challenge()
+        return ("easy:cross-origin %s challenge (sealed iframe) — solve by vision" % xo["vendor"]) if xo else "none"
+    # same-document element we can select → trusted gesture directly, then verify (fast path)
+    if sel and kind in ("hold", "drag"):
+        try:
+            if kind == "hold":
+                press_hold(sel, seconds=hold_seconds)
+            else:
+                drag(sel, dx=320)                                # simple sliders latch at the right
+            _it.sleep(2.0)
+            return "solved:%s %s — %s" % (kind, sel, challenge_cleared())
+        except Exception as e:
+            return "escalate:gesture failed (%r) — ask the operator" % (e,)
+    # sealed cross-origin (checkbox iframe, a slider/hold we couldn't select, or one DETECT
+    # missed) → hand to vision; never guess pixels from a table.
+    xo = _xorigin_challenge()
+    if xo or kind in ("checkbox", "hold", "drag"):
+        return _vision_handoff(xo, kind)
     return "none"
