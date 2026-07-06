@@ -25,20 +25,17 @@ Every other tool hands each agent a *throwaway* browser. But you don't want thro
 
 **Install (macOS, Node 18+):**
 
-```bash
-npm install -g @pa1nd/horse-browser
-```
-
-That fetches a dedicated **Chrome for Testing** (lives alongside your daily browser, never fights it for the dock), puts the `horse-browser` launcher on your PATH, and wires in the extension. Then start it and **sign into your apps once** — those logins persist for every agent:
-
-```bash
-horse-browser        # launches the dedicated browser, no focus steal
-```
-
-To *drive* it, you also need **browser-harness** (a small Python tool horse-browser wraps) — a one-time prereq:
+horse-browser is driven through **browser-harness** (a small Python tool it wraps), so install that **first** — the horse-browser install fails loudly without it:
 
 ```bash
 uv tool install browser-harness      # or: pipx install browser-harness
+npm install -g @pa1nd/horse-browser
+```
+
+The npm install fetches a dedicated **Chrome for Testing** (lives alongside your daily browser, never fights it for the dock), puts the `horse-browser` launcher on your PATH, and wires in the extension. Then start it and **sign into your apps once** — those logins persist for every agent:
+
+```bash
+horse-browser        # launches the dedicated browser, no focus steal
 ```
 
 Prefer your own Chromium? `export HORSE_BROWSER_BIN=/path/to/chromium` before installing.

@@ -24,6 +24,26 @@ EXT="$HERE/extension"
 
 mkdir -p "$CONFIG_DIR" "$BINDIR" "$CACHE"
 
+# 0. hard prerequisite: browser-harness ─────────────────────────────────────────
+# horse-browser drives the browser THROUGH browser-harness (a separate Python tool),
+# so it MUST be installed first. Fail loudly — from a hand install and from a silent npm
+# postinstall alike — rather than limp on without it. Checked before the Chrome fetch so
+# we don't pull 170MB only to bail.
+if ! command -v browser-harness >/dev/null 2>&1; then
+  echo "" >&2
+  echo "✗ horse-browser: browser-harness is required and isn't installed." >&2
+  echo "  Install it first, then re-run:" >&2
+  echo "      uv tool install browser-harness       # or: pipx install browser-harness" >&2
+  echo "  (https://github.com/browser-use/browser-harness)" >&2
+  exit 1
+fi
+
+# Our own SKILL.md ships in the package dir — under `npm -g` that's a volatile Node-version
+# path (…/fnm/node-versions/vX/…). Copy it to a stable ~/.config home the CLAUDE.md @-import
+# points at. REQUIRED, and done here — before the Chrome fetch (which may degrade) — so it
+# always exists; set -e aborts the install if the copy can't be written.
+"$HERE/claude-md.sh" skill
+
 # 1. browser ──────────────────────────────────────────────────────────────────
 BIN="${HORSE_BROWSER_BIN:-}"
 if [ -n "$BIN" ]; then
@@ -72,17 +92,7 @@ fi
 # 0.1.1+: ~/.config/browser-harness/agent-workspace; or whatever BH_AGENT_WORKSPACE
 # points at) — so instead of guessing, we ASK browser-harness itself where it loads
 # from via its own python (helpers.AGENT_WORKSPACE).
-if ! command -v browser-harness >/dev/null 2>&1; then
-  # browser-harness is a separate (Python) prerequisite. In a hand/curl install it's
-  # required up front. Under npm it's a *declared* prereq the user may not have yet — so
-  # warn and finish cleanly (config + Chrome are already in place; re-run setup once
-  # browser-harness is installed to get the bh_open helpers) rather than failing the install.
-  echo "! browser-harness not found on PATH — skipping the bh_open helper sync." >&2
-  echo "  Install it (e.g. 'uv tool install browser-harness'), then re-run setup." >&2
-  [ -n "${HORSE_FROM_NPM:-}" ] && exit 0
-  echo "  (https://github.com/browser-use/browser-harness)" >&2
-  exit 1
-fi
+# browser-harness presence is guaranteed by the hard prerequisite check at the top.
 HELPERS_SRC="$HERE/agent-helpers.py"
 INPUT_SRC="$HERE/agent-input.py"   # Tier 2 trusted-input layer → workspace/horse_input.py
 # Legacy marker: pre-0.4.1 installs appended the helpers INLINE under this line, and
@@ -151,12 +161,6 @@ if [ -z "$BH_DIR" ]; then
   done
 fi
 [ -n "$BH_DIR" ] && [ "$BH_DIR/agent-workspace" != "$WS_NEW" ] && install_helpers_into "$BH_DIR/agent-workspace"
-
-# Our own SKILL.md lives in the package dir — under `npm -g` that's a volatile Node-version
-# path (…/fnm/node-versions/vX/…). Keep a stable copy in ~/.config so the CLAUDE.md @-import
-# (and the next-steps hint) never point into the Node tree. Writes ~/.config only — safe
-# even from a silent npm postinstall, so it runs in both modes.
-"$HERE/claude-md.sh" skill >/dev/null 2>&1 || true
 
 # Keep the stable symlink that ~/.claude/CLAUDE.md's @-import points at aimed at the current
 # (Python-version-specific) packaged SKILL, so the import never rots across reinstalls. We
