@@ -50,12 +50,25 @@ done
 set -- ${_args[@]+"${_args[@]}"}
 case "$LANE" in *[!A-Za-z0-9_-]*|"") LANE="" ;; esac   # sane token or nothing
 
-# Capture a script ONLY when stdin is a heredoc / file / pipe (a regular file or a
-# FIFO) — those always reach EOF, so the read can't block. A bare invocation's stdin
-# is a tty, /dev/null, or the caller's open socket (none of which is -f/-p), so we
-# never read — and so never hang — when there's no script to run.
+# Capture a script ONLY when stdin can deliver one without blocking forever:
+#   • regular file / FIFO (-f/-p: heredoc, `< file`, shell pipe) — always reaches EOF.
+#   • socket (-S) — what Node/libuv stdio pipes are (`spawn(…, {stdio:'pipe'})` hands
+#     the child a socketpair, not a FIFO). But an *idle* inherited socket (bare spawn,
+#     stdin never written or closed) never EOFs — so peek first: read to EOF only if a
+#     byte arrives within a beat. A piped script's data is already in flight when we
+#     get here; an idle socket stays silent and we fall through to bare mode instead
+#     of hanging.
+# A bare invocation's stdin is otherwise a tty or /dev/null — never read, never hang.
 script=""
-if [ -f /dev/fd/0 ] || [ -p /dev/fd/0 ]; then script="$(cat)"; fi
+if [ -f /dev/fd/0 ] || [ -p /dev/fd/0 ]; then
+  script="$(cat)"
+elif [ -S /dev/fd/0 ]; then
+  script="$(python3 -c '
+import select, sys
+if select.select([sys.stdin], [], [], 1.0)[0]:
+    sys.stdout.write(sys.stdin.read())
+' 2>/dev/null || true)"
+fi
 # Driver mode = a script on stdin OR args to forward to browser-harness.
 PASSTHROUGH=
 if [ -n "$script" ] || [ "$#" -gt 0 ]; then PASSTHROUGH=1; fi
