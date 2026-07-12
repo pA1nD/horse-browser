@@ -28,8 +28,17 @@ BIN="${HORSE_BROWSER_BIN:-${BROWSER_BIN:-}}"
 EXT="${EXTENSION_DIR:-}"
 CACHE="${HORSE_BROWSER_CACHE:-$HOME/.cache/horse-browser}"
 
-# Repo root (resolves the ~/.local/bin symlink) — integrations/ lives here.
-SELF="$0"; [ -L "$SELF" ] && SELF="$(readlink "$SELF")"
+# Repo/package root (resolves the launcher symlink) — integrations/ lives here.
+# npm's bin symlink is RELATIVE (../lib/node_modules/…), so resolve it against the
+# symlink's own directory, not the caller's cwd.
+SELF="$0"
+if [ -L "$SELF" ]; then
+  _target="$(readlink "$SELF")"
+  case "$_target" in
+    /*) SELF="$_target" ;;
+    *)  SELF="$(dirname "$SELF")/$_target" ;;
+  esac
+fi
 ROOT="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd || true)"
 
 # ── --lane: harness-internal sub-identity ─────────────────────────────────────
