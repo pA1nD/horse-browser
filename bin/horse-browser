@@ -117,6 +117,46 @@ heal_log() {
     "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$event" "$since_wake" "$*" >> "$log" 2>/dev/null || true
 }
 
+# ── display sleep: paint needs compositing, compositing needs an awake display ──
+# With the display asleep (esp. clamshell: lid closed, box kept awake by SSH/AC),
+# WindowServer composites nothing, so Page.captureScreenshot hangs on EVERY tab and
+# the wedge probe below false-positives — killing healthy GPU processes achieves
+# nothing (seen live on the Air, 2026-07-11). Measured there: one user-activity
+# declaration resumes compositing in ~20ms; macOS force-blanks again ~10s later even
+# while the assertion is still held; re-declaring every 5s holds it indefinitely.
+# The panel stays dark in clamshell, so waking costs ~nothing.
+
+# display_asleep: 0 when the main display is asleep (no compositing possible).
+display_asleep() {
+  python3 - <<'PY' 2>/dev/null
+import ctypes, sys
+cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+sys.exit(0 if cg.CGDisplayIsAsleep(cg.CGMainDisplayID()) else 1)
+PY
+}
+
+# wake_display: one user-activity declaration — good for ~10s of compositing.
+wake_display() {
+  caffeinate -u -t 6 >/dev/null 2>&1 &
+  sleep 0.3   # compositing resumes in ~20ms; give it a beat
+}
+
+# display_pump <pid>: while <pid> lives, re-wake the display whenever it's asleep, so
+# screenshots keep working through a whole driver script with the lid closed. Gated
+# on "asleep right now" — a user actively at the machine never notices it.
+display_pump() {
+  while kill -0 "$1" 2>/dev/null; do
+    display_asleep && wake_display
+    sleep 5
+  done
+}
+
+clamshell() {
+  if ioreg -r -k AppleClamshellState -d 1 2>/dev/null \
+       | grep -c '"AppleClamshellState" = Yes' >/dev/null
+  then echo Yes; else echo No; fi
+}
+
 # gpu_healthy [timeout]: 0 = paints fine, 1 = wedged (screenshot hangs), 2 = can't
 # tell. Probes with a 1x1 Page.captureScreenshot — it needs a composited frame, so
 # it hangs exactly when the GPU is wedged — over a dependency-free stdlib websocket.
@@ -197,6 +237,7 @@ heal_gpu() {
   for _ in $(seq 1 15); do
     sleep 1
     cdp_up || continue
+    display_asleep && wake_display   # don't let a re-blank mid-wait fail a real heal
     if gpu_healthy 6; then echo "horse-browser: GPU recovered on :$PORT" >&2; return 0; fi
   done
   echo "horse-browser: GPU did not recover from the process kill — escalating to a full relaunch." >&2
@@ -468,9 +509,21 @@ ensure_browser() {
         "gpu_etime=$(ps -o etime= -p "$fb_pid" 2>/dev/null | xargs || true)" || return 1
       return 0
     fi
+    if display_asleep; then                           # not a GPU problem — wake, then probe
+      say "horse-browser: display is asleep — waking it for the paint check."
+      wake_display
+    fi
     local rc=0
     gpu_healthy 6 || rc=$?
-    if [ "$rc" = 1 ]; then                            # wedged
+    if [ "$rc" = 1 ] && display_asleep; then
+      # Paint hangs because the display sleeps and won't stay awake — killing or
+      # relaunching can't fix that. Proceed: DOM automation works, and driver mode's
+      # display_pump keeps screenshots alive.
+      say "horse-browser: no compositing while the display sleeps — proceeding (not a GPU wedge)."
+      heal_log display-asleep "clamshell=$(clamshell)"
+      return 0
+    fi
+    if [ "$rc" = 1 ]; then                            # wedged (display awake, still no paint)
       if recently_healed; then                        # a kill just happened — don't stack kills
         say "horse-browser: GPU wedged again ${HEAL_AGO}s after a kill — escalating to a full relaunch."
         relaunch_browser wedge-relaunch "last_kill=${HEAL_AGO}s" || return 1
@@ -604,6 +657,11 @@ if [ -n "$PASSTHROUGH" ]; then
       export BU_NAME="hb-${_tail}${LANE:+-$LANE}"
     fi
   fi
+
+  # With the lid closed / display asleep, screenshots would hang ~10s after each wake
+  # (see display_pump) — keep compositing alive for the script's lifetime. $$ survives
+  # the exec below, so the pump dies with browser-harness. Double-fork detaches it.
+  ( display_pump $$ >/dev/null 2>&1 & )
 
   if [ -n "$script" ]; then
     exec browser-harness "$@" <<<"$script"   # feed the captured heredoc as stdin
