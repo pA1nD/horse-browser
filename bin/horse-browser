@@ -141,12 +141,18 @@ wake_display() {
   sleep 0.3   # compositing resumes in ~20ms; give it a beat
 }
 
-# display_pump <pid>: while <pid> lives, re-wake the display whenever it's asleep, so
-# screenshots keep working through a whole driver script with the lid closed. Gated
-# on "asleep right now" — a user actively at the machine never notices it.
+# display_pump <pid>: while <pid> lives, keep the display composited so screenshots
+# work through a whole driver script with the lid closed. Until the display is first
+# seen asleep, do nothing — a user actively at the machine never notices it. After
+# waking it once, re-declare EVERY cycle: macOS re-blanks ~10s after each declaration,
+# and a 5s check gated on "asleep right now" would leave composite-less gaps.
+# NB: runs under set -e — only if-guarded statuses, no bare && lists.
 display_pump() {
+  local woke=
   while kill -0 "$1" 2>/dev/null; do
-    display_asleep && wake_display
+    if display_asleep; then wake_display; woke=1
+    elif [ -n "$woke" ]; then wake_display
+    fi
     sleep 5
   done
 }
@@ -237,7 +243,7 @@ heal_gpu() {
   for _ in $(seq 1 15); do
     sleep 1
     cdp_up || continue
-    display_asleep && wake_display   # don't let a re-blank mid-wait fail a real heal
+    if display_asleep; then wake_display; fi   # don't let a re-blank mid-wait fail a real heal
     if gpu_healthy 6; then echo "horse-browser: GPU recovered on :$PORT" >&2; return 0; fi
   done
   echo "horse-browser: GPU did not recover from the process kill — escalating to a full relaunch." >&2
