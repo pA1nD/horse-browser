@@ -89,6 +89,33 @@ cdp_up() { curl -sf "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
 # restarted. RECOVERY (proven, non-destructive — no tabs/data lost): kill ONLY this
 # profile's GPU child; Chrome respawns it and the compositor rebuilds. So every
 # `horse-browser` invocation probes paint and heals a frozen browser automatically.
+#
+# ESCALATION: Chrome counts our kills as GPU crashes — ~3 in quick succession (e.g.
+# several sessions healing concurrently after wake) make it fall back to software GL
+# (--use-gl=disabled) for the rest of the session. That state still paints, so
+# gpu_healthy passes, but the software compositor pins a CPU core (observed
+# 2026-07-11: Activity Monitor energy impact ~7,500). So: never kill twice within
+# the backoff window, detect the fallback state on every invocation, and in both
+# cases escalate to a full quit + relaunch (tabs preserved) — the only thing that
+# restores hardware GL.
+
+# Stamp of the last GPU-process kill, for the backoff above.
+HEAL_STAMP="$HOME/.config/horse-browser/.last-heal"
+
+# heal_log <event> [k=v …]: one tab-separated line per incident, with enough context
+# (time since wake, process ages, trigger details) to understand over time WHY the
+# wedge/fallback fires — not just that it did. Read it: ~/.config/horse-browser/heal.log
+heal_log() {
+  local event="$1"; shift || true
+  local log="${HORSE_BROWSER_HEAL_LOG:-$HOME/.config/horse-browser/heal.log}"
+  mkdir -p "$(dirname "$log")" 2>/dev/null || true
+  local now wake since_wake="?"
+  now=$(date +%s)
+  wake=$(sysctl -n kern.waketime 2>/dev/null | sed -n 's/.*{ sec = \([0-9]*\).*/\1/p')
+  [ -n "$wake" ] && since_wake="$(( now - wake ))s"
+  printf '%s\t%s\tsince_wake=%s\t%s\n' \
+    "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$event" "$since_wake" "$*" >> "$log" 2>/dev/null || true
+}
 
 # gpu_healthy [timeout]: 0 = paints fine, 1 = wedged (screenshot hangs), 2 = can't
 # tell. Probes with a 1x1 Page.captureScreenshot — it needs a composited frame, so
@@ -161,13 +188,9 @@ heal_gpu() {
     return 1
   fi
   echo "horse-browser: GPU wedged after sleep — restarting GPU process ($pids); Chrome will respawn it." >&2
-
-  # One-line record of each heal, so leaving the browser running quietly tracks how
-  # often the wedge actually fires. No polling daemon.
-  HEAL_LOG="${HORSE_BROWSER_HEAL_LOG:-$HOME/.config/horse-browser/heal.log}"
-  mkdir -p "$(dirname "$HEAL_LOG")" 2>/dev/null || true
-  printf '%s\twedge-healed\tgpu_pid=%s\n' \
-    "$(date '+%Y-%m-%dT%H:%M:%S%z')" "${pids//$'\n'/,}" >> "$HEAL_LOG" 2>/dev/null || true
+  heal_log wedge-healed "gpu_pid=${pids//$'\n'/,}" \
+    "gpu_etime=$(ps -o etime= -p "${pids%%$'\n'*}" 2>/dev/null | xargs || true)"
+  date +%s > "$HEAL_STAMP" 2>/dev/null || true   # backoff stamp: no second kill soon after
 
   # shellcheck disable=SC2086
   kill $pids 2>/dev/null || true
@@ -176,8 +199,128 @@ heal_gpu() {
     cdp_up || continue
     if gpu_healthy 6; then echo "horse-browser: GPU recovered on :$PORT" >&2; return 0; fi
   done
-  echo "horse-browser: GPU did not recover — quit the browser and re-run horse-browser." >&2
+  echo "horse-browser: GPU did not recover from the process kill — escalating to a full relaunch." >&2
+  heal_log wedge-heal-failed "waited=15s"
   return 1
+}
+
+# recently_healed: a GPU-process kill happened within the backoff window (sets
+# HEAL_AGO). A second kill that soon risks tripping Chrome's crash-count fallback
+# (see gpu_fallback), so the caller escalates to relaunch_browser instead.
+recently_healed() {
+  local last now
+  last=$(cat "$HEAL_STAMP" 2>/dev/null || echo 0); now=$(date +%s)
+  HEAL_AGO=$(( now - last ))
+  [ "$HEAL_AGO" -lt "${HORSE_BROWSER_HEAL_BACKOFF:-600}" ]
+}
+
+# gpu_fallback: 0 when this profile's GPU process runs in software-GL fallback (sets
+# GPU_FALLBACK_INFO to its "pid command" line). gpu_healthy can't catch this state —
+# software rendering paints fine — so it's probed separately on every invocation.
+gpu_fallback() {
+  GPU_FALLBACK_INFO=$(ps -ww -o pid=,command= -ax | grep -- "--type=gpu-process" \
+    | grep -F -- "--user-data-dir=$PROFILE" | grep -v grep \
+    | grep -E -- '--use-gl=disabled|--use-angle=swiftshader' | head -1) || true
+  [ -n "$GPU_FALLBACK_INFO" ]
+}
+
+# relaunch_browser <reason> [k=v …]: full quit + relaunch, preserving tabs. The only
+# recovery for the software-GL fallback (the crash-count state is in-memory), and the
+# escalation when a GPU-process kill didn't stick. Tab URLs are saved first; any the
+# browser's own session-restore doesn't bring back are reopened (deduped). A lock
+# keeps concurrent invocations — the usual trigger is several sessions healing at
+# once after wake — from relaunching over each other.
+relaunch_browser() {
+  local reason="${1:-relaunch}"; shift || true
+  local lock="$HOME/.config/horse-browser/.relaunch-lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    local lts lnow
+    lts=$(stat -f %m "$lock" 2>/dev/null || echo 0); lnow=$(date +%s)
+    if [ $(( lnow - lts )) -gt 120 ]; then           # stale lock from a crashed relaunch
+      rmdir "$lock" 2>/dev/null || true
+      mkdir "$lock" 2>/dev/null || return 1
+    else
+      say "horse-browser: another invocation is already relaunching — waiting…"
+      for _ in $(seq 1 60); do
+        sleep 1
+        [ -d "$lock" ] && continue
+        cdp_up && return 0
+      done
+      return 1
+    fi
+  fi
+
+  say "horse-browser: relaunching the browser ($reason) — open tabs will be restored…"
+
+  # 1. save real page URLs so nothing is lost across the quit
+  local saved="$HOME/.config/horse-browser/.relaunch-tabs.json" tabs_n
+  tabs_n=$(python3 - "$PORT" "$saved" 2>/dev/null <<'PY' || echo "?"
+import json, sys, urllib.request
+port, out = sys.argv[1], sys.argv[2]
+try:
+    tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=4))
+    urls = [t["url"] for t in tabs if t.get("type") == "page"
+            and t.get("url", "").startswith(("http://", "https://", "file://"))]
+except Exception:
+    urls = []
+json.dump(urls, open(out, "w"))
+print(len(urls))
+PY
+)
+  heal_log "$reason" "tabs_saved=$tabs_n" "$@"
+
+  # 2. quit THIS profile's browser (graceful, then force) and wait for it to exit
+  local bpids gone p
+  bpids=$(ps -ww -o pid,command -ax | grep -F -- "--user-data-dir=$PROFILE" \
+            | grep -v -- "--type=" | grep -v grep | awk '{print $1}') || true
+  if [ -n "$bpids" ]; then
+    # shellcheck disable=SC2086
+    kill $bpids 2>/dev/null || true
+    gone=
+    for _ in $(seq 1 30); do
+      gone=1
+      for p in $bpids; do kill -0 "$p" 2>/dev/null && { gone=; break; }; done
+      [ -n "$gone" ] && break
+      sleep 0.5
+    done
+    # shellcheck disable=SC2086
+    [ -z "$gone" ] && { kill -9 $bpids 2>/dev/null || true; sleep 1; }
+  fi
+
+  # 3. fresh launch (ensure_browser takes its launch path now that the browser is gone)
+  if ! ensure_browser; then
+    heal_log relaunch-failed "reason=$reason"
+    rmdir "$lock" 2>/dev/null || true
+    return 1
+  fi
+  rm -f "$HEAL_STAMP" 2>/dev/null || true   # fresh browser: crash count is 0, kills are safe again
+
+  # 4. reopen whatever the browser's own session-restore didn't bring back
+  sleep 3   # let session-restore land first, so the dedupe below sees its tabs
+  local n
+  n=$(python3 - "$PORT" "$saved" 2>/dev/null <<'PY' || echo 0
+import json, sys, urllib.parse, urllib.request
+port, path = sys.argv[1], sys.argv[2]
+try: saved = json.load(open(path))
+except Exception: saved = []
+try:
+    cur = {t.get("url") for t in json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=4))}
+except Exception:
+    cur = set()
+n = 0
+for u in dict.fromkeys(saved):                    # keep order, drop duplicates
+    if u in cur: continue
+    try:                                          # /json/new takes the raw URL as its query
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(u, safe='')}", method="PUT")
+        urllib.request.urlopen(req, timeout=5); n += 1
+    except Exception: pass
+print(n)
+PY
+)
+  say "horse-browser: relaunched — $n tab(s) reopened beyond session-restore."
+  rmdir "$lock" 2>/dev/null || true
+  return 0
 }
 
 # reap_orphan_daemons: stop per-session browser-harness daemons (BU_NAME hb-*, or the
@@ -316,9 +459,25 @@ PY
 ensure_browser() {
   if cdp_up; then
     say "horse-browser: already up on :$PORT"
+    if gpu_fallback; then
+      local fb_pid fb_flag
+      fb_pid=$(awk '{print $1}' <<<"$GPU_FALLBACK_INFO")
+      fb_flag=$(grep -oE -- '--use-gl=disabled|--use-angle=swiftshader' <<<"$GPU_FALLBACK_INFO" | head -1)
+      say "horse-browser: GPU stuck in software rendering ($fb_flag) — relaunching to restore hardware GL."
+      relaunch_browser fallback-relaunch "flag=$fb_flag" "gpu_pid=$fb_pid" \
+        "gpu_etime=$(ps -o etime= -p "$fb_pid" 2>/dev/null | xargs || true)" || return 1
+      return 0
+    fi
     local rc=0
     gpu_healthy 6 || rc=$?
-    if [ "$rc" = 1 ]; then heal_gpu || return 1; fi   # wedged — restart the GPU process
+    if [ "$rc" = 1 ]; then                            # wedged
+      if recently_healed; then                        # a kill just happened — don't stack kills
+        say "horse-browser: GPU wedged again ${HEAL_AGO}s after a kill — escalating to a full relaunch."
+        relaunch_browser wedge-relaunch "last_kill=${HEAL_AGO}s" || return 1
+      else
+        heal_gpu || relaunch_browser wedge-relaunch "after=failed-heal" || return 1
+      fi
+    fi
     return 0                                          # 0 = paints fine, 2 = no page to probe
   fi
 
