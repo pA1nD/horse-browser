@@ -136,22 +136,25 @@ PY
 }
 
 # wake_display: one user-activity declaration — good for ~10s of compositing.
+# Latches WOKE_DISPLAY so display_pump (spawned later, inherits shell vars) knows
+# this invocation is operating on a display that sleeps and pumps unconditionally.
 wake_display() {
+  WOKE_DISPLAY=1
   caffeinate -u -t 6 >/dev/null 2>&1 &
   sleep 0.3   # compositing resumes in ~20ms; give it a beat
 }
 
 # display_pump <pid>: while <pid> lives, keep the display composited so screenshots
-# work through a whole driver script with the lid closed. Until the display is first
-# seen asleep, do nothing — a user actively at the machine never notices it. After
-# waking it once, re-declare EVERY cycle: macOS re-blanks ~10s after each declaration,
-# and a 5s check gated on "asleep right now" would leave composite-less gaps.
+# work through a whole driver script with the lid closed. Once ANY wake happened —
+# the launcher's pre-probe wake (WOKE_DISPLAY inherited) or one of ours — re-declare
+# EVERY cycle: macOS re-blanks ~10s after each declaration, and a 5s check gated on
+# "asleep right now" would leave composite-less gaps. Until then do nothing, so a
+# user actively at the machine never notices it.
 # NB: runs under set -e — only if-guarded statuses, no bare && lists.
 display_pump() {
-  local woke=
   while kill -0 "$1" 2>/dev/null; do
-    if display_asleep; then wake_display; woke=1
-    elif [ -n "$woke" ]; then wake_display
+    if [ -n "${WOKE_DISPLAY:-}" ]; then wake_display
+    elif display_asleep; then wake_display
     fi
     sleep 5
   done
