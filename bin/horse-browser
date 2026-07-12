@@ -129,10 +129,18 @@ heal_log() {
 # With the display asleep (esp. clamshell: lid closed, box kept awake by SSH/AC),
 # WindowServer composites nothing, so Page.captureScreenshot hangs on EVERY tab and
 # the wedge probe below false-positives — killing healthy GPU processes achieves
-# nothing (seen live on the Air, 2026-07-11). Measured there: one user-activity
-# declaration resumes compositing in ~20ms; macOS force-blanks again ~10s later even
-# while the assertion is still held; re-declaring every 5s holds it indefinitely.
-# The panel stays dark in clamshell, so waking costs ~nothing.
+# nothing (seen live on the Air, 2026-07-11).
+#
+# DO NOT WAKE THE DISPLAY (tried in v0.8.4/5, measured, reverted): a user-activity
+# declaration (caffeinate -u) does resume compositing in ~20ms, but macOS force-
+# re-blanks a lid-closed display ~10s after ANY wake — held assertions and 5s
+# re-declarations don't prevent it — and on that transition Chrome for Testing
+# drops EVERY DevTools websocket (all sessions', not just ours; measured with lsof:
+# even Chrome's own extension-page CDP clients disconnect). One wake = one delayed
+# connection massacre. So when the display sleeps we skip the paint probe and
+# proceed: DOM automation over a stable websocket works fine; screenshots need a
+# display that never sleeps — attach a virtual one (BetterDisplay, DeskPad, or an
+# HDMI dummy plug) for lid-closed visual work.
 
 # display_asleep: 0 when the main display is asleep (no compositing possible).
 display_asleep() {
@@ -141,31 +149,6 @@ import ctypes, sys
 cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
 sys.exit(0 if cg.CGDisplayIsAsleep(cg.CGMainDisplayID()) else 1)
 PY
-}
-
-# wake_display: one user-activity declaration — good for ~10s of compositing.
-# Latches WOKE_DISPLAY so display_pump (spawned later, inherits shell vars) knows
-# this invocation is operating on a display that sleeps and pumps unconditionally.
-wake_display() {
-  WOKE_DISPLAY=1
-  ( caffeinate -u -t 6 >/dev/null 2>&1 & )   # double-fork: ssh sessions mustn't wait on it
-  sleep 0.3   # compositing resumes in ~20ms; give it a beat
-}
-
-# display_pump <pid>: while <pid> lives, keep the display composited so screenshots
-# work through a whole driver script with the lid closed. Once ANY wake happened —
-# the launcher's pre-probe wake (WOKE_DISPLAY inherited) or one of ours — re-declare
-# EVERY cycle: macOS re-blanks ~10s after each declaration, and a 5s check gated on
-# "asleep right now" would leave composite-less gaps. Until then do nothing, so a
-# user actively at the machine never notices it.
-# NB: runs under set -e — only if-guarded statuses, no bare && lists.
-display_pump() {
-  while kill -0 "$1" 2>/dev/null; do
-    if [ -n "${WOKE_DISPLAY:-}" ]; then wake_display
-    elif display_asleep; then wake_display
-    fi
-    sleep 5
-  done
 }
 
 clamshell() {
@@ -254,7 +237,14 @@ heal_gpu() {
   for _ in $(seq 1 15); do
     sleep 1
     cdp_up || continue
-    if display_asleep; then wake_display; fi   # don't let a re-blank mid-wait fail a real heal
+    if display_asleep; then
+      # Display fell asleep mid-heal: recovery can't be verified by paint, and
+      # waking would cause the CDP-connection drop described above. Assume the
+      # respawned GPU process is fine and let the next awake probe re-check.
+      echo "horse-browser: display slept during the heal — assuming recovery." >&2
+      heal_log wedge-heal-unverified "clamshell=$(clamshell)"
+      return 0
+    fi
     if gpu_healthy 6; then echo "horse-browser: GPU recovered on :$PORT" >&2; return 0; fi
   done
   echo "horse-browser: GPU did not recover from the process kill — escalating to a full relaunch." >&2
@@ -526,20 +516,21 @@ ensure_browser() {
         "gpu_etime=$(ps -o etime= -p "$fb_pid" 2>/dev/null | xargs || true)" || return 1
       return 0
     fi
-    if display_asleep; then                           # not a GPU problem — wake, then probe
-      say "horse-browser: display is asleep — waking it for the paint check."
-      wake_display
+    if display_asleep; then
+      # No compositing, so the paint probe would hang — and it is NOT a GPU wedge.
+      # Never wake the display for it (see the display-sleep block above: any wake
+      # triggers a delayed re-blank that kills every CDP websocket browser-wide).
+      say "horse-browser: display asleep — skipping paint check (DOM automation works; screenshots need a virtual display)."
+      local dstamp="$HOME/.config/horse-browser/.last-display-asleep-log" dnow dlast
+      dnow=$(date +%s); dlast=$(cat "$dstamp" 2>/dev/null || echo 0)
+      if [ $(( dnow - dlast )) -gt 1800 ]; then      # log the episode, not every call
+        echo "$dnow" > "$dstamp" 2>/dev/null || true
+        heal_log display-asleep "clamshell=$(clamshell)"
+      fi
+      return 0
     fi
     local rc=0
     gpu_healthy 6 || rc=$?
-    if [ "$rc" = 1 ] && display_asleep; then
-      # Paint hangs because the display sleeps and won't stay awake — killing or
-      # relaunching can't fix that. Proceed: DOM automation works, and driver mode's
-      # display_pump keeps screenshots alive.
-      say "horse-browser: no compositing while the display sleeps — proceeding (not a GPU wedge)."
-      heal_log display-asleep "clamshell=$(clamshell)"
-      return 0
-    fi
     if [ "$rc" = 1 ]; then                            # wedged (display awake, still no paint)
       if recently_healed; then                        # a kill just happened — don't stack kills
         say "horse-browser: GPU wedged again ${HEAL_AGO}s after a kill — escalating to a full relaunch."
@@ -674,11 +665,6 @@ if [ -n "$PASSTHROUGH" ]; then
       export BU_NAME="hb-${_tail}${LANE:+-$LANE}"
     fi
   fi
-
-  # With the lid closed / display asleep, screenshots would hang ~10s after each wake
-  # (see display_pump) — keep compositing alive for the script's lifetime. $$ survives
-  # the exec below, so the pump dies with browser-harness. Double-fork detaches it.
-  ( display_pump $$ >/dev/null 2>&1 & )
 
   if [ -n "$script" ]; then
     exec browser-harness "$@" <<<"$script"   # feed the captured heredoc as stdin
