@@ -51,18 +51,17 @@ set -- ${_args[@]+"${_args[@]}"}
 case "$LANE" in *[!A-Za-z0-9_-]*|"") LANE="" ;; esac   # sane token or nothing
 
 # Capture a script ONLY when stdin can deliver one without blocking forever:
-#   • regular file / FIFO (-f/-p: heredoc, `< file`, shell pipe) — always reaches EOF.
-#   • socket (-S) — what Node/libuv stdio pipes are (`spawn(…, {stdio:'pipe'})` hands
-#     the child a socketpair, not a FIFO). But an *idle* inherited socket (bare spawn,
-#     stdin never written or closed) never EOFs — so peek first: read to EOF only if a
-#     byte arrives within a beat. A piped script's data is already in flight when we
-#     get here; an idle socket stays silent and we fall through to bare mode instead
-#     of hanging.
+#   • regular file (-f: heredoc on macOS bash, `< file`) — always reaches EOF.
+#   • FIFO / socket (-p/-S: shell pipes, Node/libuv socketpairs, ssh channels) — a
+#     piped script's data is already in flight when we get here, but an *idle* held
+#     pipe never EOFs (bare `ssh host horse-browser` with stdin kept open, bare Node
+#     spawn) — so peek first: read to EOF only if a byte arrives within a beat;
+#     silence falls through to bare mode instead of hanging.
 # A bare invocation's stdin is otherwise a tty or /dev/null — never read, never hang.
 script=""
-if [ -f /dev/fd/0 ] || [ -p /dev/fd/0 ]; then
+if [ -f /dev/fd/0 ]; then
   script="$(cat)"
-elif [ -S /dev/fd/0 ]; then
+elif [ -p /dev/fd/0 ] || [ -S /dev/fd/0 ]; then
   script="$(python3 -c '
 import select, sys
 if select.select([sys.stdin], [], [], 1.0)[0]:
@@ -140,7 +139,7 @@ PY
 # this invocation is operating on a display that sleeps and pumps unconditionally.
 wake_display() {
   WOKE_DISPLAY=1
-  caffeinate -u -t 6 >/dev/null 2>&1 &
+  ( caffeinate -u -t 6 >/dev/null 2>&1 & )   # double-fork: ssh sessions mustn't wait on it
   sleep 0.3   # compositing resumes in ~20ms; give it a beat
 }
 
