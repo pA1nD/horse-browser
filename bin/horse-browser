@@ -41,6 +41,13 @@ if [ -L "$SELF" ]; then
 fi
 ROOT="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd || true)"
 
+# The extension ships with this package — fall back to it when the config predates
+# EXTENSION_DIR or points at a folder that no longer exists (a fresh install must
+# never come up without the tab grouper + look-and-feel seeding).
+if { [ -z "$EXT" ] || [ ! -d "$EXT" ]; } && [ -n "$ROOT" ] && [ -d "$ROOT/extension" ]; then
+  EXT="$ROOT/extension"
+fi
+
 # ── --lane: harness-internal sub-identity ─────────────────────────────────────
 # Splits one agent session into isolated lanes (own daemon, own tab group) so
 # parallel agents sharing an env never clobber each other. Agents never pass it
@@ -549,40 +556,92 @@ ensure_browser() {
     return 1
   fi
 
+  # ── pre-launch gate: the profile must be truly free before we seed + launch ──
+  # Two proven failure modes when a previous browser process still holds the
+  # profile (a slow shutdown after `hb_update`'s quit, a crashed launch, an
+  # external quit): (1) Chrome writes Preferences back FROM MEMORY on exit, so a
+  # seed written in that window is silently clobbered — measured: a key written
+  # while Chrome runs is gone after quit; (2) `open -g` won't start a second
+  # instance while one is running — it just pokes the dying one and our --args
+  # (port, extension) are dropped. So: wait for lingering processes (they may be
+  # mid-shutdown), then hard-kill what remains.
+  local _lpids _p _gone
+  _lpids=$(ps -ww -o pid= -o command= -ax | grep -F -- "--user-data-dir=$PROFILE" \
+             | grep -v -- "--type=" | grep -v grep | awk '{print $1}') || true
+  if [ -n "$_lpids" ]; then
+    say "horse-browser: previous browser process still exiting — waiting…"
+    for _ in $(seq 1 30); do
+      _gone=1
+      for _p in $_lpids; do kill -0 "$_p" 2>/dev/null && { _gone=; break; }; done
+      [ -n "$_gone" ] && break
+      sleep 0.5
+    done
+    if [ -z "$_gone" ]; then
+      # shellcheck disable=SC2086
+      kill -9 $_lpids 2>/dev/null || true
+      sleep 1
+      say "horse-browser: force-killed a stuck browser process holding the profile."
+    fi
+  fi
+
   # Seed profile defaults that make this feel like a dedicated agent browser: pin the
   # extension's toolbar button (extensions.pinned_extensions), switch on the vertical
   # (left) tab strip (vertical_tabs), turn off "save password?" popups (they steal focus
   # and aren't gated by focus emulation), and skip the confirm dialog when closing/
-  # removing/deleting a tab group (it would block an agent mid-cleanup). All live in the
-  # profile's Preferences, which Chrome owns — so we only touch it here, while the browser
-  # is stopped. The unpacked extension's id is a hash of its absolute path, so we compute
-  # it. Creates Preferences if absent, so a fresh install gets them all. (Pin is re-asserted
-  # each launch; the rest are set-if-absent, so a user who changes them keeps their choice.)
-  if [ -n "$EXT" ] && command -v python3 >/dev/null 2>&1; then
-    python3 - "$PROFILE/Default/Preferences" "$EXT" <<'PY' || true
+  # removing/deleting a tab group (it would block an agent mid-cleanup). All live in each
+  # profile's Preferences, which Chrome owns — so we only touch them here, behind the
+  # gate above, while the browser is provably stopped.
+  #
+  # EVERY profile is seeded (Default + "Profile N"): a profile the user creates in the
+  # browser gets the look & feel on the next launch (Preferences can't be safely edited
+  # while Chrome runs). The extension itself needs no per-profile work: --load-extension
+  # loads into every profile of the session, secondary ones included (verified).
+  # Keys are per-key set-if-absent — Chrome sometimes writes PARTIAL blocks (a new
+  # profile gets vertical_tabs{collapsed_state,width} with no "enabled"), so block-level
+  # "set if key missing" would skip them forever. A user's explicit choice (enabled:
+  # false) is present, so setdefault keeps it. The pin is re-asserted each launch.
+  # Writes are atomic (tmp + rename): a crash mid-write can't corrupt Preferences and
+  # make Chrome reset the profile.
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$PROFILE" "$EXT" <<'PY' || echo "horse-browser: profile seeding failed (non-fatal) — settings may not apply this launch." >&2
 import hashlib, json, os, sys
-pref, ext = sys.argv[1], sys.argv[2]
-eid = "".join(chr(ord("a") + int(c, 16)) for c in hashlib.sha256(ext.encode()).hexdigest()[:32])
-os.makedirs(os.path.dirname(pref), exist_ok=True)
-d = {}
-if os.path.exists(pref):
-    try: d = json.load(open(pref))
-    except Exception: d = {}
-tb = d.setdefault("extensions", {}).get("pinned_extensions")
-if not isinstance(tb, list): tb = []
-if eid not in tb: tb.append(eid)
-d["extensions"]["pinned_extensions"] = tb
-# Default a fresh profile to the vertical (left) tab strip — the dedicated "agent
-# browser" feel. Set-if-absent, so a user who turns it off keeps it off.
-if "vertical_tabs" not in d:
-    d["vertical_tabs"] = {"enabled": True, "collapsed_state": False,
-                          "uncollapsed_width": 240, "enabled_first_time": True}
-# Agent-browser defaults (set-if-absent, so a user can re-enable them):
-d.setdefault("credentials_enable_service", False)   # no "save password?" popups
-_tg = d.setdefault("tab_groups", {}).setdefault("deletion", {})
-for _k in ("skip_dialog_on_close_tab", "skip_dialog_on_delete", "skip_dialog_on_remove_tab"):
-    _tg.setdefault(_k, True)                         # no confirm dialog closing a tab group
-json.dump(d, open(pref, "w"))
+root, ext = sys.argv[1], sys.argv[2]
+
+def seed(pref):
+    d = {}
+    if os.path.exists(pref):
+        try: d = json.load(open(pref))
+        except Exception: d = {}          # corrupt file: reseed fresh (Chrome would reset it anyway)
+    if ext:                               # unpacked extension id = hash of its absolute path
+        eid = "".join(chr(ord("a") + int(c, 16)) for c in hashlib.sha256(ext.encode()).hexdigest()[:32])
+        tb = d.setdefault("extensions", {}).get("pinned_extensions")
+        if not isinstance(tb, list): tb = []
+        if eid not in tb: tb.append(eid)
+        d["extensions"]["pinned_extensions"] = tb
+    vt = d.setdefault("vertical_tabs", {})
+    vt.setdefault("enabled", True)
+    vt.setdefault("collapsed_state", False)
+    vt.setdefault("uncollapsed_width", 240)
+    vt.setdefault("enabled_first_time", True)
+    d.setdefault("credentials_enable_service", False)   # no "save password?" popups
+    tg = d.setdefault("tab_groups", {}).setdefault("deletion", {})
+    for k in ("skip_dialog_on_close_tab", "skip_dialog_on_delete", "skip_dialog_on_remove_tab"):
+        tg.setdefault(k, True)                           # no confirm dialog closing a tab group
+    tmp = pref + ".horse-tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f)
+        f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, pref)
+
+profiles = [os.path.join(root, "Default")]
+try:
+    profiles += [os.path.join(root, n) for n in sorted(os.listdir(root))
+                 if n.startswith("Profile ") and os.path.isdir(os.path.join(root, n))]
+except FileNotFoundError:
+    pass
+for p in profiles:
+    os.makedirs(p, exist_ok=True)
+    seed(os.path.join(p, "Preferences"))
 PY
   fi
 
