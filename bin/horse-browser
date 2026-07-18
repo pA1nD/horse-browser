@@ -132,6 +132,49 @@ heal_log() {
     "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$event" "$since_wake" "$*" >> "$log" 2>/dev/null || true
 }
 
+# ── single-flight lock: at most one invocation mutates the browser at a time ──
+# Guards every mutation — cold launch, GPU heal, relaunch, update's restart — so
+# concurrent sessions never kill/launch/seed over each other. Measured failure modes
+# without it: a second cold launcher's gate kill -9s the browser the first just
+# started; two healers stack GPU kills and trip Chrome's crash-count into software
+# GL. Losers don't touch processes at all: they wait for the holder and then trust
+# CDP state. Re-entrant within one process (relaunch → ensure_browser → launch) via
+# a depth counter; crash-safe across processes via the holder pid — a dead holder's
+# lock is broken immediately, so no EXIT traps needed (exec wouldn't run them anyway).
+HB_LOCK="$HOME/.config/horse-browser/.browser-lock"
+HB_LOCK_DEPTH=0
+hb_lock() {
+  if [ "$HB_LOCK_DEPTH" -gt 0 ]; then HB_LOCK_DEPTH=$((HB_LOCK_DEPTH + 1)); return 0; fi
+  if mkdir "$HB_LOCK" 2>/dev/null; then
+    echo $$ > "$HB_LOCK/pid" 2>/dev/null || true
+    HB_LOCK_DEPTH=1
+    return 0
+  fi
+  # Held by another process — break it only if provably stale: holder dead, pid
+  # never written (crashed between mkdir and echo), or age past any legal mutation
+  # (worst real hold ≈60s: update-restart = kill 15s + launch 30s + tab reopen).
+  local holder lts lnow age
+  holder=$(cat "$HB_LOCK/pid" 2>/dev/null || echo "")
+  lts=$(stat -f %m "$HB_LOCK" 2>/dev/null || echo 0); lnow=$(date +%s); age=$(( lnow - lts ))
+  if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } \
+     || { [ -z "$holder" ] && [ "$age" -gt 10 ]; } \
+     || [ "$age" -gt 120 ]; then
+    rm -rf "$HB_LOCK" 2>/dev/null || true
+    if mkdir "$HB_LOCK" 2>/dev/null; then
+      echo $$ > "$HB_LOCK/pid" 2>/dev/null || true
+      HB_LOCK_DEPTH=1
+      return 0
+    fi
+  fi
+  return 1
+}
+hb_unlock() {
+  [ "$HB_LOCK_DEPTH" -gt 0 ] || return 0
+  HB_LOCK_DEPTH=$((HB_LOCK_DEPTH - 1))
+  if [ "$HB_LOCK_DEPTH" -eq 0 ]; then rm -rf "$HB_LOCK" 2>/dev/null || true; fi
+  return 0
+}
+
 # ── display sleep: paint needs compositing, compositing needs an awake display ──
 # With the display asleep (esp. clamshell: lid closed, box kept awake by SSH/AC),
 # WindowServer composites nothing, so Page.captureScreenshot hangs on EVERY tab and
@@ -287,22 +330,11 @@ gpu_fallback() {
 # once after wake — from relaunching over each other.
 relaunch_browser() {
   local reason="${1:-relaunch}"; shift || true
-  local lock="$HOME/.config/horse-browser/.relaunch-lock"
-  if ! mkdir "$lock" 2>/dev/null; then
-    local lts lnow
-    lts=$(stat -f %m "$lock" 2>/dev/null || echo 0); lnow=$(date +%s)
-    if [ $(( lnow - lts )) -gt 120 ]; then           # stale lock from a crashed relaunch
-      rmdir "$lock" 2>/dev/null || true
-      mkdir "$lock" 2>/dev/null || return 1
-    else
-      say "horse-browser: another invocation is already relaunching — waiting…"
-      for _ in $(seq 1 60); do
-        sleep 1
-        [ -d "$lock" ] && continue
-        cdp_up && return 0
-      done
-      return 1
-    fi
+  if ! hb_lock; then
+    say "horse-browser: another invocation is already working on the browser — waiting…"
+    for _ in $(seq 1 90); do [ -d "$HB_LOCK" ] || break; sleep 1; done
+    cdp_up && return 0
+    return 1
   fi
 
   say "horse-browser: relaunching the browser ($reason) — open tabs will be restored…"
@@ -342,10 +374,11 @@ PY
     [ -z "$gone" ] && { kill -9 $bpids 2>/dev/null || true; sleep 1; }
   fi
 
-  # 3. fresh launch (ensure_browser takes its launch path now that the browser is gone)
+  # 3. fresh launch (ensure_browser takes its launch path now that the browser is
+  #    gone; its hb_lock is re-entrant, so our hold carries through)
   if ! ensure_browser; then
     heal_log relaunch-failed "reason=$reason"
-    rmdir "$lock" 2>/dev/null || true
+    hb_unlock
     return 1
   fi
   rm -f "$HEAL_STAMP" 2>/dev/null || true   # fresh browser: crash count is 0, kills are safe again
@@ -374,7 +407,7 @@ print(n)
 PY
 )
   say "horse-browser: relaunched — $n tab(s) reopened beyond session-restore."
-  rmdir "$lock" 2>/dev/null || true
+  hb_unlock
   return 0
 }
 
@@ -445,6 +478,42 @@ maybe_reap() {
   reap_orphan_daemons
 }
 
+# recycle_daemons: after a browser (re)launch, every harness daemon pinned to our
+# CDP endpoint still holds a websocket into the DEAD browser — browser-harness
+# caches the connection for the daemon's whole life and only self-heals when that
+# session's NEXT call notices and respawns the daemon, i.e. one failed call per
+# session per bounce. Recycling here makes every session's next call land on a
+# fresh daemon. Match is exact on BU_CDP_URL in the daemon's env — never touches
+# daemons driving other endpoints (cloud, other browsers).
+recycle_daemons() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$PORT" <<'PY' || true
+import os, signal, subprocess, sys
+want = f"BU_CDP_URL=http://127.0.0.1:{sys.argv[1]}"
+try:
+    pids = subprocess.run(["pgrep", "-f", "browser_harness.daemon"],
+                          capture_output=True, text=True, timeout=3).stdout.split()
+except Exception:
+    pids = []
+n = 0
+for pid in pids:
+    try:
+        env = subprocess.run(["ps", "eww", "-o", "command=", "-p", pid],
+                             capture_output=True, text=True, timeout=3).stdout.split()
+    except Exception:
+        continue
+    if want not in env:
+        continue
+    try:
+        os.kill(int(pid), signal.SIGTERM); n += 1
+    except Exception:
+        pass
+if n:
+    print(f"horse-browser: recycled {n} harness daemon(s) onto the fresh browser",
+          file=sys.stderr, flush=True)
+PY
+}
+
 # ── status / update ──────────────────────────────────────────────────────────
 _chrome_ver() { echo "${1:-}" | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1; }
 
@@ -504,9 +573,14 @@ PY
              | grep -oE '"Browser": *"[^"]*"' | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1)"
   if [ "$running" = "$newver" ]; then echo "horse-browser: already running $newver — nothing to apply."; return 0; fi
   echo "horse-browser: restarting onto ${newver}…"
-  osascript -e 'quit app "Google Chrome for Testing"' >/dev/null 2>&1 || true
-  for _ in $(seq 1 20); do cdp_up || break; sleep 0.5; done
-  exec "$0"   # bare relaunch → re-sources config (new BIN) → launches $newver
+  # Profile-scoped restart via the relaunch machinery (tabs preserved, single-flight
+  # locked). NOT osascript 'quit app …': an app-name quit goes to whichever instance
+  # of the bundle registered with LaunchServices first — with other tools running
+  # the same cached bundle on their own profiles, that quits an innocent browser
+  # and leaves ours on the old version. BIN is updated in-process so the relaunch
+  # spawns the new binary directly.
+  BIN="$newbin"
+  relaunch_browser update-restart "to=$newver"
 }
 
 # ensure_browser: bring the browser up (launching if needed) and self-heal a GPU
@@ -539,12 +613,27 @@ ensure_browser() {
     local rc=0
     gpu_healthy 6 || rc=$?
     if [ "$rc" = 1 ]; then                            # wedged (display awake, still no paint)
+      if ! hb_lock; then
+        say "horse-browser: GPU wedged — another invocation is already on it; waiting…"
+        for _ in $(seq 1 60); do [ -d "$HB_LOCK" ] || break; sleep 1; done
+        cdp_up && return 0
+        return 1
+      fi
+      # Re-probe under the lock: our probe may predate a heal another session just
+      # finished — acting on the stale result would stack a second GPU kill, or
+      # escalate to a needless full relaunch via the recently_healed check.
+      local rc2=0
+      gpu_healthy 6 || rc2=$?
+      if [ "$rc2" != 1 ]; then hb_unlock; return 0; fi
+      local _hrc=0
       if recently_healed; then                        # a kill just happened — don't stack kills
         say "horse-browser: GPU wedged again ${HEAL_AGO}s after a kill — escalating to a full relaunch."
-        relaunch_browser wedge-relaunch "last_kill=${HEAL_AGO}s" || return 1
+        relaunch_browser wedge-relaunch "last_kill=${HEAL_AGO}s" || _hrc=1
       else
-        heal_gpu || relaunch_browser wedge-relaunch "after=failed-heal" || return 1
+        heal_gpu || relaunch_browser wedge-relaunch "after=failed-heal" || _hrc=1
       fi
+      hb_unlock
+      [ "$_hrc" = 0 ] || return 1
     fi
     return 0                                          # 0 = paints fine, 2 = no page to probe
   fi
@@ -556,6 +645,34 @@ ensure_browser() {
     return 1
   fi
 
+  # ── single-flight: exactly one invocation launches; the rest wait on CDP ──
+  if ! hb_lock; then
+    say "horse-browser: another invocation is launching the browser — waiting…"
+    for _ in $(seq 1 45); do
+      sleep 1
+      cdp_up && { say "horse-browser: ready on :$PORT (launched by another invocation)"; return 0; }
+      [ -d "$HB_LOCK" ] || break
+    done
+    # Lock released but CDP still down → the winner failed; one hand-off retry.
+    if ! hb_lock; then
+      echo "horse-browser: browser is down and another invocation holds the lock — giving up." >&2
+      return 1
+    fi
+  fi
+  if cdp_up; then   # raced: it came up between our first check and taking the lock
+    hb_unlock
+    say "horse-browser: ready on :$PORT (launched by another invocation)"
+    return 0
+  fi
+  local _lrc=0
+  launch_browser || _lrc=$?
+  hb_unlock
+  return $_lrc
+}
+
+# launch_browser: the actual cold launch — pre-launch gate, profile seeding, spawn,
+# CDP wait. Only ever called with the single-flight lock held (see ensure_browser).
+launch_browser() {
   # ── pre-launch gate: the profile must be truly free before we seed + launch ──
   # Two proven failure modes when a previous browser process still holds the
   # profile (a slow shutdown after `hb_update`'s quit, a crashed launch, an
@@ -674,7 +791,7 @@ PY
 
   say "horse-browser: launching… (waiting for CDP :$PORT)"
   for _ in $(seq 1 30); do
-    cdp_up && { say "horse-browser: ready on :$PORT"; return 0; }
+    cdp_up && { say "horse-browser: ready on :$PORT"; recycle_daemons; return 0; }
     sleep 1
   done
   # Log the incident with the one number that diagnoses the known cause: how many
