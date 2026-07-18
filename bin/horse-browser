@@ -561,10 +561,10 @@ ensure_browser() {
   # profile (a slow shutdown after `hb_update`'s quit, a crashed launch, an
   # external quit): (1) Chrome writes Preferences back FROM MEMORY on exit, so a
   # seed written in that window is silently clobbered — measured: a key written
-  # while Chrome runs is gone after quit; (2) `open -g` won't start a second
-  # instance while one is running — it just pokes the dying one and our --args
-  # (port, extension) are dropped. So: wait for lingering processes (they may be
-  # mid-shutdown), then hard-kill what remains.
+  # while Chrome runs is gone after quit; (2) even with `open -n` (below), Chrome's
+  # ProcessSingleton makes a new process defer to the one still holding the profile
+  # and exit. So: wait for lingering processes (they may be mid-shutdown), then
+  # hard-kill what remains.
   local _lpids _p _gone
   _lpids=$(ps -ww -o pid= -o command= -ax | grep -F -- "--user-data-dir=$PROFILE" \
              | grep -v -- "--type=" | grep -v grep | awk '{print $1}') || true
@@ -658,11 +658,16 @@ PY
   [ -n "$EXT" ] && args+=( --load-extension="$EXT" )
 
   # Launch WITHOUT stealing focus. `open -g` starts the app in the background, so
-  # the window appears but your current app keeps keyboard focus. Falls back to a
-  # direct exec if the binary isn't inside a .app bundle.
+  # the window appears but your current app keeps keyboard focus. `-n` forces a NEW
+  # process: without it, LaunchServices routes the open to ANY running instance of
+  # this bundle — e.g. another tool driving the same cached browser on its own
+  # profile — and silently drops our --args (port, profile, extension), so nothing
+  # ever appears on :$PORT. Safe: we only get here when :$PORT is down and the gate
+  # above cleared our profile's holders. Falls back to a direct exec if the binary
+  # isn't inside a .app bundle.
   APP="${BIN%/Contents/MacOS/*}"
   if [ "$APP" != "$BIN" ] && [ -d "$APP" ]; then
-    open -g -a "$APP" --args "${args[@]}"
+    open -g -n -a "$APP" --args "${args[@]}"
   else
     "$BIN" "${args[@]}" >/dev/null 2>&1 &
   fi
@@ -672,6 +677,12 @@ PY
     cdp_up && { say "horse-browser: ready on :$PORT"; return 0; }
     sleep 1
   done
+  # Log the incident with the one number that diagnoses the known cause: how many
+  # OTHER instances of our binary were running (same-bundle collision, stray forks).
+  local _others
+  _others=$(ps -ww -axo command= | grep -F -- "$BIN" | grep -v grep \
+              | grep -cv -- "--user-data-dir=$PROFILE") || true
+  heal_log launch-timeout "port=$PORT" "other_instances=${_others:-0}"
   echo "horse-browser: timed out waiting for CDP :$PORT — check the browser window." >&2
   return 1
 }
