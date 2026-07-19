@@ -13,11 +13,16 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
   # Anchor the daemon to this Claude session's process: a self-reaping browser-harness
   # exits with the session, and reap_orphan_daemons can clean it up on a stock one. Walk
   # up to the nearest `claude` ancestor; if not found, leave it unset (reaper skips it).
+  # Claude Code's background-shell pty hosts (`claude bg-pty-host` / `claude bg-spare`)
+  # also match *claude* but are parented to launchd and recycled independently of any
+  # session — anchoring to one gets a live session's daemon reaped mid-session (or a
+  # dead session's kept forever), so skip them and keep climbing.
   if [ -z "${BH_ANCHOR_PID:-}" ]; then
     _ap=$$
     for _ in $(seq 1 12); do
       _comm=$(ps -o comm= -p "$_ap" 2>/dev/null) || break
       case "$_comm" in
+        *bg-pty-host*|*bg-spare*) ;;
         *claude*) export BH_ANCHOR_PID="$_ap"
                   export BH_ANCHOR_START="$(ps -o lstart= -p "$_ap" 2>/dev/null)"; break ;;
       esac
