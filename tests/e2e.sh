@@ -17,7 +17,12 @@
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HB="$HERE/../bin/horse-browser"
+HB="${HB:-$HERE/../bin/horse-browser}"
+[ -x "$HB" ] || HB="$(command -v horse-browser || true)"   # npm/manual installs
+[ -x "$HB" ] || { echo "FATAL: horse-browser not found (set HB=…)"; exit 1; }
+# Outside a Claude session (e.g. plain ssh) there is no identity to derive — give
+# this run its own, so the per-session daemon/grouping tests still mean something.
+[ -z "${CLAUDE_CODE_SESSION_ID:-}${HORSE_SESSION:-}" ] && export HORSE_SESSION="e2e-$(date +%s)"
 PORT="$(sed -n 's/^PORT=//p' "$HOME/.config/horse-browser/config" 2>/dev/null | head -1 | tr -d '"' )"
 PORT="${PORT:-9223}"
 WORK="$(mktemp -d /tmp/hb-e2e.XXXXXX)"
