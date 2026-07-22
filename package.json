@@ -1,10 +1,10 @@
 {
   "name": "@pa1nd/horse-browser",
-  "version": "0.8.9",
+  "version": "0.8.10",
   "publishConfig": {
     "access": "public"
   },
-  "description": "A dedicated, focus-safe browser for AI agents: per-session colored tab groups, a live monitor wall, and a browser-harness drop-in launcher. Log in once \u2014 every agent inherits the session, and none of them steals your focus.",
+  "description": "A dedicated, focus-safe browser for AI agents: per-session colored tab groups, a live monitor wall, and a browser-harness drop-in launcher. Log in once — every agent inherits the session, and none of them steals your focus.",
   "bin": {
     "horse-browser": "bin/horse-browser"
   },
