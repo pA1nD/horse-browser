@@ -39,8 +39,8 @@ if ! command -v browser-harness >/dev/null 2>&1; then
 fi
 
 # Our own SKILL.md ships in the package dir — under `npm -g` that's a volatile Node-version
-# path (…/fnm/node-versions/vX/…). Copy it to a stable ~/.config home the CLAUDE.md @-import
-# points at. REQUIRED, and done here — before the Chrome fetch (which may degrade) — so it
+# path (…/fnm/node-versions/vX/…). Copy it to a stable ~/.config home the rule file's
+# @-import points at. REQUIRED, and done here — before the Chrome fetch (which may degrade) — so it
 # always exists; set -e aborts the install if the copy can't be written.
 "$HERE/claude-md.sh" skill
 
@@ -166,8 +166,8 @@ fi
 # browser-harness SKILL, so the @-import never rots across reinstalls. This writes only
 # ~/.config (never ~/.claude), and browser-harness is guaranteed present by the hard prereq
 # above — so it runs in BOTH modes (npm too; the atelier browser module reads this symlink to
-# locate browser-harness's docs). Registering the block in ~/.claude/CLAUDE.md stays opt-in
-# via ./claude-md.sh apply; the npm next-steps note tells the user how to wire the import.
+# locate browser-harness's docs). Registering the rule file (~/.claude/rules/horse-browser.md)
+# stays opt-in via ./claude-md.sh apply; the npm next-steps note points the user at it.
 "$HERE/claude-md.sh" symlink || echo "  (skipped browser-harness SKILL symlink — see ./claude-md.sh)" >&2
 
 # Wire the claude-code lane hook into ~/.claude/settings.json: PreToolUse gives each

@@ -36,7 +36,7 @@ echo "horse-browser · setting up (Chrome for Testing + config)…"
 HORSE_FROM_NPM=1 HORSE_SKIP_LAUNCH=1 bash "$PKG/install.sh" || \
   echo "horse-browser · Chrome fetch didn't complete — run 'horse-browser update' to finish it." >&2
 
-# HARD requirement — the CLAUDE.md @-import depends on this stable copy existing.
+# HARD requirement — the rule file's @-import depends on this stable copy existing.
 SKILL_COPY="$HOME/.config/horse-browser/skill.md"
 if [ ! -f "$SKILL_COPY" ]; then
   echo "" >&2
@@ -50,8 +50,8 @@ cat <<EOF
 horse-browser installed. Next:
   • Start it (launches the browser, no focus steal):   horse-browser
   • Sign into your apps once — logins persist for every agent.
-  • Teach agents the bh_open discipline — add this line to your ~/.claude/CLAUDE.md
-    (a stable path, independent of your Node version):
-      @~/.config/horse-browser/skill.md
+  • Teach agents the bh_open discipline — register the rule file
+    (~/.claude/rules/horse-browser.md, built from stable, Node-independent paths):
+      bash "$PKG/claude-md.sh" apply
 EOF
 exit 0

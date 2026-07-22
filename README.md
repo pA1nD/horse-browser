@@ -48,23 +48,23 @@ You don't have to install by hand. Paste into **Claude Code** or **Codex**:
 ```text
 Set up https://github.com/pA1nD/horse-browser for me.
 
-Clone it, run ./install.sh, then add SKILL.md to my CLAUDE.md so you always use
+Clone it, run ./install.sh, then ./claude-md.sh apply so you always use
 bh_open to open tabs from now on.
 ```
 
-`install.sh` does the same setup as the npm install, and additionally wires `SKILL.md` into your `CLAUDE.md` (the npm install prints that import line for you to add — see below).
+`install.sh` does the same setup as the npm install; `./claude-md.sh apply` then registers the rule file (the npm install prints that step for you — see below).
 </details>
 
 ### Teaching agents the discipline
 
-`SKILL.md` isn't an optional skill — it's a guardrail (open tabs with `bh_open`, never bare `goto_url`) that must be in context *before* the first browser call. So you register it by importing it into a `CLAUDE.md`, not as a load-on-demand skill.
+`SKILL.md` isn't an optional skill — it's a guardrail (open tabs with `bh_open`, never bare `goto_url`) that must be in context *before* the first browser call. So you register it always-on — a rule file in `~/.claude/rules/` — not as a load-on-demand skill.
 
-**Recommended** — let `claude-md.sh` manage a small, marked block in your global `~/.claude/CLAUDE.md`:
+**Recommended** — let `claude-md.sh` own a rule file at `~/.claude/rules/horse-browser.md` (rules files load into every session exactly like `CLAUDE.md`, `@`-imports included):
 
 ```bash
-./claude-md.sh apply     # write/refresh the block (idempotent)
+./claude-md.sh apply     # write/refresh the rule file (idempotent; also removes the legacy CLAUDE.md block)
 ./claude-md.sh print     # just print it — to compare, or copy by hand
-./claude-md.sh check     # is CLAUDE.md up to date? (exit 1 if drifted — good for a cron)
+./claude-md.sh check     # is the rule file up to date? (exit 1 if drifted — good for a cron)
 ```
 
 It imports both playbooks via **stable paths** that don't rot across reinstalls: browser-harness's through a symlink kept aimed at the current install (survives a different Python), and horse-browser's own — when installed via npm — through a Node-independent copy in `~/.config` (the package dir sits under your Node-version manager and moves when Node changes; a checkout imports its `SKILL.md` live). `install.sh` refreshes both.
@@ -116,14 +116,14 @@ It owns the CDP endpoint, so the port lives in exactly one place (its config) �
 horse-browser && export BU_CDP_URL=http://127.0.0.1:9223   # for an arbitrary CDP client
 ```
 
-Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) rather than bare `goto_url` (which clobbers whoever's focused). The discipline lives in [SKILL.md](SKILL.md) — import it into a `CLAUDE.md` ([see Setup](#teaching-agents-the-discipline)) and agents follow it automatically.
+Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) rather than bare `goto_url` (which clobbers whoever's focused). The discipline lives in [SKILL.md](SKILL.md) — register it as an always-on rule ([see Setup](#teaching-agents-the-discipline)) and agents follow it automatically.
 
 ## What's inside
 
 - **`extension/`** — MV3 extension: the tab grouper, the Agent Monitor (sidebar collapsed by default), and a first-run welcome page.
 - **`bin/horse-browser`** — the launcher *and* a browser-harness drop-in: ensures the browser is up (self-heals a GPU wedge after sleep), then runs your script against it. Also `horse-browser status` (versions + state) and `horse-browser update` (fetch the latest Chrome for Testing — it has no auto-updater — and restart onto it).
 - **`install.sh`** — one-time setup; fetches the browser, registers the launcher + helpers.
-- **`claude-md.sh`** — registers horse-browser's guidance in your `~/.claude/CLAUDE.md` (`apply`/`print`/`check`), via a version-proof symlink to the browser-harness SKILL.
+- **`claude-md.sh`** — registers horse-browser's guidance as a rule file at `~/.claude/rules/horse-browser.md` (`apply`/`print`/`check`), via a version-proof symlink to the browser-harness SKILL.
 - **`SKILL.md`** — the agent's playbook (the `bh_open` discipline + a helper recipe it self-installs).
 
 A thin, self-contained setup — browser-harness (or anything else speaking CDP) is just a *consumer* on port 9223.
