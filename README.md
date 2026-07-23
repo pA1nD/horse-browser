@@ -25,10 +25,9 @@ Every other tool hands each agent a *throwaway* browser. But you don't want thro
 
 **Install (macOS, Node 18+):**
 
-horse-browser is driven through **browser-harness** (a small Python tool it wraps), so install that **first** — the horse-browser install fails loudly without it:
+The harness that drives the browser is **vendored** (a fork of browser-harness's core with the shared-browser invariants baked into its daemon) — no separate install. Its private venv needs `uv` (preferred) or `python3` ≥3.11 on the machine:
 
 ```bash
-uv tool install browser-harness      # or: pipx install browser-harness
 npm install -g @pa1nd/horse-browser
 ```
 
@@ -67,7 +66,7 @@ bh_open to open tabs from now on.
 ./claude-md.sh check     # is the rule file up to date? (exit 1 if drifted — good for a cron)
 ```
 
-It imports both playbooks via **stable paths** that don't rot across reinstalls: browser-harness's through a symlink kept aimed at the current install (survives a different Python), and horse-browser's own — when installed via npm — through a Node-independent copy in `~/.config` (the package dir sits under your Node-version manager and moves when Node changes; a checkout imports its `SKILL.md` live). `install.sh` refreshes both.
+It imports both playbooks via **stable paths** that don't rot across reinstalls: the vendored harness SKILL through a copy in `~/.config` kept current by `install.sh`, and horse-browser's own — when installed via npm — through a Node-independent copy in `~/.config` (the package dir sits under your Node-version manager and moves when Node changes; a checkout imports its `SKILL.md` live). `install.sh` refreshes both.
 
 **By hand** — or just add the import yourself (global `~/.claude/CLAUDE.md`, or a single repo's `CLAUDE.md`):
 
@@ -139,7 +138,7 @@ The test for anything we add: does it **encode knowledge** the agent can't deriv
 - **`extension/`** — MV3 extension: the tab grouper, the Agent Monitor (sidebar collapsed by default), and a first-run welcome page.
 - **`bin/horse-browser`** — the launcher *and* a browser-harness drop-in: ensures the browser is up (self-heals a GPU wedge after sleep), then runs your script against it. Also `horse-browser status` (versions + state) and `horse-browser update` (fetch the latest Chrome for Testing — it has no auto-updater — and restart onto it).
 - **`install.sh`** — one-time setup; fetches the browser, registers the launcher + helpers.
-- **`claude-md.sh`** — registers horse-browser's guidance as a rule file at `~/.claude/rules/horse-browser.md` (`apply`/`print`/`check`), via a version-proof symlink to the browser-harness SKILL.
+- **`claude-md.sh`** — registers horse-browser's guidance as a rule file at `~/.claude/rules/horse-browser.md` (`apply`/`print`/`check`), via version-proof `~/.config` copies of both SKILLs.
 - **`SKILL.md`** — the agent's playbook (the `bh_open` discipline + a helper recipe it self-installs).
 
 A thin, self-contained setup — browser-harness (or anything else speaking CDP) is just a *consumer* on port 9223.

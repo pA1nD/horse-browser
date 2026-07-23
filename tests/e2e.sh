@@ -93,14 +93,23 @@ fi
 say "[2] session identity"
 
 hb 'page_info()' >/dev/null 2>&1     # ensure our session daemon exists
+# Derive THIS session's daemon name the same way the launcher does, so stale daemons
+# from ended sessions (still matching hb-*) can't be mistaken for ours.
+_sid="${HORSE_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}"
+_stail="${_sid##*-}"; [ "${#_stail}" -gt 12 ] && _stail="$(printf '%s' "$_stail" | tail -c 12)"
+MYNAME="${_stail:+hb-$_stail}"
 DPID=""
-for p in $(pgrep -f browser_harness.daemon); do
+for p in $(pgrep -f "(browser|horse)_harness.daemon"); do
   env="$(ps eww -o command= -p "$p" 2>/dev/null)"
   case "$env" in *"BU_CDP_URL=http://127.0.0.1:$PORT"*) ;; *) continue ;; esac
-  case "$env" in *"BU_NAME=hb-"*) DPID="$p" ;; esac
+  if [ -n "$MYNAME" ]; then
+    case " $env " in *" BU_NAME=$MYNAME "*) DPID="$p" ;; esac
+  else
+    case "$env" in *"BU_NAME=hb-"*) DPID="$p" ;; esac
+  fi
 done
-[ -n "$DPID" ] && pass "per-session daemon exists (BU_NAME=hb-*, pinned :$PORT)" \
-  || fail "per-session daemon exists" "no daemon with BU_NAME=hb-* and BU_CDP_URL=:$PORT"
+[ -n "$DPID" ] && pass "per-session daemon exists (BU_NAME=${MYNAME:-hb-*}, pinned :$PORT)" \
+  || fail "per-session daemon exists" "no daemon with BU_NAME=${MYNAME:-hb-*} and BU_CDP_URL=:$PORT"
 
 if [ -n "$DPID" ]; then
   anchor="$(ps eww -o command= -p "$DPID" | tr ' ' '\n' | sed -n 's/^BH_ANCHOR_PID=//p' | head -1)"
@@ -197,7 +206,7 @@ bad = []
 for name in ("_focus", "_eval", "_center", "_keyinfo", "_key"):
     f = g.get(name)
     src = getattr(getattr(f, "__code__", None), "co_filename", "MISSING")
-    if not src.endswith("horse_input.py"):
+    if not src.endswith(("horse_harness/input.py", "horse_input.py")):
         bad.append(name + "<-" + src)
 print("SHADOWED", ",".join(bad) if bad else "none")
 missing = [n for n in ("bh_open", "bh_list", "bh_switch_tab", "click", "type_into",
@@ -206,8 +215,8 @@ missing = [n for n in ("bh_open", "bh_list", "bh_switch_tab", "click", "type_int
 print("MISSING", ",".join(missing) if missing else "none")
 ')"
 grep -q "SHADOWED none" <<<"$out" && grep -q "MISSING none" <<<"$out" \
-  && pass "input privates resolve from horse_input.py; all verbs present" \
-  || fail "input privates resolve from horse_input.py" "$out"
+  && pass "input privates resolve from the harness input module; all verbs present" \
+  || fail "input privates resolve from the harness input module" "$out"
 
 # ═════ 5. trusted input mechanics (local pages, deterministic) ═══════════════
 say "[5] trusted input mechanics"

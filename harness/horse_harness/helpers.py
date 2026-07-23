@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, sys, time, urllib.request
+import base64, json, math, os, sys, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -50,8 +50,28 @@ def _send(req):
     return r
 
 
+# ── auto-home: group-aware attach, from the helper side ──────────────────────────
+# The daemon binds to this session's own tab (see daemon.attach_first_page), but a
+# client-side guard stays as defense in depth: if the daemon's current tab is ever
+# foreign — a neighbour's tab on a shared browser — home back onto one of OUR tabs
+# before acting. Cheap (a local meta call), continuous, and it means a raw cdp()/
+# page_info()/js()/capture_screenshot() can never read or act on another session's page.
+_homed = False
+_guarding = False
+
+
 def cdp(method, session_id=None, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
+    global _homed, _guarding
+    if not _homed:
+        _homed = True              # set BEFORE homing so re-entrant cdp() is a plain passthrough
+        try: _hb_home()
+        except Exception: pass     # a home failure must never break cdp()
+    if not _guarding and not method.startswith("Target."):
+        _guarding = True
+        try: _hb_guard()
+        except Exception: pass
+        finally: _guarding = False
     return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
 
 
@@ -171,9 +191,6 @@ def click_at_xy(x, y, button="left", clicks=1):
     cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button=button, clickCount=clicks)
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button=button, clickCount=clicks)
 
-def type_text(text):
-    cdp("Input.insertText", text=text)
-
 def fill_input(selector, text, clear_first=True, timeout=0.0):
     """Fill a framework-managed input (React controlled, Vue v-model, Ember tracked).
 
@@ -239,9 +256,10 @@ def scroll(x, y, dy=-300, dx=0):
 
 
 # --- visual ---
-def capture_screenshot(path=None, full=False, max_dim=None):
-    """Save a PNG of the current viewport. Set max_dim=1800 on a 2× display to
-    keep the file under the 2000px-per-side limit some image-aware LLMs enforce."""
+# The public capture_screenshot lives in the horse layer below (per-call unique file,
+# fresh per-target CDP session). This is the plain daemon-session capture it falls
+# back to when there's no session identity / no bound tab.
+def _capture_screenshot_stock(path=None, full=False, max_dim=None):
     path = path or str(ipc._TMP / "shot.png")
     r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
     open(path, "wb").write(base64.b64decode(r["data"]))
@@ -292,37 +310,16 @@ def _mark_tab():
     except Exception: pass
 
 def switch_tab(target):
-    # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
-    # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
+    """Focus-safe tab switch. Accepts a targetId string or a current_tab()/list_tabs()
+    dict; switches the DRIVEN tab without Target.activateTarget — no [NSApp activate],
+    no visible-tab flip, so concurrent agents and the operator are never disturbed."""
     target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
-    # Unmark old tab. Horse emoji is a surrogate pair in JS UTF-16 strings (2 code units),
-    # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
-    except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
-    sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
-    _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
-    _mark_tab()
-    return sid
+    bh_switch_tab(target_id)
+    return target_id
 
 def new_tab(url="about:blank"):
-    # Always create blank, then goto: passing url to createTarget races with
-    # attach, so the brief about:blank is "complete" by the time the caller
-    # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
-        try:
-            cur = current_tab()
-            cur_url = cur.get("url") or ""
-            if cur_url in ("", "about:blank") or cur_url.startswith("about:blank#"):
-                goto_url(url)
-                return cur.get("targetId") or cur.get("target_id")
-        except Exception:
-            pass
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
-    switch_tab(tid)
-    if url != "about:blank":
-        goto_url(url)
-    return tid
+    """Focus-safe: opens into this session's tab group in the background, like bh_open."""
+    return bh_open(url)
 
 def close_tab(target=None):
     """Close a tab. If `target` is omitted, closes the currently attached tab.
@@ -334,18 +331,21 @@ def close_tab(target=None):
 
 
 def ensure_real_tab():
-    """Switch to a real user tab if current is chrome:// / internal / stale."""
-    tabs = list_tabs(include_chrome=False)
-    if not tabs:
-        return None
+    """Focus-safe: keep the current tab if it's a real (non-internal) OWN tab;
+    otherwise home onto one of this session's tabs via the focus-safe switch."""
     try:
-        cur = current_tab()
-        if cur["url"] and not cur["url"].startswith(INTERNAL):
-            return cur
+        cur = current_tab() or {}
     except Exception:
-        pass
-    switch_tab(tabs[0]["targetId"])
-    return tabs[0]
+        cur = {}
+    own_ids = {t.get("targetId") for t in bh_list()} if _session_id() else set()
+    if cur.get("url") and not cur["url"].startswith(INTERNAL) and \
+       (not _session_id() or cur.get("targetId") in own_ids):
+        return cur
+    own = [t for t in bh_list() if t.get("targetId")] if _session_id() else []
+    if own:
+        bh_switch_tab(own[-1]["targetId"])
+        return own[-1]
+    return None
 
 def iframe_target(url_substr):
     """First iframe target whose URL contains `url_substr`. Use with js(..., target_id=...)."""
@@ -360,12 +360,20 @@ def wait(seconds=1.0):
     time.sleep(seconds)
 
 def wait_for_load(timeout=15.0):
-    """Poll document.readyState == 'complete' or timeout."""
+    """Poll document.readyState == 'complete' or timeout. Fires hints.d page hints
+    (the "I just navigated" plug point) before returning."""
     deadline = time.time() + timeout
+    ok = False
     while time.time() < deadline:
-        if js("document.readyState") == "complete": return True
+        if js("document.readyState") == "complete":
+            ok = True
+            break
         time.sleep(0.3)
-    return False
+    try:
+        _hb_hints((current_tab() or {}).get("url") or "")
+    except Exception:
+        pass
+    return ok
 
 def wait_for_element(selector, timeout=10.0, visible=False):
     """Poll until querySelector(selector) exists in the DOM, or timeout.
@@ -481,19 +489,337 @@ def http_get(url, headers=None, timeout=20.0):
         return data.decode()
 
 
-def _load_agent_helpers():
-    p = AGENT_WORKSPACE / "agent_helpers.py"
-    if not p.exists():
+# ═══ horse layer — session-scoped tabs, focus-safe verbs, reliable screenshots ═══
+# Formerly agent-helpers.py, merged into the workspace via a loader stub; now folded
+# here so there is exactly ONE definition of every verb, in one namespace.
+
+def _hb_current_file():
+    return os.path.join(os.path.expanduser("~/.config/horse-browser/current"),
+                        os.environ.get("BU_NAME", "default"))
+
+
+def _hb_remember(target_id):
+    # Persist the tab this session is currently driving, so _hb_home (and the daemon's
+    # own bound-tab attach) can put us back on the SAME tab after any drift.
+    try:
+        f = _hb_current_file()
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        open(f, "w").write(target_id or "")
+    except Exception:
+        pass
+
+
+def _hb_recall():
+    try:
+        return (open(_hb_current_file()).read().strip() or None)
+    except Exception:
+        return None
+
+
+def _hb_guard():
+    want = _hb_recall()
+    if not want:
         return
-    spec = importlib.util.spec_from_file_location("horse_harness_agent_helpers", p)
-    if not spec or not spec.loader:
+    try:
+        cur = (current_tab() or {}).get("targetId")
+    except Exception:
         return
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    for name, value in vars(module).items():
-        if name.startswith("_"):
+    if cur != want:
+        _hb_home()
+
+
+def _hb_home():
+    # Home the daemon onto one of THIS session's own tabs whenever its current tab is
+    # foreign. The daemon's bound-tab attach makes foreign attaches structurally rare;
+    # this client-side guard is defense in depth. NO-OP when already on an own tab.
+    if not _session_id():
+        return
+    own = [t for t in bh_list() if t.get("targetId")]
+    own_ids = {t["targetId"] for t in own}
+    try:
+        ct = current_tab() or {}
+    except Exception:
+        ct = {}
+    cur = ct.get("targetId")
+    if cur and cur in own_ids:
+        return                              # already on one of my own tabs — leave it be
+    if not own:
+        # No own tab yet. If the daemon is sitting on a fresh, ungrouped about:blank —
+        # the one attach_first_page mints when it finds no bound tab — ADOPT it into
+        # my group rather than leaking it and creating a second blank. Else make one.
+        if cur and (ct.get("url") or "") in ("", "about:blank"):
+            ext_call("groupTab", cur, _session_id())
+            _hb_remember(cur)
+        else:
+            bh_open("about:blank")         # no adoptable blank → create + home one in my group
+        return
+    # Foreign: restore the EXACT tab I last drove (persisted on every bh_switch_tab).
+    # Only if that tab is truly gone do we fall back to the newest own tab.
+    want = _hb_recall()
+    if want and want not in own_ids:
+        print("\U0001F434 horse-browser: the tab you were driving has closed — switched to "
+              "another of your tabs (bh_list() to see them)", file=sys.stderr)
+        want = None
+    if want not in own_ids:
+        want = max(own, key=lambda t: t.get("lastAccessed") or 0)["targetId"]
+    bh_switch_tab(want)
+
+
+def ext_call(fn, *args):
+    """Call an extension SW function. Returns the deserialised JS value,
+    or None if the extension's service worker isn't registered."""
+    sw = next((t["targetId"] for t in cdp("Target.getTargets")["targetInfos"]
+               if t.get("type") == "service_worker"
+               and t.get("url", "").startswith("chrome-extension://")), None)
+    if sw is None:
+        return None
+    s = cdp("Target.attachToTarget", targetId=sw, flatten=True)["sessionId"]
+    a = ", ".join(json.dumps(x) for x in args)
+    try:
+        return cdp("Runtime.evaluate", session_id=s,
+                   expression=f"self.{fn}({a})",
+                   awaitPromise=True, returnByValue=True)["result"].get("value")
+    finally:
+        cdp("Target.detachFromTarget", sessionId=s)
+
+
+def _session_id():
+    # The FULL identity string — passed to the extension so the browser derives the tab
+    # group's codename (emoji + colour + last-4) itself. bin/horse-browser resolves the
+    # agent system's identity (integrations/*/detect.sh) and exports HORSE_SESSION, plus
+    # HORSE_LANE for a subagent lane. The CLAUDE_CODE_SESSION_ID fallback covers direct
+    # calls that bypass the launcher.
+    sid = os.environ.get("HORSE_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    lane = os.environ.get("HORSE_LANE", "")
+    return f"{sid}#{lane}" if sid and lane else sid
+
+
+def bh_switch_tab(target_id):
+    # Switch the DRIVEN tab without Target.activateTarget AND without changing the
+    # window's visible tab: focus emulation lets us drive it fully in the background
+    # (navigate, click, screenshot), so concurrent agents never flip each other's view.
+    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
+    except Exception: pass
+    sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
+    _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
+    _hb_remember(target_id)   # remember the tab I'm now driving, so a drift can restore THIS one
+    cdp("Emulation.setFocusEmulationEnabled", enabled=True)
+    _mark_tab()
+    return sid
+
+
+_hb_reported = False  # surface the group's open tabs once per CLI process
+
+
+def _tab_report(tabs):
+    # Once per process, tell the agent which tabs its session group has open — on
+    # stderr, so it never pollutes a script's stdout. Tune via HORSE_BROWSER_TAB_NUDGE
+    # (default 5) and HORSE_BROWSER_TAB_IDLE_MIN (default 10).
+    global _hb_reported
+    if _hb_reported:
+        return
+    _hb_reported = True
+    try:
+        if not tabs:
+            return
+        idle_min = float(os.environ.get("HORSE_BROWSER_TAB_IDLE_MIN", "10"))
+        nudge_at = int(os.environ.get("HORSE_BROWSER_TAB_NUDGE", "5"))
+        now = time.time() * 1000
+        stale = sum(1 for t in tabs
+                    if t.get("lastAccessed") and (now - t["lastAccessed"]) >= idle_min * 60000)
+        line = (f"\U0001F434 horse-browser: {len(tabs)} tab(s) open in your group "
+                f"({stale} idle ≥{int(idle_min)}m)")
+        if stale > nudge_at:
+            line += (" — close what you don't need: "
+                     "cdp('Target.closeTarget', targetId=t['targetId']) per tab (ids via bh_list())")
+        print(line, file=sys.stderr)
+    except Exception:
+        pass
+
+
+def bh_open(url):
+    """Open `url` in this session's coloured tab group WITHOUT raising the browser
+    over the operator's app. Reuses a blank tab already in the group when possible.
+    Returns the CDP targetId."""
+    tid = None
+    if _session_id():
+        tabs = bh_list()
+        _tab_report(tabs)   # once per call: surface the group's tabs (+ nudge if hoarding)
+        for t in tabs:
+            if (t.get("url") or "") in ("", "about:blank") and t.get("targetId"):
+                tid = t["targetId"]
+                break
+    created = tid is None
+    if created:
+        tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+    try:
+        # group BEFORE navigating: an open that fails (or a session killed
+        # mid-navigation) still lands in the session group, so bh_list()-based
+        # cleanup can see it instead of leaking an ungrouped about:blank tab.
+        if _session_id() and created:
+            ext_call("groupTab", tid, _session_id())
+        bh_switch_tab(tid)
+        if url != "about:blank":
+            goto_url(url)
+        wait_for_load()
+    except Exception:
+        # don't leak a tab WE created (never close a reused, pre-existing one)
+        if created:
+            try: cdp("Target.closeTarget", targetId=tid)
+            except Exception: pass
+        raise
+    return tid
+
+
+def bh_list():
+    """Tabs in this session's group (targetId, url, title, lastAccessed, …)."""
+    return ext_call("listTabs", _session_id()) or [] if _session_id() else []
+
+
+# ── screenshots: a unique file per call, captured on a fresh per-target session ──
+_hb_shots_swept = False
+
+
+def _hb_sweep_shots(max_age_s=86400):
+    # Unique names accumulate where a single shot.png didn't — drop day-old ones.
+    global _hb_shots_swept
+    if _hb_shots_swept:
+        return
+    _hb_shots_swept = True
+    now = time.time()
+    try:
+        for e in os.scandir(ipc._TMP):
+            if e.name.startswith("shot-") and e.name.endswith(".png") and now - e.stat().st_mtime > max_age_s:
+                try: os.remove(e.path)
+                except OSError: pass
+    except OSError:
+        pass
+
+
+def _hb_my_target():
+    """The CDP targetId of the tab THIS session is driving — the one a screenshot means."""
+    tid = _hb_recall()
+    if tid:
+        return tid
+    try:
+        return (current_tab() or {}).get("targetId")
+    except Exception:
+        return None
+
+
+def _struct_png_dims(raw):
+    import struct
+    try:
+        return struct.unpack(">II", raw[16:24])
+    except Exception:
+        return (0, 0)
+
+
+def capture_screenshot(path=None, full=False, max_dim=None):
+    """Save a PNG of this session's tab to a per-call unique file; returns the path.
+    full=capture beyond viewport, max_dim=downscale (needs pillow).
+
+    Reliable for backgrounded, never-window-visible tabs under heavy multi-agent load,
+    WITHOUT ever changing the window's visible tab. Two things make it work:
+      - the launcher runs Chrome with --disable-renderer-backgrounding et al., so a
+        backgrounded tab's renderer stays live and paints instead of throttling to a
+        2x2 surface;
+      - we capture over a DEDICATED flat session attached to OUR target, so N agents
+        capturing at once never contend and never drift. (Capturing on the daemon's
+        shared session drifts onto the wrong or an uncomposited tab.)
+    NB: do NOT setFocusEmulationEnabled here — it leaks into the browser's global focus
+    state and makes OTHER sessions' current_tab() resolve to this tab."""
+    if path is None:
+        _hb_sweep_shots()
+        import tempfile
+        fd, path = tempfile.mkstemp(
+            prefix=f"shot-{os.environ.get('BU_NAME', 'default')}-",
+            suffix=".png", dir=str(ipc._TMP))
+        os.close(fd)
+
+    target = _hb_my_target()
+    if not target:                      # no identity / no tab — fall back to stock capture
+        return _capture_screenshot_stock(path, full=full, max_dim=max_dim) or path
+
+    sid = None
+    data = None
+    try:
+        sid = cdp("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
+        cdp("Page.enable", session_id=sid)
+        # Compositor-surface read on our own session; a couple of quick retries cover
+        # a tab still warming up right after open.
+        for _ in range(5):
+            try:
+                r = cdp("Page.captureScreenshot", session_id=sid, format="png",
+                        captureBeyondViewport=full, fromSurface=True)
+                raw = base64.b64decode(r.get("data") or "")
+                if raw[:8] == b"\x89PNG\r\n\x1a\n":
+                    w, h = _struct_png_dims(raw)
+                    if w > 4 and h > 4:
+                        data = raw
+                        break
+            except Exception:
+                pass
+            time.sleep(0.12)
+
+        if data is None:                 # degenerate even so (essentially never) — stock
+            if os.environ.get("HB_CAP_DEBUG"):
+                print(f"CAPFALLBACK target={target[:8]}", file=sys.stderr, flush=True)
+            return _capture_screenshot_stock(path, full=full, max_dim=max_dim) or path
+        with open(path, "wb") as f:
+            f.write(data)
+    finally:
+        if sid:
+            try: cdp("Target.detachFromTarget", sessionId=sid)
+            except Exception: pass
+
+    if max_dim:
+        try:
+            from PIL import Image
+            img = Image.open(path)
+            if max(img.size) > max_dim:
+                img.thumbnail((max_dim, max_dim))
+                img.save(path)
+        except Exception:
+            pass
+    return path
+
+
+# ── page hints: a generic per-navigation plug point ──────────────────────────────
+# Anything EXECUTABLE in ~/.config/horse-browser/hints.d/ is called on navigation as
+#     <hook> <url>          (env carries HORSE_SESSION / HORSE_LANE; 2.5s cap)
+# and whatever it prints is surfaced to the agent — once per host per process.
+# A hint must never break or stall browsing: empty/slow/failing hooks are skipped.
+_hb_hinted = set()
+_hb_hint_hooks_cache = None
+
+
+def _hb_hint_hooks():
+    global _hb_hint_hooks_cache
+    if _hb_hint_hooks_cache is None:
+        d = os.path.expanduser("~/.config/horse-browser/hints.d")
+        try:
+            _hb_hint_hooks_cache = sorted(
+                e.path for e in os.scandir(d) if e.is_file() and os.access(e.path, os.X_OK))
+        except OSError:
+            _hb_hint_hooks_cache = []
+    return _hb_hint_hooks_cache
+
+
+def _hb_hints(url):
+    if not (url or "").startswith("http") or not _hb_hint_hooks():
+        return
+    from urllib.parse import urlsplit
+    host = urlsplit(url).hostname or ""
+    if not host or host in _hb_hinted:
+        return
+    _hb_hinted.add(host)
+    import subprocess
+    for hook in _hb_hint_hooks():
+        try:
+            out = subprocess.run([hook, url], capture_output=True, text=True, timeout=2.5).stdout.strip()
+        except Exception:
             continue
-        globals()[name] = value
-
-
-_load_agent_helpers()
+        for line in out.splitlines():
+            print(line if line.startswith("\U0001F434") else "\U0001F434 horse-browser: " + line,
+                  file=sys.stderr)

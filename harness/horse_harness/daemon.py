@@ -39,6 +39,63 @@ PID = str(ipc.pid_path(NAME))
 BUF = 500
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
+# The agent-session process this daemon belongs to (set by the launcher via the
+# integration's detect.sh). When the anchor dies, the watchdog reaps this session's
+# tabs and shuts the daemon down. Absent/unverifiable → the watchdog never runs.
+ANCHOR_PID = os.environ.get("BH_ANCHOR_PID")
+ANCHOR_START = os.environ.get("BH_ANCHOR_START", "").strip()
+
+
+def _session_label():
+    """The session identity string the extension groups tabs under (see helpers._session_id)."""
+    sid = os.environ.get("HORSE_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    lane = os.environ.get("HORSE_LANE", "")
+    return f"{sid}#{lane}" if sid and lane else sid
+
+
+def _bound_file():
+    return Path(os.path.expanduser("~/.config/horse-browser/current")) / NAME
+
+
+def _bound_target():
+    """The tab this session last drove (persisted by set_session / helpers)."""
+    try:
+        return _bound_file().read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _remember_target(tid):
+    try:
+        f = _bound_file()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(tid or "")
+    except OSError:
+        pass
+
+
+def _anchor_alive():
+    """False only when the anchor process is verifiably gone (or its PID was reused)."""
+    try:
+        pid = int(ANCHOR_PID)
+    except (TypeError, ValueError):
+        return True                       # no/garbage anchor — unverifiable, assume alive
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pass                              # e.g. EPERM — process exists
+    if ANCHOR_START:
+        # BH_ANCHOR_START is `ps -o lstart=` output — the same fingerprint
+        # lifecycle._process_start_time returns on macOS. A mismatch means the
+        # PID was reused by an unrelated process: the session is gone.
+        from .lifecycle import _process_start_time
+        st = _process_start_time(pid)
+        if st is not None and str(st).strip() != ANCHOR_START:
+            return False
+    return True
+
 
 def log(msg):
     open(LOG, "a", encoding="utf-8", errors="replace").write(f"{msg}\n")
@@ -83,21 +140,74 @@ class Daemon:
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self):
-        """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
+        """Attach to THIS session's tab. Sets self.session. Returns attached target or None.
+
+        The shared-browser isolation invariant lives here: with a session identity
+        present, the daemon only ever attaches to the tab this session last drove
+        (the persisted binding) — never to a neighbour's tab. No bound tab alive →
+        mint a fresh about:blank and group it into the session's tab group, so a
+        raw cdp()/page_info()/js() before any bh_open still lands on OWN ground.
+        Without identity (manual/default use) the legacy first-real-page pick stays.
+        """
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
-        pages = [t for t in targets if is_real_page(t)]
-        if not pages:
-            # No real pages - create one instead of attaching to omnibox popup.
-            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
-            log(f"no real pages found, created about:blank ({tid})")
-            pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
+        label = _session_label()
+        pick = None
+        bound = _bound_target()
+        if bound:
+            pick = next((t for t in targets if t["targetId"] == bound and t.get("type") == "page"), None)
+        if pick is None and not label:
+            pages = [t for t in targets if is_real_page(t)]
+            if pages:
+                pick = pages[0]
+        if pick is None:
+            tid = (await self.cdp.send_raw(
+                "Target.createTarget", {"url": "about:blank", "background": True}
+            ))["targetId"]
+            log(f"no {'bound' if label else 'real'} tab, created about:blank ({tid})")
+            if label:
+                status, err = await self._ext_eval(f"self.groupTab({json.dumps(tid)}, {json.dumps(label)})")
+                if status != "ok":
+                    log(f"groupTab({tid}) failed: {err}")
+            pick = {"targetId": tid, "url": "about:blank", "type": "page"}
         self.session = (await self.cdp.send_raw(
-            "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
+            "Target.attachToTarget", {"targetId": pick["targetId"], "flatten": True}
         ))["sessionId"]
-        self.target_id = pages[0]["targetId"]
-        log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
+        self.target_id = pick["targetId"]
+        _remember_target(self.target_id)
+        log(f"attached {pick['targetId']} ({pick.get('url','')[:80]}) session={self.session}")
         await self._enable_default_domains(self.session)
-        return pages[0]
+        return pick
+
+    async def _ext_eval(self, expression):
+        """Evaluate JS in the tab-grouper extension's service worker.
+        Returns ("ok", value) | ("refused", why) — the extension answered with an
+        exception | ("unreachable", why) — no SW / transport failure."""
+        sw_session = None
+        try:
+            targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+            sw = next((t["targetId"] for t in targets
+                       if t.get("type") == "service_worker"
+                       and t.get("url", "").startswith("chrome-extension://")), None)
+            if not sw:
+                return ("unreachable", "extension service worker not found")
+            sw_session = (await self.cdp.send_raw(
+                "Target.attachToTarget", {"targetId": sw, "flatten": True}
+            ))["sessionId"]
+            r = await self.cdp.send_raw(
+                "Runtime.evaluate",
+                {"expression": expression, "awaitPromise": True, "returnByValue": True},
+                session_id=sw_session,
+            )
+            exc = (r or {}).get("exceptionDetails")
+            if exc:
+                return ("refused", ((exc.get("exception") or {}).get("description")
+                                    or exc.get("text") or "extension call failed"))
+            return ("ok", ((r or {}).get("result") or {}).get("value"))
+        except Exception as e:
+            return ("unreachable", str(e))
+        finally:
+            if sw_session:
+                await _silent(self.cdp.send_raw("Target.detachFromTarget", {"sessionId": sw_session}))
 
     async def _enable_default_domains(self, session_id):
         """Enable Page/DOM/Runtime/Network on a CDP session.
@@ -133,6 +243,8 @@ class Daemon:
         except Exception as e:
             raise RuntimeError(f"CDP WS handshake failed: {e} -- is the horse browser running?")
         await self.attach_first_page()
+        if ANCHOR_PID and _session_label():
+            asyncio.create_task(self._watchdog())
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
         async def tap(method, params, session_id=None):
@@ -158,40 +270,61 @@ class Daemon:
         raw-CDP agent, monitor — gets the safe behaviour without opting in.
         """
         tid = params.get("targetId")
-        sw_session = None
-        try:
-            targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
-            sw = next((t["targetId"] for t in targets
-                       if t.get("type") == "service_worker"
-                       and t.get("url", "").startswith("chrome-extension://")), None)
-            if sw:
-                sw_session = (await self.cdp.send_raw(
-                    "Target.attachToTarget", {"targetId": sw, "flatten": True}
-                ))["sessionId"]
-                r = await self.cdp.send_raw(
-                    "Runtime.evaluate",
-                    {"expression": f"self.activateTab({json.dumps(tid)})",
-                     "awaitPromise": True, "returnByValue": True},
-                    session_id=sw_session,
-                )
-                exc = (r or {}).get("exceptionDetails")
-                if not exc:
-                    log(f"activateTarget({tid}) -> focus-safe extension activateTab")
-                    return {"result": {}}
-                # The extension answered but refused (e.g. no live tab for the
-                # target). Surface its error; do NOT fall through to the native
-                # call — that path steals focus.
-                desc = ((exc.get("exception") or {}).get("description") or exc.get("text") or "activateTab failed")
-                return {"error": desc}
-        except Exception as e:
-            log(f"focus-safe activate path unavailable ({e})")
-        finally:
-            if sw_session:
-                await _silent(self.cdp.send_raw("Target.detachFromTarget", {"sessionId": sw_session}))
+        status, value = await self._ext_eval(f"self.activateTab({json.dumps(tid)})")
+        if status == "ok":
+            log(f"activateTarget({tid}) -> focus-safe extension activateTab")
+            return {"result": {}}
+        if status == "refused":
+            # The extension answered but refused (e.g. no live tab for the target).
+            # Surface its error; do NOT fall through to the native call — that path
+            # steals focus.
+            return {"error": value}
         # Extension unreachable (not installed / SW dead). Native fallback keeps
         # the raw capability alive on non-horse browsers — but it steals focus.
-        log(f"activateTarget({tid}) falling back to NATIVE activateTarget (extension unavailable) — this steals OS focus")
+        log(f"activateTarget({tid}) falling back to NATIVE activateTarget (extension unavailable: {value}) — this steals OS focus")
         return {"result": await self.cdp.send_raw("Target.activateTarget", params)}
+
+    async def _watchdog(self, interval=30):
+        """Self-reap: when the anchoring agent-session process dies, close this
+        session's tabs and shut down — no launcher sweep needed for a live daemon.
+        (The launcher's reap_orphan_* stays as backstop for CRASHED daemons, which
+        by definition can't reap after death.)"""
+        while not self.stop.is_set():
+            try:
+                await asyncio.wait_for(self.stop.wait(), timeout=interval)
+                return                      # clean shutdown requested elsewhere
+            except asyncio.TimeoutError:
+                pass
+            if _anchor_alive():
+                continue
+            await asyncio.sleep(2)          # one beat + re-check before acting
+            if _anchor_alive():
+                continue
+            log(f"anchor {ANCHOR_PID} gone — reaping session tabs + shutting down")
+            try:
+                await self._reap_own_tabs()
+            except Exception as e:
+                log(f"self-reap failed: {e}")
+            try:
+                _bound_file().unlink(missing_ok=True)   # the binding dies with the session
+            except OSError:
+                pass
+            self.stop.set()
+            return
+
+    async def _reap_own_tabs(self):
+        label = _session_label()
+        if not label:
+            return
+        status, tabs = await self._ext_eval(f"self.listTabs({json.dumps(label)})")
+        if status != "ok" or not isinstance(tabs, list):
+            log(f"self-reap: listTabs -> {status} ({tabs})")
+            return
+        for t in tabs:
+            tid = (t or {}).get("targetId")
+            if tid:
+                await _silent(self.cdp.send_raw("Target.closeTarget", {"targetId": tid}))
+        log(f"self-reap: closed {len(tabs)} tab(s) in group {label[-8:]}")
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -241,6 +374,7 @@ class Daemon:
             old_session = self.session
             self.session = req.get("session_id")
             self.target_id = req.get("target_id") or self.target_id
+            _remember_target(self.target_id)   # persist the binding: bound-tab attach + drift guard read it
             # Run the old-session Network.disable (defense in depth — keeps
             # background-tab traffic out of the global event buffer; the
             # consumer-side filter in wait_for_network_idle is the actual

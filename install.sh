@@ -24,19 +24,13 @@ EXT="$HERE/extension"
 
 mkdir -p "$CONFIG_DIR" "$BINDIR" "$CACHE"
 
-# 0. hard prerequisite: browser-harness ─────────────────────────────────────────
-# horse-browser drives the browser THROUGH browser-harness (a separate Python tool),
-# so it MUST be installed first. Fail loudly — from a hand install and from a silent npm
-# postinstall alike — rather than limp on without it. Checked before the Chrome fetch so
-# we don't pull 170MB only to bail.
-if ! command -v browser-harness >/dev/null 2>&1; then
-  echo "" >&2
-  echo "✗ horse-browser: browser-harness is required and isn't installed." >&2
-  echo "  Install it first, then re-run:" >&2
-  echo "      uv tool install browser-harness       # or: pipx install browser-harness" >&2
-  echo "  (https://github.com/browser-use/browser-harness)" >&2
-  exit 1
-fi
+# 0. harness venv ───────────────────────────────────────────────────────────────
+# The vendored horse-harness (harness/horse_harness) drives the browser — no separate
+# browser-harness install needed. Build its private venv now so the first driver call
+# doesn't pay the setup. Checked before the Chrome fetch so we don't pull 170MB only
+# to bail on a missing Python.
+"$HERE/bin/horse-browser" harness-setup || exit 1
+echo "✓ harness: vendored horse-harness ready ($HERE/harness)"
 
 # Our own SKILL.md ships in the package dir — under `npm -g` that's a volatile Node-version
 # path (…/fnm/node-versions/vX/…). Copy it to a stable ~/.config home the rule file's
@@ -83,92 +77,45 @@ else
   case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "  note: $BINDIR isn't on your PATH — add it so 'horse-browser' resolves";; esac
 fi
 
-# 3. bh_open helpers into browser-harness ───────────────────────────────────────
-# browser-harness auto-loads <workspace>/agent_helpers.py on every call. Our helpers
-# ship as horse_helpers.py — a file THIS installer owns and overwrites outright on
-# every sync — plus a load-once stub appended to agent_helpers.py exactly once and
-# never rewritten, so anything a user adds to agent_helpers.py is never touched.
-# The workspace location varies by version/install (≤0.1.0: <repo>/agent-workspace;
-# 0.1.1+: ~/.config/browser-harness/agent-workspace; or whatever BH_AGENT_WORKSPACE
-# points at) — so instead of guessing, we ASK browser-harness itself where it loads
-# from via its own python (helpers.AGENT_WORKSPACE).
-# browser-harness presence is guaranteed by the hard prerequisite check at the top.
-HELPERS_SRC="$HERE/agent-helpers.py"
-INPUT_SRC="$HERE/agent-input.py"   # Tier 2 trusted-input layer → workspace/horse_input.py
-# Legacy marker: pre-0.4.1 installs appended the helpers INLINE under this line, and
-# re-syncs replaced marker→EOF — silently eating anything a user had added below the
-# block. Kept only so those files can be migrated once.
-HELPERS_MARKER="# ── horse-browser helpers (installed by horse-browser/install.sh) ──"
+# 3. workspace migration — retire the old loader stub ───────────────────────────
+# The bh_open/trusted-input helpers are FOLDED INTO the vendored harness now
+# (harness/horse_harness/helpers.py + input.py). Older installs synced them into the
+# browser-harness workspace as horse_helpers.py/horse_input.py plus a loader stub in
+# agent_helpers.py — retire all of that so stale copies can't shadow the packaged
+# versions. Everything the user keeps in agent_helpers.py is preserved byte-for-byte
+# (the harness still loads that file and pre-seeds it with every public helper).
 LOADER_MARKER="# >>> horse-browser: bh_open helpers (managed loader — do not edit) >>>"
-install_helpers_into() {  # $1 = workspace dir; (re)syncs the helpers — idempotent, so
-  local ws="$1" dst="$1/agent_helpers.py"  # re-running install.sh deploys helper UPDATES too.
-  mkdir -p "$ws" 2>/dev/null || return 0
-  cp "$HELPERS_SRC" "$ws/horse_helpers.py"
-  cp "$INPUT_SRC" "$ws/horse_input.py"   # loaded by horse_helpers.py (chain-exec)
-  # one-time migration of a legacy inline block: strip it ONLY on an exact byte match
-  # with the shipped source, so user additions below it survive. A modified/unknown
-  # block is left in place — harmless, the loader runs after it and its defs win.
-  if [ -f "$dst" ] && grep -qF "$HELPERS_MARKER" "$dst"; then
-    python3 - "$dst" "$HELPERS_SRC" "$HELPERS_MARKER" <<'PY' || true
-import sys
-dst, src, marker = sys.argv[1], sys.argv[2], sys.argv[3]
-text, block = open(dst).read(), open(src).read()
-i = text.find(marker)
-legacy = marker + "\n" + block
-if i >= 0 and text[i:].startswith(legacy):
-    head = text[:i].rstrip("\n")
-    rest = text[i + len(legacy):].lstrip("\n")
-    parts = [p for p in (head, rest) if p]
-    open(dst, "w").write("\n\n".join(parts) + ("\n" if parts else ""))
-    print("  migrated: legacy inline helper block removed (everything else kept)")
-elif i >= 0:
-    print("  note: a legacy horse-browser block is present but doesn't match the shipped", file=sys.stderr)
-    print("        source — left in place (the horse_helpers.py loader below supersedes", file=sys.stderr)
-    print("        it); remove it from " + dst + " by hand when convenient.", file=sys.stderr)
+migrate_workspace() {
+  local ws="$1" dst="$1/agent_helpers.py"
+  [ -d "$ws" ] || return 0
+  rm -f "$ws/horse_helpers.py" "$ws/horse_input.py"
+  if [ -f "$dst" ] && grep -qF "$LOADER_MARKER" "$dst"; then
+    python3 - "$dst" <<'PY' || true
+import re, sys
+p = sys.argv[1]
+text = open(p).read()
+pat = re.compile(
+    r"\n*# >>> horse-browser: bh_open helpers \(managed loader — do not edit\) >>>"
+    r".*?# <<< horse-browser: bh_open helpers <<<\n*",
+    re.S)
+new = pat.sub("\n\n", text, count=1).strip("\n")
+if new != text:
+    open(p, "w").write(new + ("\n" if new else ""))
+    print("  migrated: retired the horse_helpers loader stub (helpers ship in the harness now)")
 PY
   fi
-  if ! grep -qF "$LOADER_MARKER" "$dst" 2>/dev/null; then
-    if [ -s "$dst" ]; then printf '\n' >> "$dst"; fi
-    printf '%s\n' "$LOADER_MARKER" >> "$dst"
-    cat >> "$dst" <<'LOADER'
-# The helpers live in horse_helpers.py next to this file. install.sh overwrites THAT
-# file on every sync and never rewrites this one — your own code here is safe.
-try:
-    import os as _hb_os
-    _hb_path = _hb_os.path.join(_hb_os.path.dirname(_hb_os.path.abspath(__file__)), "horse_helpers.py")
-    exec(compile(open(_hb_path).read(), _hb_path, "exec"))
-except Exception as _hb_err:
-    import sys as _hb_sys
-    print("horse-browser: couldn't load horse_helpers.py (%r) — re-run horse-browser's install.sh" % (_hb_err,), file=_hb_sys.stderr)
-# <<< horse-browser: bh_open helpers <<<
-LOADER
-  fi
-  echo "✓ synced bh_open helpers → $ws/horse_helpers.py (loaded via stub in $dst)"
 }
-# (a) the workspace browser-harness ACTUALLY loads from — ask it via its own python
-# (the CLI's shebang points at it); helpers.AGENT_WORKSPACE honours BH_AGENT_WORKSPACE and
-# resolves the right default on every version. Fall back to known defaults if the query fails.
-WS_NEW=""
-BHPY="$(head -1 "$(command -v browser-harness)" 2>/dev/null | sed 's/^#!//;s/ .*//')"
-[ -n "$BHPY" ] && [ -x "$BHPY" ] && WS_NEW="$("$BHPY" -c 'from browser_harness.helpers import AGENT_WORKSPACE; print(AGENT_WORKSPACE)' 2>/dev/null)"
-[ -z "$WS_NEW" ] && WS_NEW="${BH_AGENT_WORKSPACE:-$HOME/.config/browser-harness/agent-workspace}"
-install_helpers_into "$WS_NEW"
-# (b) a source checkout's agent-workspace, if present (editable/dev installs)
-BH_DIR="${BROWSER_HARNESS_DIR:-}"
-if [ -z "$BH_DIR" ]; then
-  for c in "$HOME/Developer/browser-harness" "$HOME/browser-harness"; do
-    [ -f "$c/agent-workspace/agent_helpers.py" ] && { BH_DIR="$c"; break; }
-  done
-fi
-[ -n "$BH_DIR" ] && [ "$BH_DIR/agent-workspace" != "$WS_NEW" ] && install_helpers_into "$BH_DIR/agent-workspace"
+migrate_workspace "${BH_AGENT_WORKSPACE:-$HOME/.config/browser-harness/agent-workspace}"
+for c in "$HOME/Developer/browser-harness" "$HOME/browser-harness"; do
+  migrate_workspace "$c/agent-workspace"
+done
+echo "✓ helpers: folded into the vendored harness (workspace agent_helpers.py still loads for your own additions)"
 
-# Keep the stable symlink aimed at the current (Python-version-specific) packaged
-# browser-harness SKILL, so the @-import never rots across reinstalls. This writes only
-# ~/.config (never ~/.claude), and browser-harness is guaranteed present by the hard prereq
-# above — so it runs in BOTH modes (npm too; the atelier browser module reads this symlink to
-# locate browser-harness's docs). Registering the rule file (~/.claude/rules/horse-browser.md)
-# stays opt-in via ./claude-md.sh apply; the npm next-steps note points the user at it.
-"$HERE/claude-md.sh" symlink || echo "  (skipped browser-harness SKILL symlink — see ./claude-md.sh)" >&2
+# Keep the stable ~/.config copy of the vendored harness SKILL current, so the rule
+# file's @-import never rots across npm/Node reinstalls. Writes only ~/.config (never
+# ~/.claude). Registering the rule file (~/.claude/rules/horse-browser.md) stays opt-in
+# via ./claude-md.sh apply; the npm next-steps note points the user at it.
+"$HERE/claude-md.sh" symlink || echo "  (skipped harness SKILL copy — see ./claude-md.sh)" >&2
 
 # Wire the claude-code lane hook into ~/.claude/settings.json: PreToolUse gives each
 # SUBAGENT's horse-browser calls their own lane (own daemon + tab group — parallel
@@ -217,13 +164,9 @@ fi
 echo "Launching for the first time…"
 "$BINDIR/horse-browser" || true
 
-if command -v browser-harness >/dev/null 2>&1; then
-  export BU_CDP_URL="http://127.0.0.1:$PORT"
-  read -r -d '' check <<'PY' || true
-import browser_harness.helpers as _h
-from browser_harness.helpers import cdp
-# our helpers must have loaded AND overridden cdp (so auto-home is active), not just added bh_open
-if not hasattr(_h, "bh_open") or getattr(_h.cdp, "__module__", "") != "browser_harness_agent_helpers":
+read -r -d '' check <<'PY' || true
+# bh_open + trusted input are folded into the harness — both must be pre-imported.
+if "bh_open" not in globals() or "type_into" not in globals():
     print("NOHELPERS"); raise SystemExit(0)
 sw = next((t["targetId"] for t in cdp("Target.getTargets")["targetInfos"]
            if t.get("type") == "service_worker"
@@ -237,22 +180,20 @@ r = cdp("Runtime.evaluate", session_id=s,
 cdp("Target.detachFromTarget", sessionId=s)
 print("READY" if isinstance(r.get("result", {}).get("value"), list) else "PENDING")
 PY
-  echo "Verifying through browser-harness…"
-  verified=""; result=""
-  for _ in $(seq 1 20); do   # ~40s — must clear the SW's first 30s keepalive tick
-    result="$(printf '%s' "$check" | browser-harness 2>/dev/null | tail -1)"
-    [ "$result" = "READY" ] && { verified=1; break; }
-    [ "$result" = "NOHELPERS" ] && break   # helpers not loading — no point retrying
-    sleep 2
-  done
-  if [ -n "$verified" ]; then
-    echo "✓ verified — bh_open loaded + listTabs() answered over CDP; the extension is live"
-  elif [ "$result" = "NOHELPERS" ]; then
-    echo "! bh_open did NOT load — browser-harness isn't reading the workspace we appended to." >&2
-    echo "  Set BH_AGENT_WORKSPACE to its agent-workspace dir and re-run ./install.sh." >&2
-  else
-    echo "! couldn't confirm the extension within ~40s — check the browser window."
-  fi
+echo "Verifying through the vendored harness…"
+verified=""; result=""
+for _ in $(seq 1 20); do   # ~40s — must clear the SW's first 30s keepalive tick
+  result="$(printf '%s' "$check" | "$HERE/bin/horse-browser" 2>/dev/null | tail -1)"
+  [ "$result" = "READY" ] && { verified=1; break; }
+  [ "$result" = "NOHELPERS" ] && break   # helpers not loading — no point retrying
+  sleep 2
+done
+if [ -n "$verified" ]; then
+  echo "✓ verified — bh_open + trusted input loaded, listTabs() answered over CDP; the extension is live"
+elif [ "$result" = "NOHELPERS" ]; then
+  echo "! helpers did NOT load — the vendored harness looks broken; re-run: horse-browser harness-setup" >&2
+else
+  echo "! couldn't confirm the extension within ~40s — check the browser window."
 fi
 
 echo

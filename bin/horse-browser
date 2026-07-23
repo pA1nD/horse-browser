@@ -48,6 +48,38 @@ if { [ -z "$EXT" ] || [ ! -d "$EXT" ]; } && [ -n "$ROOT" ] && [ -d "$ROOT/extens
   EXT="$ROOT/extension"
 fi
 
+# ── vendored harness: the CDP daemon + helpers that drive the browser ─────────
+# horse-harness (harness/horse_harness) is the vendored browser-harness core with
+# the shared-browser invariants baked into the daemon. It runs from a private venv
+# inside the package; postinstall creates it, and this self-heals a missing one
+# (e.g. after an npm update wiped the package dir).
+HARNESS_DIR="$ROOT/harness"
+HARNESS_PY="$HARNESS_DIR/.venv/bin/python3"
+ensure_harness() {
+  [ -n "$ROOT" ] && [ -d "$HARNESS_DIR/horse_harness" ] || {
+    echo "horse-browser: $HARNESS_DIR/horse_harness missing — reinstall the package (npm i -g @pa1nd/horse-browser or ./install.sh)" >&2
+    return 1
+  }
+  if [ ! -x "$HARNESS_PY" ]; then
+    echo "horse-browser: setting up the harness venv (one-time)…" >&2
+    if command -v uv >/dev/null 2>&1; then
+      uv venv --quiet --python 3.12 "$HARNESS_DIR/.venv" \
+        && uv pip install --quiet --python "$HARNESS_PY" 'cdp-use==1.4.5' 'websockets==15.0.1'
+    elif command -v python3 >/dev/null 2>&1 \
+        && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+      python3 -m venv "$HARNESS_DIR/.venv" \
+        && "$HARNESS_PY" -m pip install --quiet 'cdp-use==1.4.5' 'websockets==15.0.1'
+    fi
+    [ -x "$HARNESS_PY" ] || {
+      echo "horse-browser: harness venv setup failed — need uv (https://docs.astral.sh/uv) or python3 ≥3.11" >&2
+      return 1
+    }
+  fi
+  # The package is imported from the package dir, not installed into the venv, so
+  # an npm update swaps the code in place with no reinstall step.
+  export PYTHONPATH="$HARNESS_DIR${PYTHONPATH:+:$PYTHONPATH}"
+}
+
 # ── --lane: harness-internal sub-identity ─────────────────────────────────────
 # Splits one agent session into isolated lanes (own daemon, own tab group) so
 # parallel agents sharing an env never clobber each other. Agents never pass it
@@ -453,7 +485,7 @@ def main():
         except Exception:
             return False
     try:
-        pids = subprocess.run(["pgrep", "-f", "browser_harness.daemon"],
+        pids = subprocess.run(["pgrep", "-f", "(browser|horse)_harness.daemon"],
                               capture_output=True, text=True, timeout=3).stdout.split()
     except Exception:
         return
@@ -500,7 +532,7 @@ def alive(pid):
 def live_sessions():
     out = set()
     try:
-        pids = subprocess.run(["pgrep", "-f", "browser_harness.daemon"],
+        pids = subprocess.run(["pgrep", "-f", "(browser|horse)_harness.daemon"],
                               capture_output=True, text=True, timeout=3).stdout.split()
     except Exception:
         return out
@@ -627,7 +659,7 @@ recycle_daemons() {
 import os, signal, subprocess, sys
 want = f"BU_CDP_URL=http://127.0.0.1:{sys.argv[1]}"
 try:
-    pids = subprocess.run(["pgrep", "-f", "browser_harness.daemon"],
+    pids = subprocess.run(["pgrep", "-f", "(browser|horse)_harness.daemon"],
                           capture_output=True, text=True, timeout=3).stdout.split()
 except Exception:
     pids = []
@@ -672,7 +704,11 @@ PY
   printf '  %-18s %s\n' "chrome (pinned)"  "$(_chrome_ver "$BIN")"
   if cdp_up; then printf '  %-18s %s  (live on :%s)\n' "chrome (running)" "${running:-?}" "$PORT"
   else            printf '  %-18s %s\n'               "chrome (running)" "down"; fi
-  printf '  %-18s %s\n' "browser-harness"  "$(browser-harness --version 2>/dev/null || echo '?')"
+  if [ -x "$HARNESS_PY" ]; then
+    printf '  %-18s %s\n' "horse-harness" "vendored ($HARNESS_DIR/horse_harness, venv ready)"
+  else
+    printf '  %-18s %s\n' "horse-harness" "venv not built (runs on first driver call, or: horse-browser harness-setup)"
+  fi
   printf '  %-18s %s\n' "profile"  "$PROFILE"
   printf '  %-18s %s\n' "config"   "$CONFIG"
 }
@@ -959,6 +995,10 @@ case "${1:-}" in
     # mid-relaunch leaves the SW dead. (The focus-safe helpers load per-call, no relaunch.)
     relaunch_browser "apply-package-update" && exit 0 || exit 1
     ;;
+  harness-setup)
+    # install.sh / postinstall call this to build the harness venv up front.
+    ensure_harness && exit 0 || exit 1
+    ;;
   focus-watch)
     # Log every macOS focus steal by the agent browser, to the millisecond. Run this, then
     # run whatever you suspect; grep the log for FOCUS-STOLEN. Ctrl-C to stop.
@@ -973,15 +1013,11 @@ esac
 ensure_browser || exit 1
 maybe_reap   # opportunistically clean up daemons from ended sessions (throttled)
 
-# Driver mode: run the captured script (and/or forwarded args) through browser-harness
-# against our browser. exec replaces this process, so browser-harness inherits the
-# here-string as its stdin exactly as if it had been called directly.
+# Driver mode: run the captured script (and/or forwarded args) through the vendored
+# horse-harness against our browser. exec replaces this process, so the harness
+# inherits the here-string as its stdin exactly as if it had been called directly.
 if [ -n "$PASSTHROUGH" ]; then
-  if ! command -v browser-harness >/dev/null 2>&1; then
-    echo "horse-browser: browser-harness not found on PATH — needed to run a script." >&2
-    echo "  Install browser-harness, or run bare 'horse-browser' just to start the browser." >&2
-    exit 1
-  fi
+  ensure_harness || exit 1
   export BU_CDP_URL="http://127.0.0.1:$PORT"
 
   # ── identity: a generic contract, filled in by integrations ─────────────────
@@ -1014,9 +1050,9 @@ if [ -n "$PASSTHROUGH" ]; then
   fi
 
   if [ -n "$script" ]; then
-    exec browser-harness "$@" <<<"$script"   # feed the captured heredoc as stdin
+    exec "$HARNESS_PY" -m horse_harness.run "$@" <<<"$script"   # feed the captured heredoc as stdin
   else
-    exec browser-harness "$@"                # args only (e.g. --doctor) — inherit stdin
+    exec "$HARNESS_PY" -m horse_harness.run "$@"                # args only (e.g. --doctor) — inherit stdin
   fi
 fi
 

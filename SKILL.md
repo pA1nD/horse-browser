@@ -132,9 +132,9 @@ self.listTabs(label: string) -> Promise<Tab[]>
 //   }
 ```
 
-**`bh_open` / `bh_list` / `bh_switch_tab` are pre-installed.** `install.sh` writes them to browser-harness's `agent-workspace/horse_helpers.py`, loaded on every call via a small stub it adds once to `agent_helpers.py` (your own additions to that file are never touched), so they're available immediately — just call `bh_open(url)`.
+**`bh_open` / `bh_list` / `bh_switch_tab` are built in.** They ship inside the vendored harness (`harness/horse_harness/helpers.py`), pre-imported on every `horse-browser` call — just call `bh_open(url)`. Your own additions to the workspace `agent_helpers.py` still load on top.
 
-If `bh_open` is somehow undefined (a browser-harness checkout that never ran our `install.sh`), re-run `horse-browser`'s `install.sh` to install them — don't hand-roll your own; the focus-safe behaviour is subtle. You pass CDP `targetId`s only — the extension bridges to chrome `tabId`s internally.
+If `bh_open` is somehow undefined, the vendored harness didn't load — run `horse-browser harness-setup` (or re-run `install.sh`); don't hand-roll your own, the focus-safe behaviour is subtle. You pass CDP `targetId`s only — the extension bridges to chrome `tabId`s internally.
 
 ### Why this avoids stealing macOS focus
 

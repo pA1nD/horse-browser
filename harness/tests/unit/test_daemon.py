@@ -373,3 +373,113 @@ def test_activate_target_falls_back_to_native_without_extension():
 
     assert resp == {"result": {}}
     assert ("Target.activateTarget", {"targetId": "PAGE1"}, None) in d.cdp.calls
+
+
+def _scripted_for_attach(targets, monkeypatch, bound=None, label=""):
+    monkeypatch.setattr(daemon, "_bound_target", lambda: bound)
+    monkeypatch.setattr(daemon, "_session_label", lambda: label)
+    monkeypatch.setattr(daemon, "_remember_target", lambda tid: remembered.append(tid))
+    remembered.clear()
+    d = daemon.Daemon()
+    created = {"n": 0}
+
+    def create(_params, _sid):
+        created["n"] += 1
+        return {"targetId": "NEW-BLANK"}
+    d.cdp = _ScriptedCDP({
+        "Target.getTargets": {"targetInfos": targets},
+        "Target.createTarget": create,
+        "Target.attachToTarget": {"sessionId": "attach-session"},
+        "Runtime.evaluate": {"result": {"value": 1}},
+    })
+    return d, created
+
+
+remembered = []
+
+_FOREIGN_PAGE = {"targetId": "NEIGHBOUR", "type": "page", "url": "https://neighbour.example"}
+
+
+def test_attach_prefers_bound_tab(monkeypatch):
+    """With a persisted binding alive, the daemon re-attaches THAT tab — never a guess."""
+    own = {"targetId": "MYTAB", "type": "page", "url": "https://mine.example"}
+    d, created = _scripted_for_attach([_FOREIGN_PAGE, own, _SW_TARGETS["targetInfos"][1]],
+                                      monkeypatch, bound="MYTAB", label="sess-1")
+
+    pick = asyncio.run(d.attach_first_page())
+
+    assert pick["targetId"] == "MYTAB"
+    assert d.target_id == "MYTAB"
+    assert created["n"] == 0
+    assert remembered == ["MYTAB"]
+
+
+def test_attach_with_identity_never_grabs_foreign_tab(monkeypatch):
+    """THE isolation invariant: a session with identity whose bound tab is gone must
+    mint (and group) its own about:blank — never attach a neighbour's page."""
+    d, created = _scripted_for_attach([_FOREIGN_PAGE, _SW_TARGETS["targetInfos"][1]],
+                                      monkeypatch, bound="GONE", label="sess-1")
+
+    pick = asyncio.run(d.attach_first_page())
+
+    assert pick["targetId"] == "NEW-BLANK"
+    assert created["n"] == 1
+    attaches = [p for (m, p, _s) in d.cdp.calls if m == "Target.attachToTarget"]
+    assert {"targetId": "NEIGHBOUR", "flatten": True} not in attaches
+    evals = [p["expression"] for (m, p, _s) in d.cdp.calls if m == "Runtime.evaluate"]
+    assert any("groupTab" in e and "NEW-BLANK" in e and "sess-1" in e for e in evals), evals
+    creates = [p for (m, p, _s) in d.cdp.calls if m == "Target.createTarget"]
+    assert creates == [{"url": "about:blank", "background": True}]
+
+
+def test_attach_without_identity_keeps_legacy_first_page(monkeypatch):
+    d, created = _scripted_for_attach([_FOREIGN_PAGE], monkeypatch, bound=None, label="")
+
+    pick = asyncio.run(d.attach_first_page())
+
+    assert pick["targetId"] == "NEIGHBOUR"
+    assert created["n"] == 0
+
+
+def test_anchor_alive_true_for_live_pid_and_false_for_dead(monkeypatch):
+    import os
+    monkeypatch.setattr(daemon, "ANCHOR_PID", str(os.getpid()))
+    monkeypatch.setattr(daemon, "ANCHOR_START", "")
+    assert daemon._anchor_alive() is True
+
+    # find a PID that doesn't exist
+    pid = 99999
+    while True:
+        try:
+            os.kill(pid, 0)
+            pid -= 1
+        except ProcessLookupError:
+            break
+        except OSError:
+            pid -= 1
+    monkeypatch.setattr(daemon, "ANCHOR_PID", str(pid))
+    assert daemon._anchor_alive() is False
+
+
+def test_anchor_alive_unverifiable_defaults_to_alive(monkeypatch):
+    monkeypatch.setattr(daemon, "ANCHOR_PID", None)
+    assert daemon._anchor_alive() is True
+    monkeypatch.setattr(daemon, "ANCHOR_PID", "not-a-pid")
+    assert daemon._anchor_alive() is True
+
+
+def test_reap_own_tabs_closes_every_group_tab(monkeypatch):
+    monkeypatch.setattr(daemon, "_session_label", lambda: "sess-1")
+    d = daemon.Daemon()
+    d.cdp = _ScriptedCDP({
+        "Target.getTargets": _SW_TARGETS,
+        "Target.attachToTarget": {"sessionId": "sw-session"},
+        "Runtime.evaluate": {"result": {"value": [
+            {"targetId": "T1"}, {"targetId": "T2"}, {"targetId": None},
+        ]}},
+    })
+
+    asyncio.run(d._reap_own_tabs())
+
+    closed = [p for (m, p, _s) in d.cdp.calls if m == "Target.closeTarget"]
+    assert closed == [{"targetId": "T1"}, {"targetId": "T2"}]

@@ -7,11 +7,10 @@
 # no risk of mangling their own instructions, trivially removable.
 #
 # Why a script: Claude Code loads the rule verbatim, so its @-imports must be LITERAL
-# paths — they can't run a command to resolve anything. But the packaged browser-harness
-# SKILL.md lives under a Python-version-specific dir (…/lib/python3.12/site-packages/…)
-# that moves whenever browser-harness is reinstalled on a different Python. So instead of
-# hardcoding that brittle path, we point the rule at a STABLE symlink we keep aimed at the
-# current SKILL, and rewrite the whole (script-owned) file so updates stay idempotent.
+# paths — they can't run a command to resolve anything. The harness SKILL ships inside
+# the package dir, which under `npm -g` is a volatile Node-version path — so we keep a
+# STABLE COPY at ~/.config/horse-browser and point the rule there, rewriting the whole
+# (script-owned) file so updates stay idempotent.
 #
 # Usage:
 #   ./claude-md.sh print      print the canonical rule to stdout (compare / copy by hand)
@@ -37,23 +36,23 @@ END="<!-- horse-browser:end -->"
 
 _tilde() { echo "$1" | sed "s|^$HOME|~|"; }
 
-# Echo the current packaged browser-harness SKILL.md path by ASKING browser-harness itself
-# (its own interpreter, via the CLI shebang) — version- and install-agnostic. Empty if absent.
+# The harness (driving) SKILL ships vendored with this package. Empty if absent.
 resolve_bh_skill() {
-  command -v browser-harness >/dev/null 2>&1 || return 0
-  local py; py="$(head -1 "$(command -v browser-harness)" 2>/dev/null | sed 's/^#!//;s/ .*//')"
-  [ -n "$py" ] && [ -x "$py" ] || return 0
-  "$py" -c 'import browser_harness, os; print(os.path.join(os.path.dirname(browser_harness.__file__), "SKILL.md"))' 2>/dev/null
+  local p="$HERE/harness/horse_harness/SKILL.md"
+  [ -f "$p" ] && echo "$p"
 }
 
 ensure_symlink() {
+  # Historically a symlink at the packaged browser-harness SKILL; now a stable COPY
+  # of the vendored harness SKILL (a symlink into an npm dir rots on Node switches).
   local target; target="$(resolve_bh_skill)"
-  if [ -z "$target" ] || [ ! -f "$target" ]; then
-    echo "claude-md: couldn't resolve the browser-harness SKILL — is browser-harness installed?" >&2
+  if [ -z "$target" ]; then
+    echo "claude-md: vendored harness SKILL missing ($HERE/harness/horse_harness/SKILL.md)" >&2
     return 1
   fi
   mkdir -p "$(dirname "$LINK")"
-  ln -sfn "$target" "$LINK"
+  rm -f "$LINK"
+  cp "$target" "$LINK"
 }
 
 # Our OWN SKILL.md ships inside the package dir. Under `npm -g` that dir is deep in a
@@ -119,11 +118,11 @@ check() {
   if [ -f "$CLAUDE_MD" ] && grep -qF "$BEGIN" "$CLAUDE_MD"; then
     echo "claude-md: legacy block still in $CLAUDE_MD — apply removes it" >&2; rc=1
   fi
-  local want have; want="$(resolve_bh_skill)"; have="$(readlink "$LINK" 2>/dev/null || true)"
+  local want; want="$(resolve_bh_skill)"
   if [ -z "$want" ]; then
-    echo "claude-md: cannot resolve browser-harness SKILL (not installed?)" >&2; rc=1
-  elif [ "$have" != "$want" ]; then
-    echo "claude-md: symlink stale — points at '${have:-<none>}', should be '$want'" >&2; rc=1
+    echo "claude-md: vendored harness SKILL missing" >&2; rc=1
+  elif ! cmp -s "$want" "$LINK" 2>/dev/null; then
+    echo "claude-md: harness-skill copy stale/missing — $(_tilde "$LINK") ≠ vendored SKILL" >&2; rc=1
   fi
   case "$HERE" in
     */node_modules/*)
@@ -139,7 +138,7 @@ case "${1:-print}" in
   print)   block ;;
   apply)   apply ;;
   check)   check ;;
-  symlink) ensure_symlink && echo "claude-md: symlink $(_tilde "$LINK") → $(readlink "$LINK")" ;;
+  symlink) ensure_symlink && echo "claude-md: harness-skill copy $(_tilde "$LINK") ← vendored SKILL" ;;
   skill)   ensure_skill && echo "claude-md: skill copy $(_tilde "$SKILL_COPY") ← $(_tilde "$HERE")/SKILL.md" ;;
   *) echo "usage: $(basename "$0") [print|apply|check|symlink|skill]" >&2; exit 2 ;;
 esac

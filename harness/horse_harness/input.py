@@ -1,40 +1,29 @@
-# horse-browser Tier 2 — trusted, correct input (installed as horse_input.py).
-#
-# Loaded by horse_helpers.py, which execs this sibling — so every agent that drives
-# the browser gets these by default. This is the AGENT LAYER of realness: input sent
-# over CDP that fires the SAME events a real browser would, applied on every site.
-#
-# WHY IT'S NOT JUST STEALTH — it's correctness. Sites bind real logic to real events:
-#   • keyup / keydown / input  → enable the submit button, fire autocomplete, validate,
-#                                update React/Vue/Svelte controlled state.
-#   • mousedown / pointerdown  → open menus, custom widgets, "close on outside mousedown".
-# insertText sets the value but fires NO key events; `el.value=` fires nothing at all;
-# `el.click()` fires only `click`, not the down/up/pointer chain. In every case the text
-# or click *appears* to work while the page's logic never ran — a silent break that hits
-# plain forms, not just defended ones. These verbs fire the real events, so pages behave.
-# (Bot-detector realness rides along for free.) Human-like MOTION — bezier paths, warm-up,
-# gaussian cadence — is the separate, gated Tier 3 layer; this file stays cheap and fast.
-#
-# Reach for these (they shadow the untrusted shortcuts):
-#   click(css)              trusted mousedown->mouseup->click at the element's center
-#   type_into(css, text)    focus + real per-char keyDown/keyUp (fires keyup/input/change)
-#   type_text(text)         OVERRIDE of the stock insertText typer → real key events
-#   press(name, times=1)    a trusted named key (Enter, Tab, Escape, Arrow*, Backspace)
-#   press_hold(css, s)      trusted press-and-hold (Press & Hold challenges)
-#   drag(css, to=/dx=/dy=)  trusted drag (slide-to-verify)
-#   solve_challenge(act=1)  classify a challenge → solve the EASY ones (click/hold/drag),
-#                           or return "escalate:<why>" for image/text/audio ones.
-# Deliberate escape hatch:
-#   insert_text_fast(text)  raw Input.insertText — fast, but fires NO key events; only for
-#                           dumping into a plain <textarea> with no listeners.
-#
-# `cdp` is provided by horse_helpers.py (loaded first) — we drive everything through it.
+"""horse-harness trusted input — real key/mouse events, easy-challenge gestures.
 
+Formerly agent-input.py (installed as workspace horse_input.py); now a first-class
+module. WHY IT'S NOT JUST STEALTH — it's correctness. Sites bind real logic to real
+events (keyup/input enable submit buttons and update framework state; mousedown opens
+menus). insertText sets the value but fires NO key events; `el.value=` fires nothing;
+`el.click()` fires only `click`. These verbs fire the real events, so pages behave.
+(Bot-detector realness rides along for free.)
+
+  click(css)              trusted mousedown->mouseup->click at the element's center
+  click_xy(x, y)          trusted click at viewport coords (shadow DOM / cross-iframe)
+  type_into(css, text)    focus + real per-char keyDown/keyUp (fires keyup/input/change)
+  type_text(text)         types the focused element with REAL key events
+  press(name, times=1)    a trusted named key (Enter, Tab, Escape, Arrow*, Backspace)
+  press_hold(css_or_xy,s) trusted press-and-hold (Press & Hold challenges)
+  drag(css_or_xy, to=/dx=) trusted drag (slide-to-verify)
+  solve_challenge(act=1)  classify a challenge -> solve the EASY ones, or escalate
+  insert_text_fast(text)  escape hatch: raw Input.insertText, NO key events
+"""
 import math as _im
 import random as _ir
 import time as _it
 import json as _ij
 import sys as _isys
+
+from .helpers import cdp
 
 _mouse = {"x": 240.0, "y": 240.0}
 

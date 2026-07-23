@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 extension/_metadata/
+harness/.venv/
+.pytest_cache/

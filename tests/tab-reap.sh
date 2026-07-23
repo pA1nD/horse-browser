@@ -26,7 +26,7 @@ skip() { SKIP=$((SKIP+1)); say "  - $1 (skipped${2:+: $2})"; }
 # blanks land in a single group we tear down at the end — the test never litters.
 HSESS="reaptest-$$-helper"
 cleanup() {
-  for p in $(pgrep -f browser_harness.daemon); do
+  for p in $(pgrep -f "(browser|horse)_harness.daemon"); do
     ps eww -o command= -p "$p" 2>/dev/null | tr ' ' '\n' | grep -qE "^HORSE_SESSION=reaptest-$$" && kill "$p" 2>/dev/null
   done
   sleep 1                 # let the kills propagate so the reaper sees these sessions as dead
@@ -45,7 +45,7 @@ print("GT", cdp("Runtime.evaluate", session_id=s, expression=expr, awaitPromise=
 PY
 }
 daemon_pid_for() {  # echo the daemon pid whose HORSE_SESSION == $1
-  for p in $(pgrep -f browser_harness.daemon); do
+  for p in $(pgrep -f "(browser|horse)_harness.daemon"); do
     ps eww -o command= -p "$p" 2>/dev/null | tr ' ' '\n' | grep -qx "HORSE_SESSION=$1" && { echo "$p"; return; }
   done
 }
