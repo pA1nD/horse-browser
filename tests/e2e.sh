@@ -401,6 +401,29 @@ else
   fail "parallel lane screenshots produce distinct files" "r='$rshot' b='$bshot'"
 fi
 
+# A screenshot of a background tab must NOT hijack the window's visible tab from whoever
+# is watching. Give a background tab a surface requires raising it window-visible; the
+# viewer's tab must be exactly what it was afterward (the "captured my inputs" regression).
+if hb 'print("HAS", ext_call("activeTabTargets") is not None)' | grep -q "HAS True"; then
+  out="$(hb '
+import time, urllib.parse
+a = bh_open("data:text/html," + urllib.parse.quote("<title>hb-e2e-viewer</title>viewing"))
+wait_for_load(); ext_call("activateTab", a); time.sleep(0.2)
+before = ext_call("activeTabTargets")
+b = bh_open("data:text/html," + urllib.parse.quote("<title>hb-e2e-agent</title><body style=background:#08f>"))
+wait_for_load()
+capture_screenshot()                       # forces b window-visible to raster, then restores
+after = ext_call("activeTabTargets")
+print("RESTORED", before == after and a in (after or []))
+cdp("Target.closeTarget", targetId=a); cdp("Target.closeTarget", targetId=b)
+')"
+  grep -q "RESTORED True" <<<"$out" \
+    && pass "screenshot restores the viewer's visible tab (no hijack)" \
+    || fail "screenshot restores the viewer's visible tab" "$out"
+else
+  skip "screenshot restores the viewer's visible tab" "extension activeTabTargets not live (relaunch needed)"
+fi
+
 # ═════ 7. real websites ══════════════════════════════════════════════════════
 say "[7] real websites"
 

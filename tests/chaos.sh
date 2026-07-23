@@ -57,16 +57,16 @@ daemon_names() {   # BU_NAME of every live daemon pinned to our port
 
 "$HB" >/dev/null 2>&1 || { say "FATAL: browser did not come up"; exit 1; }
 
-# This drives the ONE shared browser hard — many tabs, and screenshots that briefly
-# raise a tab to window-visible. It's non-disruptive to OS focus, but if a human is
-# actively viewing/typing in this browser they'll see tabs flip. Don't run it against a
-# browser someone is using. Set HB_CHAOS_OK=1 to acknowledge and proceed.
-if [ -z "${HB_CHAOS_OK:-}" ]; then
-  say "NOTE: chaos drives the shared browser hard (opens many tabs, flips the visible tab"
-  say "      for screenshots). Don't run it while someone is using this browser."
-  say "      Re-run with HB_CHAOS_OK=1 to proceed."
-  exit 2
-fi
+# This drives the ONE shared browser hard: N sessions opening tabs and screenshotting.
+# Screenshots restore the viewer's visible tab (see the e2e "no hijack" test), so it's
+# safe to run alongside a human for normal load — no OS focus steal, tabs isolated in
+# per-session groups. The one residue under this PATHOLOGICAL tight-loop: concurrent
+# screenshots each briefly raise their tab window-visible, and the save/restore of "the
+# visible tab" can itself race between sessions, so a human typing in this exact window
+# during the storm could very occasionally see a flicker. Fully closed only by
+# per-session windows (see roadmap). Informational — it proceeds.
+say "note: drives the shared browser hard; screenshots restore the viewer's tab, but a"
+say "      human typing here during this tight-loop storm may see an occasional flicker."
 
 # ═════ soak mode ═════════════════════════════════════════════════════════════
 if [ -n "${SOAK:-}" ]; then
