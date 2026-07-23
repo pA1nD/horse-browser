@@ -309,11 +309,15 @@ def capture_screenshot(path=None, full=False, max_dim=None):
             prefix=f"shot-{os.environ.get('BU_NAME', 'default')}-",
             suffix=".png", dir=str(_bh_ipc._TMP))
         os.close(fd)
-    import time
+    import time, random
     last_exc = None
-    for attempt in range(4):
+    ATTEMPTS = 6
+    for attempt in range(ATTEMPTS):
         # On a retry, re-home and raise the tab to window-visible IMMEDIATELY before the
         # capture (no intervening wait a neighbour could use to steal visibility back).
+        # Only one tab can hold window-visibility, so under N-way concurrent capture the
+        # raises race; a jittered settle de-synchronises the racers so each gets a clean
+        # window in turn (measured: converges within a few attempts even 6-way).
         if attempt > 0:
             try:
                 # recall FIRST: on a knocked-off session Target.getTargetInfo answers on
@@ -326,7 +330,7 @@ def capture_screenshot(path=None, full=False, max_dim=None):
                 if tid:
                     bh_switch_tab(tid)
                     ext_call("activateTab", tid)     # window-visible (no OS focus) → first raster
-                    time.sleep(0.25)                 # let one frame composite, THEN capture
+                    time.sleep(0.2 + random.uniform(0, 0.15 * attempt))  # jittered settle
             except Exception:
                 pass
         try:
@@ -335,7 +339,7 @@ def capture_screenshot(path=None, full=False, max_dim=None):
             last_exc = e
             continue
         w, h = _hb_png_dims(out)
-        if (w > 4 and h > 4) or attempt == 3:
+        if (w > 4 and h > 4) or attempt == ATTEMPTS - 1:
             return out
     if last_exc:
         raise last_exc
