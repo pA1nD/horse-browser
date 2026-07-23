@@ -31,21 +31,28 @@ import time, json
 
 SOLVE = bool("$SOLVE")
 
-# vendor, url, class, and a JS probe returning the pass-token (or "") for that vendor
+# name, url, class, success_js (JS → truthy pass-token/marker or ""), activate_sel (a widget
+# to CLICK first to reveal the challenge — None for widgets that render/pass on load).
 SITES = [
   ("Cloudflare Turnstile (managed)", "https://demo.turnstile.workers.dev/", "managed",
-   "(document.querySelector('[name=cf-turnstile-response]')||{}).value||''"),
+   "(document.querySelector('[name=cf-turnstile-response]')||{}).value||''", None),
   ("reCAPTCHA v3 (score)", "https://recaptcha-demo.appspot.com/recaptcha-v3-request-scores.php", "score",
-   "(document.querySelector('#g-recaptcha-response,[name=g-recaptcha-response]')||{}).value||''"),
+   "(document.querySelector('#g-recaptcha-response,[name=g-recaptcha-response]')||{}).value||''", None),
   ("reCAPTCHA v2 (checkbox)", "https://www.google.com/recaptcha/api2/demo", "gesture",
-   "(document.querySelector('#g-recaptcha-response,[name=g-recaptcha-response]')||{}).value||''"),
+   "(document.querySelector('#g-recaptcha-response,[name=g-recaptcha-response]')||{}).value||''", None),
   ("hCaptcha (checkbox)", "https://accounts.hcaptcha.com/demo", "gesture",
-   "(document.querySelector('[name=h-captcha-response]')||{}).value||''"),
+   "(document.querySelector('[name=h-captcha-response]')||{}).value||''", None),
+  # GeeTest v4: a "Click to verify" radar button reveals a slide/icon challenge; success shows
+  # a .geetest_success (or the radar flips to a check). A pure slide is a gesture we drag; an
+  # icon/puzzle step is perception -> the driving agent solves by vision, else escalate.
+  ("GeeTest v4 (slide)", "https://gt4.geetest.com/", "gesture",
+   "document.querySelector('.geetest_success,.geetest_radar_tip_content,[class*=success]') ? 'ok' : ''",
+   ".geetest_btn,.geetest_radar_btn,.geetest_v4_radar,[class*=geetest_btn],[class*=radar]"),
 ]
 
 tid = None
 passed = attempted = escalated = 0
-for name, url, klass, token_js in SITES:
+for name, url, klass, token_js, activate in SITES:
     try:
         if tid is None: tid = bh_open(url)
         else: bh_switch_tab(tid); goto_url(url)
@@ -59,7 +66,11 @@ for name, url, klass, token_js in SITES:
         if klass in ("managed", "score"):
             print(f"  ✗ {name:34} {klass:8} no token — reputation/IP may be flagged")
             continue
-        # gesture class: classify, optionally solve
+        # gesture class: reveal the challenge if it needs a click, then classify / solve
+        if activate:
+            try: click(activate)
+            except Exception: pass
+            time.sleep(3)
         cls = solve_challenge(act=False) if 'solve_challenge' in globals() else 'no-solver'
         short = cls.split(' ')[0] if cls else '?'
         if SOLVE and 'solve_challenge' in globals():
@@ -81,7 +92,10 @@ for name, url, klass, token_js in SITES:
     except Exception as e:
         print(f"  ✗ {name:34} ERROR {str(e)[:50]}")
 
-print(f"  ── auto-passed (managed/score): {passed}   attempted/present: {attempted}   escalated: {escalated}")
+print(f"  ── auto-passed (managed/score): {passed}   present/attempted: {attempted}   escalated-by-design (perception): {escalated}")
+print("  note: clean public demos are fingerprint-based (we pass) or perception (we escalate).")
+print("        Pure solvable gestures (press-&-hold, simple slide) have no clean demo — their")
+print("        solving is covered by e2e [5] fixtures (offline) + the hb-stealth bench (live PX).")
 if tid:
     try: cdp("Target.closeTarget", targetId=tid)
     except Exception: pass
