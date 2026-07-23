@@ -5,7 +5,8 @@
 # launch races, same-bundle collisions, stale locks, tab-preserving relaunch, daemon
 # recycle/reap/anchoring, stdin modes, per-session identity, focus-safe tab grouping,
 # helper shadowing, trusted input on hydrating SPAs, concurrent screenshots, inner
-# scroll containers, real-site flows.
+# scroll containers, real-site flows, and the realness/anti-bot fingerprint claims from
+# the hb-stealth module (webdriver, the "Google Chrome" UA-CH patch, shiftKey coherence).
 #
 # Usage:
 #   tests/e2e.sh                   run everything (last section bounces the browser;
@@ -444,15 +445,77 @@ cdp("Target.closeTarget", targetId=tid)
 grep -q "WIKI True" <<<"$out" && pass "Wikipedia article loads + parses" \
   || fail "Wikipedia article loads" "$out"
 
-# ═════ 8. lifecycle: relaunch, recycle, stampede, locks (browser bounces) ════
+# ═════ 8. realness (from the hb-stealth module: fingerprint + input forensics) ═
+say "[8] realness / anti-bot fingerprint"
+
+# The always-on realness claims, all locally checkable. webdriver MUST be false (the #1
+# automation tell); window.chrome present; and — the one Chrome-for-Testing tell the
+# extension patches — "Google Chrome" must be in the UA-CH brand list (plain CfT shows
+# only Chromium + Not;A=Brand), in BOTH the sync brands and getHighEntropyValues.
+out="$(hb '
+import json
+tid = bh_open("https://example.com")
+wait_for_load()
+fp = json.loads(js("""JSON.stringify({
+  webdriver: navigator.webdriver === true,
+  hasChrome: typeof window.chrome === "object",
+  brands: (navigator.userAgentData && navigator.userAgentData.brands || []).map(function(b){return b.brand}),
+  plugins: navigator.plugins.length,
+  langs: (navigator.languages || []).length,
+  cores: navigator.hardwareConcurrency || 0
+})"""))
+he = js("""(async()=>{try{var h=await navigator.userAgentData.getHighEntropyValues([\"fullVersionList\"]);
+  return (h.fullVersionList||[]).map(function(b){return b.brand}).join(\",\");}catch(e){return \"ERR\"}})()""") or ""
+print("WEBDRIVER_TRUE", fp["webdriver"])
+print("HASCHROME", fp["hasChrome"])
+print("BRAND_JS", "Google Chrome" in fp["brands"])
+print("BRAND_HE", "Google Chrome" in he)
+print("NONDEGEN", fp["plugins"] > 0 and fp["langs"] > 0 and fp["cores"] > 0, fp)
+cdp("Target.closeTarget", targetId=tid)
+')"
+if grep -q "WEBDRIVER_TRUE False" <<<"$out" && grep -q "HASCHROME True" <<<"$out"; then
+  pass "navigator.webdriver is false; window.chrome present"
+else
+  fail "navigator.webdriver is false; window.chrome present" "$out"
+fi
+grep -q "BRAND_JS True" <<<"$out" && grep -q "BRAND_HE True" <<<"$out" \
+  && pass '"Google Chrome" UA-CH brand present (CfT tell patched, sync + high-entropy)' \
+  || fail '"Google Chrome" UA-CH brand present (extension fingerprint patch)' "$out"
+grep -q "NONDEGEN True" <<<"$out" && pass "fingerprint non-degenerate (plugins/languages/cores)" \
+  || fail "fingerprint non-degenerate" "$out"
+
+# Input forensics (the hb-stealth Input Probe): a real keyboard sends shifted characters
+# with shiftKey=true. Synthetic input that fires the char without a Shift modifier is a
+# tell a real keyboard can never produce — and this guards horse_input.py's Shift-aware
+# _key() (the exact path the _keyinfo 4-tuple collision once broke).
+out="$(hb '
+import json, urllib.parse
+html = """<title>hb-e2e-shift</title><input id=t><script>window.ev=[];
+document.getElementById(\"t\").addEventListener(\"keydown\",function(e){
+  if(e.key.length===1) window.ev.push({k:e.key, s:e.shiftKey});});</script>"""
+tid = bh_open("data:text/html," + urllib.parse.quote(html))
+wait_for_load()
+type_into("#t", "aB$3^")
+ev = {d["k"]: d["s"] for d in json.loads(js("JSON.stringify(window.ev)"))}
+# shifted glyphs must carry shiftKey=true; unshifted must not
+ok = ev.get("B") is True and ev.get("$") is True and ev.get("^") is True \
+     and ev.get("a") is False and ev.get("3") is False
+print("SHIFT-COHERENT", ok, ev)
+cdp("Target.closeTarget", targetId=tid)
+')"
+grep -q "SHIFT-COHERENT True" <<<"$out" \
+  && pass "typed shifted chars carry shiftKey=true (unshifted do not)" \
+  || fail "shiftKey coherence on typed input" "$out"
+
+# ═════ 9. lifecycle: relaunch, recycle, stampede, locks (browser bounces) ════
 if [ -n "${HB_TEST_FAST:-}" ]; then
-  say "[8] lifecycle (SKIPPED: HB_TEST_FAST)"
+  say "[9] lifecycle (SKIPPED: HB_TEST_FAST)"
   skip "cold relaunch after hard kill" "fast mode"
   skip "no dead-websocket daemon after relaunch" "fast mode"
   skip "5-way cold-launch stampede" "fast mode"
   skip "dead-holder stale lock break" "fast mode"
 else
-  say "[8] lifecycle (bounces the browser)"
+  say "[9] lifecycle (bounces the browser)"
 
   pkill -f "remote-debugging-port=$PORT" 2>/dev/null
   sleep 2
