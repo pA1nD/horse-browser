@@ -950,6 +950,15 @@ PY
 case "${1:-}" in
   status) hb_status; exit 0 ;;
   update) hb_update && exit 0 || exit 1 ;;
+  relaunch)
+    # Apply an upgraded horse-browser package (new launch flags + extension code) without a
+    # Chrome version change: new launch args only bind to a fresh process, and the extension
+    # is re-read from disk on relaunch. A single deliberate relaunch loads the new SW code
+    # cleanly (the stale-SW-bytecode gotcha is specific to RAPID reload cycles, not this).
+    # Do NOT wipe the Service Worker cache here — the browser rewrites it on exit, and wiping
+    # mid-relaunch leaves the SW dead. (The focus-safe helpers load per-call, no relaunch.)
+    relaunch_browser "apply-package-update" && exit 0 || exit 1
+    ;;
   focus-watch)
     # Log every macOS focus steal by the agent browser, to the millisecond. Run this, then
     # run whatever you suspect; grep the log for FOCUS-STOLEN. Ctrl-C to stop.

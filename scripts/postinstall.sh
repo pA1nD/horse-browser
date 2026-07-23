@@ -49,6 +49,8 @@ cat <<EOF
 
 horse-browser installed. Next:
   • Start it (launches the browser, no focus steal):   horse-browser
+  • Already running an older version? Apply the update (new launch flags +
+    extension) with a tab-preserving relaunch:          horse-browser relaunch
   • Sign into your apps once — logins persist for every agent.
   • Teach agents the bh_open discipline — register the rule file
     (~/.claude/rules/horse-browser.md, built from stable, Node-independent paths):
