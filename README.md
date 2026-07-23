@@ -118,6 +118,22 @@ horse-browser && export BU_CDP_URL=http://127.0.0.1:9223   # for an arbitrary CD
 
 Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) rather than bare `goto_url` (which clobbers whoever's focused). The discipline lives in [SKILL.md](SKILL.md) — register it as an always-on rule ([see Setup](#teaching-agents-the-discipline)) and agents follow it automatically.
 
+## Design philosophy — power, not guardrails
+
+The reason a harness beats Playwright is **raw CDP**: the full protocol, and the agent's own intelligence to compose it. Playwright gives you a method per case — and the day you need a case it didn't wrap, you're fighting the abstraction instead of just using the browser. Horse Browser refuses that trade, which means resisting *two* temptations, not one:
+
+- **Don't wrap every capability.** A helper per case (`screenshot(width,…)`, scroll-this-container, …) is just Playwright again. If an agent needs a sized screenshot, it composes `Emulation.setDeviceMetricsOverride` + `Page.captureScreenshot` itself — that's the point.
+- **Don't jail raw CDP either.** Intercepting calls so "raw is safe by construction" is the *same* control reflex, one layer down. An agent *can* call `Target.activateTarget` (which would steal your focus) the same way it *can* `rm -rf` — and "can" doesn't mean "will." We don't sandbox the shell; we don't sandbox CDP.
+
+So the harness does four things, then gets out of the way:
+
+1. **Pave the default.** The calls the skill points agents to (`bh_open`, `capture_screenshot`, a focus-safe `new_tab`) have no footguns — the recommended road is paved, not walled.
+2. **Teach the sharp edges.** One short, always-on note: *this is a shared browser; these specific raw calls steal the operator's focus or hang on an occluded window — here's why and the safe way.* Non-obvious side effects are the only thing worth a line in the manual; everything else the agent derives from CDP.
+3. **Keep the substrate coherent.** The one thing that's structural, not etiquette: *your tab means your tab.* Session isolation isn't restricting power — it's the ground honoring what the agent meant.
+4. **Trust the rest.** Full protocol, no wrapper per case, no interceptor-as-jail.
+
+The test for anything we add: does it **encode knowledge** the agent can't derive (trusted input's real event sequences, challenge-solving gestures — keep) or **wrap a capability** it can compose itself (drop)? The differentiator was never "we prevent the bad calls." It's *full power, plus the knowledge to use it well.*
+
 ## What's inside
 
 - **`extension/`** — MV3 extension: the tab grouper, the Agent Monitor (sidebar collapsed by default), and a first-run welcome page.
