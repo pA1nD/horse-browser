@@ -130,7 +130,7 @@ A thin, self-contained setup — browser-harness (or anything else speaking CDP)
 
 ## Tests
 
-`npm test` (or `tests/e2e.sh`) runs the e2e suite against the real browser: launcher basics and every stdin mode, session identity (daemon pinning, anchoring, reaper restraint), focus-safe tab grouping, helper-namespace integrity, trusted input on real pages, concurrent per-lane screenshots, real-site flows, and the lifecycle races (hard-kill relaunch, 5-way launch stampede, stale-lock recovery). The lifecycle section bounces the browser (tabs are preserved); `HB_TEST_FAST=1` skips it. GPU-wedge healing and display-asleep behaviour are machine-state dependent and stay manual.
+`npm test` runs `tests/e2e.sh` then `tests/tab-reap.sh` against the real browser. The e2e suite covers launcher basics and every stdin mode, session identity (daemon pinning, anchoring, reaper restraint), focus-safe tab grouping, helper-namespace integrity, trusted input on real pages, concurrent background-tab screenshots (reliable and non-hijacking under multi-agent load), the realness/anti-bot fingerprint, real-site flows, and the lifecycle races (hard-kill relaunch, 5-way launch stampede, stale-lock recovery). `tests/tab-reap.sh` covers the orphan-tab leak: a tab-less session's stray `about:blank`, and the reaper that closes an ended session's tabs while sparing live ones. The lifecycle section bounces the browser (tabs are preserved); `HB_TEST_FAST=1` skips it. GPU-wedge healing and display-asleep behaviour are machine-state dependent and stay manual.
 
 ## License
 

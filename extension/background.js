@@ -95,6 +95,28 @@ self.activeTabTargets = async () => {
   return tabs.map(t => idByTab.get(t.id)).filter(Boolean);
 };
 
+// Close tabs that belong to ENDED agent sessions — the leak the operator sees as a pile of
+// stray about:blank (and abandoned work) tabs. Each session's tabs live in a group titled by
+// codename(session); `liveSessions` is the raw session ids still running (the launcher gathers
+// them from live daemons). Any GROUPED tab whose group title isn't a live session's codename
+// is an orphan and gets closed. Ungrouped tabs are left alone (not session-owned). Refuses to
+// act on an empty live set (would look like everything is dead) — a hard safety stop.
+self.reapDeadTabs = async (liveSessions) => {
+  if (!Array.isArray(liveSessions) || liveSessions.length === 0) return { closed: 0, skipped: "no-live-sessions" };
+  const liveTitles = new Set(liveSessions.map(s => codename(s).title));
+  const tabs = await chrome.tabs.query({});
+  const groups = await chrome.tabGroups.query({});
+  const titleByGid = new Map(groups.map(g => [g.id, g.title]));
+  const orphan = (t) => {
+    if (t.pinned) return false;                                   // never the pinned monitor
+    if (t.groupId >= 0) return !liveTitles.has(titleByGid.get(t.groupId));  // dead session's group
+    return (t.url || "") === "" || t.url === "about:blank";       // ungrouped stray blank (daemon leak)
+  };
+  const dead = tabs.filter(orphan);
+  for (const t of dead) { try { await chrome.tabs.remove(t.id); } catch {} }
+  return { closed: dead.length };
+};
+
 self.listTabs = async (session) => {
   const { title } = codename(session);
   const groups = await chrome.tabGroups.query({ title });
@@ -143,10 +165,16 @@ chrome.runtime.onStartup.addListener(() => showMonitor(false));   // profile sta
 // Closed any other way (explicit close, etc.) → reopen, unless the window itself is going away.
 // Called directly (no setTimeout): chrome.tabs.* keeps the MV3 worker alive to finish; a timer wouldn't.
 chrome.tabs.onRemoved.addListener((_id, info) => { if (!info.isWindowClosing) showMonitor(false); });
-chrome.runtime.onInstalled.addListener((details) => {
+chrome.runtime.onInstalled.addListener(async (details) => {
   showMonitor(false);                                             // install/update → ensure pinned
   // First run on a fresh profile only: open the welcome page (not on updates/restarts).
-  if (details.reason === "install") chrome.tabs.create({ url: chrome.runtime.getURL("hello.html"), active: true });
+  // Dedupe: an unpacked extension can re-fire "install" (e.g. after a Service Worker cache
+  // wipe), so open hello.html only if one isn't already open — never pile up welcome tabs.
+  if (details.reason === "install") {
+    const url = chrome.runtime.getURL("hello.html");
+    const existing = await chrome.tabs.query({ url });
+    if (existing.length === 0) chrome.tabs.create({ url, active: true });
+  }
 });
 
 // ── Passive network monitor ── Tier 1 realness debug aid. chrome.webRequest observes every

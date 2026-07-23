@@ -465,6 +465,131 @@ except Exception: pass
 PY
 }
 
+# reap_orphan_tabs: close tabs left behind by ENDED agent sessions — the pile of stray
+# about:blank (from a tab-less session's homing) and abandoned work tabs (from a killed
+# process) that otherwise accumulate forever. A session's tabs live in a group the extension
+# titles by codename; a session is LIVE if it has a daemon whose anchor process is alive (or
+# a daemon with no anchor — unverifiable, kept conservatively, exactly like reap_orphan_daemons).
+# The launcher gathers the live session ids and hands them to the extension, which closes tabs
+# in every group that isn't a live session's. Hard safety: never acts on an empty live set.
+# HORSE_BROWSER_NO_TAB_REAP=1 disables it. DRYRUN via HORSE_BROWSER_REAP_DRYRUN.
+reap_orphan_tabs() {
+  [ -n "${HORSE_BROWSER_NO_TAB_REAP:-}" ] && return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$PORT" <<'PY' || true
+import sys, os, json, socket, base64, struct, subprocess, urllib.request
+port = sys.argv[1]
+dry = bool(os.environ.get("HORSE_BROWSER_REAP_DRYRUN"))
+
+def alive(pid):
+    try: os.kill(int(pid), 0); return True
+    except Exception: return False
+
+# Live agent sessions = HORSE_SESSION of every daemon whose anchor is alive, or whose anchor
+# is absent (can't disprove — keep). Mirrors reap_orphan_daemons' conservatism.
+def live_sessions():
+    out = set()
+    try:
+        pids = subprocess.run(["pgrep", "-f", "browser_harness.daemon"],
+                              capture_output=True, text=True, timeout=3).stdout.split()
+    except Exception:
+        return out
+    for pid in pids:
+        try:
+            env = subprocess.run(["ps", "eww", "-o", "command=", "-p", pid],
+                                 capture_output=True, text=True, timeout=3).stdout
+        except Exception:
+            continue
+        e = {}
+        for tok in env.split():
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                if k.isupper(): e[k] = v
+        s = e.get("HORSE_SESSION")
+        if not s:
+            continue
+        anchor = e.get("BH_ANCHOR_PID")
+        if anchor and not alive(anchor):
+            continue                        # session's process is gone -> not live
+        out.add(s)
+    return out
+
+live = live_sessions()
+if not live:                                # safety: never reap when we can see no live session
+    sys.exit(0)
+
+# Minimal CDP-over-websocket to call the extension service worker's self.reapDeadTabs.
+def http_json(p):
+    return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}{p}", timeout=4))
+def ws_connect(ws_url):
+    path = "/" + ws_url.split("://", 1)[1].split("/", 1)[1]
+    s = socket.create_connection(("127.0.0.1", int(port)), timeout=5)
+    key = base64.b64encode(os.urandom(16)).decode()
+    s.sendall((f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+               "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        c = s.recv(1024)
+        if not c: raise ConnectionError("handshake closed")
+        buf += c
+    if b" 101 " not in buf.split(b"\r\n", 1)[0]: raise ConnectionError("no upgrade")
+    return s
+def ws_send(s, payload):
+    d = payload.encode(); n = len(d); m = os.urandom(4); h = bytearray([0x81])
+    if n < 126: h.append(0x80 | n)
+    elif n < 65536: h.append(0x80 | 126); h += struct.pack(">H", n)
+    else: h.append(0x80 | 127); h += struct.pack(">Q", n)
+    h += m; s.sendall(bytes(h) + bytes(b ^ m[i % 4] for i, b in enumerate(d)))
+def ws_recv(s):
+    def rd(n):
+        b = b""
+        while len(b) < n:
+            c = s.recv(n - len(b))
+            if not c: raise ConnectionError("closed")
+            b += c
+        return b
+    b0, b1 = rd(2); ln = b1 & 0x7f
+    if ln == 126: ln = struct.unpack(">H", rd(2))[0]
+    elif ln == 127: ln = struct.unpack(">Q", rd(8))[0]
+    return rd(ln)
+
+try:
+    sw = next(t for t in http_json("/json/list")
+              if t.get("type") == "service_worker"
+              and t.get("url", "").startswith("chrome-extension://")
+              and t.get("webSocketDebuggerUrl"))
+except (StopIteration, Exception):
+    sys.exit(0)                             # no extension SW reachable — nothing to do
+
+expr = "self.reapDeadTabs(%s)" % json.dumps(sorted(live))
+if dry:
+    # count-only: title the dead groups without removing
+    expr = ("(async()=>{const live=new Set(%s.map(s=>codename(s).title));"
+            "const tabs=await chrome.tabs.query({});const gs=await chrome.tabGroups.query({});"
+            "const byid=new Map(gs.map(g=>[g.id,g.title]));"
+            "return JSON.stringify({closed:tabs.filter(t=>t.groupId>=0&&!live.has(byid.get(t.groupId))).length});})()"
+            % json.dumps(sorted(live)))
+try:
+    s = ws_connect(sw["webSocketDebuggerUrl"])
+    ws_send(s, json.dumps({"id": 1, "method": "Runtime.evaluate",
+                           "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}}))
+    s.settimeout(8)
+    for _ in range(200):
+        m = json.loads(ws_recv(s))
+        if m.get("id") == 1:
+            val = (((m.get("result") or {}).get("result") or {}).get("value"))
+            try: closed = json.loads(val).get("closed", 0) if isinstance(val, str) else (val or {}).get("closed", 0)
+            except Exception: closed = 0
+            if closed:
+                print("horse-browser: %s %d orphan tab(s) from ended sessions"
+                      % ("would reap" if dry else "reaped", closed), file=sys.stderr, flush=True)
+            break
+except Exception:
+    pass
+PY
+}
+
 # maybe_reap: run reap_orphan_daemons at most once per interval (cheap stamp-file throttle),
 # so it costs nothing on the hot path. HORSE_BROWSER_NO_REAP=1 disables it entirely.
 maybe_reap() {
@@ -476,6 +601,7 @@ maybe_reap() {
   mkdir -p "$(dirname "$stamp")" 2>/dev/null || true
   echo "$now" > "$stamp" 2>/dev/null || true
   reap_orphan_daemons
+  reap_orphan_tabs
 }
 
 # recycle_daemons: after a browser (re)launch, every harness daemon pinned to our

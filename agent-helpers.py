@@ -79,13 +79,22 @@ def _hb_home():
     own = [t for t in bh_list() if t.get("targetId")]
     own_ids = {t["targetId"] for t in own}
     try:
-        cur = (current_tab() or {}).get("targetId")
+        ct = current_tab() or {}
     except Exception:
-        cur = None
+        ct = {}
+    cur = ct.get("targetId")
     if cur and cur in own_ids:
         return                              # already on one of my own tabs — leave it be
     if not own:
-        bh_open("about:blank")             # no tab yet → create + home a blank in my group
+        # No own tab yet. If the daemon is sitting on a fresh, ungrouped about:blank — the one
+        # browser-harness's attach_first_page mints when it finds no real pages — ADOPT it into
+        # my group rather than leaking it and creating a second blank (that stray ungrouped
+        # blank is otherwise never closed; observed as a pile of empty tabs). Else make one.
+        if cur and (ct.get("url") or "") in ("", "about:blank"):
+            ext_call("groupTab", cur, _session_id())
+            _hb_remember(cur)
+        else:
+            bh_open("about:blank")         # no adoptable blank → create + home one in my group
         return
     # Foreign: restore the EXACT tab I last drove (persisted on every bh_switch_tab). agents
     # drive tabs in the background, so lastAccessed doesn't track which tab is "current" — the
