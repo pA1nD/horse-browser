@@ -762,15 +762,20 @@ for p in profiles:
 PY
   fi
 
-  # NB: the post-sleep freeze is the GPU-process wedge healed above, NOT occlusion
-  # throttling — the old keep-alive flags (--disable-backgrounding-occluded-windows,
-  # --disable-renderer-backgrounding, --disable-background-timer-throttling,
-  # --disable-features=CalculateNativeWinOcclusion) do NOT prevent it (verified), and
-  # Page.captureScreenshot forces a frame on demand regardless, so they're not set.
+  # The post-sleep freeze is the GPU-process wedge healed above, NOT occlusion throttling —
+  # these flags don't fix that. But they ARE load-bearing for screenshots: without them
+  # Chrome throttles/deprioritises BACKGROUND-tab renderers, and under multi-agent load a
+  # backgrounded tab's renderer is starved so hard it never paints, so Page.captureScreenshot
+  # (and even a screencast) return a degenerate 2x2. Disabling renderer backgrounding, the
+  # background-timer throttle, and occluded-window backgrounding keeps every tab's renderer
+  # live, so agents screenshot backgrounded tabs reliably without raising them window-visible.
   args=( --remote-debugging-port="$PORT" --user-data-dir="$PROFILE"
          --test-type             # suppresses the "unsupported command-line flag" infobar
          --disable-infobars      # hides the Chrome-for-Testing infobar (per Playwright's chromiumSwitches)
          --remote-allow-origins=* # lets the in-browser Monitor page open the CDP socket (:9223)
+         --disable-renderer-backgrounding
+         --disable-background-timer-throttling
+         --disable-backgrounding-occluded-windows
          --no-first-run --no-default-browser-check )
   [ -n "$EXT" ] && args+=( --load-extension="$EXT" )
 

@@ -401,6 +401,53 @@ else
   fail "parallel lane screenshots produce distinct files" "r='$rshot' b='$bshot'"
 fi
 
+# The realistic multi-agent guarantee: many persistent agents each screenshotting their
+# OWN backgrounded, never-window-visible tab, concurrently — every capture must be a real
+# image (not a degenerate 2x2), and the viewer's visible tab must never move. This is the
+# scenario agents actually hit; it exercises the per-target-session + screencast capture.
+vtid="$(hb '
+import urllib.parse
+v = bh_open("data:text/html," + urllib.parse.quote("<title>hb-e2e-viewer2</title>"))
+wait_for_load(); ext_call("activateTab", v); print("VTID", v)
+' | sed -n 's/^VTID //p' | head -1)"
+cap_worker() {  # $1 = worker index — its OWN session (distinct daemon + tab group).
+  # BU_NAME derives from the text after the LAST hyphen, so the unique index must land
+  # there (a shared trailing $$ would collide every worker onto one daemon).
+  HORSE_SESSION="e2ecap$$-w$1" "$HB" <<PY 2>&1
+import struct, urllib.parse
+ok = bad = 0
+for i in range(6):
+    tid = bh_open("data:text/html," + urllib.parse.quote(
+        f"<title>hb-e2e-cap$1-{i}</title><body style=background:#0a{i%9}>c{i}"))
+    wait_for_load()
+    p = capture_screenshot()
+    with open(p, "rb") as f: h = f.read(24)
+    w = struct.unpack(">II", h[16:24])[0] if h[:8] == b"\x89PNG\r\n\x1a\n" else 0
+    ok += w > 4; bad += w <= 4
+    cdp("Target.closeTarget", targetId=tid)
+print(f"CAPRESULT $1 ok={ok} bad={bad}")
+PY
+}
+for i in 1 2 3 4 5 6; do cap_worker "$i" > "$WORK/cap-$i" 2>&1 & done
+wait
+capbad=0; capok=0
+for f in "$WORK"/cap-*; do
+  line="$(grep CAPRESULT "$f" | head -1)"
+  o="$(sed -n 's/.*ok=\([0-9]*\).*/\1/p' <<<"$line")"
+  b="$(sed -n 's/.*bad=\([0-9]*\).*/\1/p' <<<"$line")"
+  capok=$((capok + ${o:-0}))
+  capbad=$((capbad + ${b:-0}))
+done
+[ "$capbad" = 0 ] && [ "$capok" -ge 30 ] \
+  && pass "6 concurrent agents × 6 captures of background tabs: all real ($capok/36)" \
+  || fail "concurrent background-tab captures all real" "$capbad degenerate of $((capok+capbad))"
+if [ -n "$vtid" ]; then
+  vis="$(hb "print('VIS', '$vtid' in (ext_call('activeTabTargets') or []))")"
+  grep -q "VIS True" <<<"$vis" && pass "viewer's visible tab never moved during the capture storm" \
+    || fail "viewer's visible tab never moved" "$vis"
+  hb "cdp('Target.closeTarget', targetId='$vtid')" >/dev/null 2>&1
+fi
+
 # A screenshot of a background tab must NOT hijack the window's visible tab from whoever
 # is watching. Give a background tab a surface requires raising it window-visible; the
 # viewer's tab must be exactly what it was afterward (the "captured my inputs" regression).

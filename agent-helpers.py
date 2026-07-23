@@ -278,30 +278,36 @@ def _hb_sweep_shots(max_age_s=86400):
         pass
 
 
-def _hb_png_dims(p):
+def _hb_my_target():
+    """The CDP targetId of the tab THIS session is driving — the one a screenshot means.
+    The tab last driven (persisted on every bh_switch_tab) is authoritative; fall back to
+    whatever the daemon currently reports."""
+    tid = _hb_recall()
+    if tid:
+        return tid
     try:
-        with open(p, "rb") as f:
-            head = f.read(24)
-        if head[:8] == b"\x89PNG\r\n\x1a\n":
-            import struct
-            return struct.unpack(">II", head[16:24])
+        return (current_tab() or {}).get("targetId")
     except Exception:
-        pass
-    return (0, 0)
+        return None
 
 
 def capture_screenshot(path=None, full=False, max_dim=None):
-    """Save a PNG of the current viewport to a per-call unique file; returns the path.
+    """Save a PNG of this session's tab to a per-call unique file; returns the path.
     Args as stock browser-harness: full=capture beyond viewport, max_dim=downscale.
 
-    Two multi-agent races are repaired here, both by re-homing onto this session's tab
-    and recapturing:
-    - a stale target-destroyed event knocks the daemon off its page session, so the
-      capture lands on the browser session ("Page.captureScreenshot wasn't found",
-      -32601) — re-attaching to the remembered tab restores it;
-    - a tab that has never been the window's VISIBLE tab has no compositor surface, so
-      Chrome answers with a degenerate 2x2 image — activateTab (window-visible, no OS
-      focus) forces one real raster and the surface then persists."""
+    Reliable for backgrounded, never-window-visible tabs under heavy multi-agent load,
+    WITHOUT ever changing the window's visible tab — no hijack, no cross-session race. Two
+    things make it work:
+      - the launcher runs Chrome with --disable-renderer-backgrounding et al., so a
+        backgrounded tab's renderer stays live and paints instead of throttling to a 2x2
+        surface (the root cause of the degenerate-screenshot failures under load);
+      - we capture over a DEDICATED flat session attached to OUR target, so N agents
+        capturing at once never contend and never drift. Stock browser-harness captures on
+        the daemon's SHARED session, which drifts onto the wrong or an uncomposited tab.
+    (Raising the tab window-visible would force a paint too, but hijacks the viewer's tab;
+    a screencast would force a paint but marks the tab foreground globally and cross-
+    contaminates other sessions' current_tab — both rejected. The launch flags avoid the
+    need for either.)"""
     if path is None:
         _hb_sweep_shots()
         import tempfile
@@ -309,59 +315,69 @@ def capture_screenshot(path=None, full=False, max_dim=None):
             prefix=f"shot-{os.environ.get('BU_NAME', 'default')}-",
             suffix=".png", dir=str(_bh_ipc._TMP))
         os.close(fd)
-    import time, random
-    last_exc = None
-    ATTEMPTS = 6
-    for attempt in range(ATTEMPTS):
-        # On a retry, re-home and raise the tab to window-visible IMMEDIATELY before the
-        # capture (no intervening wait a neighbour could use to steal visibility back).
-        # Only one tab can hold window-visibility, so under N-way concurrent capture the
-        # raises race; a jittered settle de-synchronises the racers so each gets a clean
-        # window in turn (measured: converges within a few attempts even 6-way).
-        if attempt > 0:
+
+    target = _hb_my_target()
+    if not target:                      # no identity / no tab — fall back to stock capture
+        return _real_capture_screenshot(path, full=full, max_dim=max_dim) or path
+
+    import base64, time
+    sid = None
+    data = None
+    try:
+        sid = cdp("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
+        cdp("Page.enable", session_id=sid)
+        # NB: do NOT setFocusEmulationEnabled here — it leaks into the browser's global focus
+        # state and makes OTHER sessions' current_tab() resolve to this tab (observed as
+        # cross-session contamination under load). Background renderers are kept live at the
+        # browser level instead, by the launcher's --disable-renderer-backgrounding et al.
+
+        # Compositor-surface read on our own session. With the launcher's anti-throttle
+        # flags keeping every renderer live, this rasters a backgrounded tab reliably; a
+        # couple of quick retries cover a tab still warming up right after open.
+        for _ in range(5):
             try:
-                # recall FIRST: on a knocked-off session Target.getTargetInfo answers on
-                # the browser session and names the BROWSER target — no repair. The
-                # remembered tab is this session's target by definition.
-                tid = _hb_recall()
-                if not tid:
-                    try: tid = cdp("Target.getTargetInfo")["targetInfo"]["targetId"]
-                    except Exception: tid = None
-                if tid:
-                    bh_switch_tab(tid)
-                    # Raising our tab to window-visible is the ONLY way to give a
-                    # never-composited background tab a surface — but the window's
-                    # visible tab belongs to whoever is watching (a human, or another
-                    # agent). Save it, raise ours just long enough to raster+capture,
-                    # then put theirs back, so we never hijack the view. (chrome.tabs
-                    # .update never touches OS focus, so this is view-only.)
-                    _prev = ext_call("activeTabTargets") or []
-                    ext_call("activateTab", tid)
-                    time.sleep(0.2 + random.uniform(0, 0.15 * attempt))  # jittered settle
-                    try:
-                        out = _real_capture_screenshot(path, full=full, max_dim=max_dim) or path
-                    finally:
-                        for _p in _prev:
-                            if _p and _p != tid:
-                                try: ext_call("activateTab", _p)
-                                except Exception: pass
-                    w, h = _hb_png_dims(out)
-                    if (w > 4 and h > 4) or attempt == ATTEMPTS - 1:
-                        return out
-                    continue
+                r = cdp("Page.captureScreenshot", session_id=sid, format="png",
+                        captureBeyondViewport=full, fromSurface=True)
+                raw = base64.b64decode(r.get("data") or "")
+                if raw[:8] == b"\x89PNG\r\n\x1a\n":
+                    w, h = _struct_png_dims(raw)
+                    if w > 4 and h > 4:
+                        data = raw
+                        break
             except Exception:
                 pass
+            time.sleep(0.12)
+
+        if data is None:                 # degenerate even so (essentially never) — stock
+            if os.environ.get("HB_CAP_DEBUG"):
+                import sys
+                print(f"CAPFALLBACK target={target[:8]}", file=sys.stderr, flush=True)
+            return _real_capture_screenshot(path, full=full, max_dim=max_dim) or path
+        with open(path, "wb") as f:
+            f.write(data)
+    finally:
+        if sid:
+            try: cdp("Target.detachFromTarget", sessionId=sid)
+            except Exception: pass
+
+    if max_dim:
         try:
-            out = _real_capture_screenshot(path, full=full, max_dim=max_dim) or path
-        except Exception as e:
-            last_exc = e
-            continue
-        w, h = _hb_png_dims(out)
-        if (w > 4 and h > 4) or attempt == ATTEMPTS - 1:
-            return out
-    if last_exc:
-        raise last_exc
+            from PIL import Image
+            img = Image.open(path)
+            if max(img.size) > max_dim:
+                img.thumbnail((max_dim, max_dim))
+                img.save(path)
+        except Exception:
+            pass
     return path
+
+
+def _struct_png_dims(raw):
+    import struct
+    try:
+        return struct.unpack(">II", raw[16:24])
+    except Exception:
+        return (0, 0)
 
 
 # ── page hints: a generic per-navigation plug point ──────────────────────────────
