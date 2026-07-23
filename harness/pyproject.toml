@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "horse-harness"
+version = "0.1.0"
+description = "Vendored browser-harness core for horse-browser: CDP daemon, IPC, helpers. Invariants live in the daemon."
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "cdp-use==1.4.5",
+    "websockets==15.0.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "pillow"]
+
+[project.scripts]
+horse-harness = "horse_harness.run:main"
+
+[tool.setuptools.packages.find]
+include = ["horse_harness"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
