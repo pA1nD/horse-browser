@@ -390,6 +390,46 @@ def _struct_png_dims(raw):
         return (0, 0)
 
 
+# ── focus-safe overrides of the stock tab verbs ──────────────────────────────────
+# browser-harness's stock switch_tab / new_tab / ensure_real_tab all call Target.activateTarget,
+# which fires [NSApp activate] on macOS and yanks the browser to the FRONT — stealing the user's
+# keyboard/mouse focus mid-work. The browser-harness skill itself tells agents to use new_tab and
+# ensure_real_tab, so this steals focus in ordinary use (observed live). Override all three with
+# the focus-safe path — bh_switch_tab / bh_open use chrome.tabs.update + focus emulation and never
+# call activateTarget. Same namespace-merge trick as cdp()/capture_screenshot() above.
+def switch_tab(target):
+    """Focus-SAFE override of stock switch_tab. Accepts a targetId string or a
+    current_tab()/list_tabs() dict; switches without raising the browser over your app."""
+    tid = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
+    bh_switch_tab(tid)
+    return tid
+
+
+def new_tab(url="about:blank"):
+    """Focus-SAFE override of stock new_tab (which switch_tab's → steals focus). Opens into
+    this session's group in the background, like bh_open."""
+    return bh_open(url)
+
+
+def ensure_real_tab():
+    """Focus-SAFE override of stock ensure_real_tab. Keeps the current tab if it's a real
+    (non-internal) own tab; otherwise homes onto one via the focus-safe switch."""
+    _internal = ("chrome://", "chrome-extension://", "about:", "devtools://", "edge://")
+    try:
+        cur = current_tab() or {}
+    except Exception:
+        cur = {}
+    own_ids = {t.get("targetId") for t in bh_list()} if _session_id() else set()
+    if cur.get("url") and not cur["url"].startswith(_internal) and \
+       (not _session_id() or cur.get("targetId") in own_ids):
+        return cur
+    own = [t for t in bh_list() if t.get("targetId")] if _session_id() else []
+    if own:
+        bh_switch_tab(own[-1]["targetId"])
+        return own[-1]
+    return None
+
+
 # ── page hints: a generic per-navigation plug point ──────────────────────────────
 # Anything EXECUTABLE in ~/.config/horse-browser/hints.d/ is called on navigation as
 #     <hook> <url>          (env carries HORSE_SESSION / HORSE_LANE; 2.5s cap)

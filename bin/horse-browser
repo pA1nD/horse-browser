@@ -132,6 +132,16 @@ heal_log() {
     "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$event" "$since_wake" "$*" >> "$log" 2>/dev/null || true
 }
 
+# focus_breadcrumb: append a launcher event to the focus log, so `focus-watch` shows browser
+# launches/relaunches in the same timeline as any macOS focus steal — makes it obvious when a
+# steal was caused by a (re)launch (the window appearing, the welcome page, session-restore).
+focus_breadcrumb() {
+  local log="${HORSE_BROWSER_FOCUS_LOG:-$HOME/.config/horse-browser/focus.log}"
+  mkdir -p "$(dirname "$log")" 2>/dev/null || true
+  printf '%s  [launcher] %s  session=%s pid=%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S.000')" "$*" "${HORSE_SESSION:-?}" "$$" >> "$log" 2>/dev/null || true
+}
+
 # ── single-flight lock: at most one invocation mutates the browser at a time ──
 # Guards every mutation — cold launch, GPU heal, relaunch, update's restart — so
 # concurrent sessions never kill/launch/seed over each other. Measured failure modes
@@ -914,6 +924,7 @@ PY
   # above cleared our profile's holders. Falls back to a direct exec if the binary
   # isn't inside a .app bundle.
   APP="${BIN%/Contents/MacOS/*}"
+  focus_breadcrumb "browser launch (open -g -n) — should NOT take focus; if a steal is logged near here, the launch or its welcome/restore is the cause"
   if [ "$APP" != "$BIN" ] && [ -d "$APP" ]; then
     open -g -n -a "$APP" --args "${args[@]}"
   else
@@ -939,6 +950,15 @@ PY
 case "${1:-}" in
   status) hb_status; exit 0 ;;
   update) hb_update && exit 0 || exit 1 ;;
+  focus-watch)
+    # Log every macOS focus steal by the agent browser, to the millisecond. Run this, then
+    # run whatever you suspect; grep the log for FOCUS-STOLEN. Ctrl-C to stop.
+    _fw="$ROOT/tools/focus-watch.swift"
+    [ -f "$_fw" ] || { echo "focus-watch: $_fw not found" >&2; exit 1; }
+    command -v swift >/dev/null 2>&1 || { echo "focus-watch: needs swift (Xcode CLT)" >&2; exit 1; }
+    echo "focus-watch: watching for Chrome-for-Testing focus steals — log: ~/.config/horse-browser/focus.log" >&2
+    exec swift "$_fw"
+    ;;
 esac
 
 ensure_browser || exit 1

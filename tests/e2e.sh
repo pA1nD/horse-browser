@@ -49,7 +49,8 @@ for t in bh_list():
 trap cleanup EXIT
 
 cdp_up()    { curl -s --max-time 2 "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
-frontmost() { osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>/dev/null; }
+# frontmost macOS app via lsappinfo — no accessibility permission needed (unlike System Events).
+front_app() { lsappinfo info -only name "$(lsappinfo front 2>/dev/null)" 2>/dev/null | sed -n 's/.*"LSDisplayName"="\(.*\)"/\1/p'; }
 
 # ─────────────────────────────────────────────────────────────────────────────
 say "horse-browser e2e — $(date '+%Y-%m-%d %H:%M') — port $PORT"
@@ -130,7 +131,7 @@ fi
 # ═════ 3. tabs: grouping, focus safety, the 🐴 mark ══════════════════════════
 say "[3] tabs + extension"
 
-FRONT_BEFORE="$(frontmost)"
+FRONT_BEFORE="$(front_app)"
 out="$(hb '
 tid = bh_open("data:text/html,<title>hb-e2e-one</title><h1>one</h1>")
 wait_for_load()
@@ -139,10 +140,12 @@ print("MINE", any(t["targetId"] == tid for t in bh_list()))
 grep -q "MINE True" <<<"$out" && pass "bh_open lands in this session's group" \
   || fail "bh_open lands in this session's group" "$out"
 
-FRONT_AFTER="$(frontmost)"
+FRONT_AFTER="$(front_app)"
 if [ -n "$FRONT_BEFORE" ] && [ -n "$FRONT_AFTER" ]; then
-  [ "$FRONT_BEFORE" = "$FRONT_AFTER" ] && pass "no macOS focus steal (frontmost: $FRONT_AFTER)" \
-    || fail "no macOS focus steal" "frontmost changed: $FRONT_BEFORE → $FRONT_AFTER"
+  case "$FRONT_AFTER" in
+    *"Chrome for Testing"*) fail "no macOS focus steal from bh_open" "frontmost became $FRONT_AFTER" ;;
+    *) pass "no macOS focus steal from bh_open (frontmost: $FRONT_AFTER)" ;;
+  esac
 else
   skip "no macOS focus steal" "frontmost not readable"
 fi
@@ -156,6 +159,28 @@ grep -q "TITLE 🐴" <<<"$out" && pass "🐴 active-work mark on the driven tab"
   || fail "🐴 active-work mark on the driven tab" "$out"
 
 hb 'cdp("Target.closeTarget", targetId=bh_list()[0]["targetId"])' >/dev/null 2>&1
+
+# Focus safety for the STOCK tab verbs. browser-harness's new_tab / switch_tab / ensure_real_tab
+# call Target.activateTarget → [NSApp activate] → the browser steals OS focus; the horse helpers
+# override all three to be focus-safe. Drive each and assert Chrome for Testing never became the
+# frontmost app (lsappinfo works without accessibility perms; skip if it can't read a name).
+fa0="$(front_app)"
+if [ -n "$fa0" ] && command -v lsappinfo >/dev/null 2>&1; then
+  hb '
+import urllib.parse
+t = new_tab("data:text/html," + urllib.parse.quote("<title>hb-e2e-focus</title>x"))
+switch_tab(t)
+ensure_real_tab()
+cdp("Target.closeTarget", targetId=t)
+' >/dev/null 2>&1
+  fa1="$(front_app)"
+  case "$fa1" in
+    *"Chrome for Testing"*) fail "stock new_tab/switch_tab/ensure_real_tab don't steal focus" "frontmost became $fa1" ;;
+    *) pass "stock new_tab/switch_tab/ensure_real_tab don't steal OS focus (frontmost: $fa1)" ;;
+  esac
+else
+  skip "stock tab verbs don't steal focus" "lsappinfo unavailable"
+fi
 
 # ═════ 4. helper namespace (shadowing regressions) ═══════════════════════════
 say "[4] helper namespace"

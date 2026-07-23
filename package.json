@@ -12,6 +12,7 @@
     "bin",
     "extension",
     "integrations",
+    "tools",
     "agent-helpers.py",
     "agent-input.py",
     "scripts",
