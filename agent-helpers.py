@@ -304,10 +304,11 @@ def capture_screenshot(path=None, full=False, max_dim=None):
       - we capture over a DEDICATED flat session attached to OUR target, so N agents
         capturing at once never contend and never drift. Stock browser-harness captures on
         the daemon's SHARED session, which drifts onto the wrong or an uncomposited tab.
-    (Raising the tab window-visible would force a paint too, but hijacks the viewer's tab;
-    a screencast would force a paint but marks the tab foreground globally and cross-
-    contaminates other sessions' current_tab — both rejected. The launch flags avoid the
-    need for either.)"""
+    (Raising the tab window-visible would force a paint too, but hijacks the viewer's visible
+    tab — rejected. A screencast also forces a paint and is what the tab-monitor uses; it's
+    safe for other sessions' current_tab (verified — it does not), just unnecessary once the
+    launch flags keep renderers live, and it adds event-draining + per-frame cost. So neither
+    is needed here.)"""
     if path is None:
         _hb_sweep_shots()
         import tempfile
