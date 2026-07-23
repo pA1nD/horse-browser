@@ -84,6 +84,17 @@ self.activateTab = async (targetId) => {
   return tabId;
 };
 
+// CDP targetId of the tab currently visible in each browser window, so a caller that
+// must briefly raise its own tab (e.g. to give a never-composited background tab a
+// surface for a screenshot) can put the window's visible tab back exactly as it was —
+// never leaving a human or another agent staring at a tab our automation flipped to.
+self.activeTabTargets = async () => {
+  const tabs = await chrome.tabs.query({ active: true });
+  const targets = await chrome.debugger.getTargets();
+  const idByTab = new Map(targets.filter(t => t.tabId).map(t => [t.tabId, t.id]));
+  return tabs.map(t => idByTab.get(t.id)).filter(Boolean);
+};
+
 self.listTabs = async (session) => {
   const { title } = codename(session);
   const groups = await chrome.tabGroups.query({ title });

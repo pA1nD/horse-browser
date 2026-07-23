@@ -57,6 +57,17 @@ daemon_names() {   # BU_NAME of every live daemon pinned to our port
 
 "$HB" >/dev/null 2>&1 || { say "FATAL: browser did not come up"; exit 1; }
 
+# This drives the ONE shared browser hard — many tabs, and screenshots that briefly
+# raise a tab to window-visible. It's non-disruptive to OS focus, but if a human is
+# actively viewing/typing in this browser they'll see tabs flip. Don't run it against a
+# browser someone is using. Set HB_CHAOS_OK=1 to acknowledge and proceed.
+if [ -z "${HB_CHAOS_OK:-}" ]; then
+  say "NOTE: chaos drives the shared browser hard (opens many tabs, flips the visible tab"
+  say "      for screenshots). Don't run it while someone is using this browser."
+  say "      Re-run with HB_CHAOS_OK=1 to proceed."
+  exit 2
+fi
+
 # ═════ soak mode ═════════════════════════════════════════════════════════════
 if [ -n "${SOAK:-}" ]; then
   say "horse-browser soak — ${SOAK}min, one call every ${INTERVAL}s"

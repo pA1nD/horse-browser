@@ -329,8 +329,26 @@ def capture_screenshot(path=None, full=False, max_dim=None):
                     except Exception: tid = None
                 if tid:
                     bh_switch_tab(tid)
-                    ext_call("activateTab", tid)     # window-visible (no OS focus) → first raster
+                    # Raising our tab to window-visible is the ONLY way to give a
+                    # never-composited background tab a surface — but the window's
+                    # visible tab belongs to whoever is watching (a human, or another
+                    # agent). Save it, raise ours just long enough to raster+capture,
+                    # then put theirs back, so we never hijack the view. (chrome.tabs
+                    # .update never touches OS focus, so this is view-only.)
+                    _prev = ext_call("activeTabTargets") or []
+                    ext_call("activateTab", tid)
                     time.sleep(0.2 + random.uniform(0, 0.15 * attempt))  # jittered settle
+                    try:
+                        out = _real_capture_screenshot(path, full=full, max_dim=max_dim) or path
+                    finally:
+                        for _p in _prev:
+                            if _p and _p != tid:
+                                try: ext_call("activateTab", _p)
+                                except Exception: pass
+                    w, h = _hb_png_dims(out)
+                    if (w > 4 and h > 4) or attempt == ATTEMPTS - 1:
+                        return out
+                    continue
             except Exception:
                 pass
         try:
