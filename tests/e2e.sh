@@ -114,12 +114,17 @@ if [ -n "$DPID" ]; then
   fi
 fi
 
-# Dry-run reap through the REAL launcher path: live-anchored daemons must not be flagged.
+# Dry-run reap through the REAL launcher path: OUR daemon (live anchor) must never be
+# flagged. Orphans from genuinely-ended sessions (dead anchor) SHOULD be flagged — that's
+# the reaper working — so we assert on our own daemon specifically, not on "nothing".
 out="$(HORSE_BROWSER_REAP_DRYRUN=1 HORSE_BROWSER_REAP_INTERVAL=0 \
        HORSE_BROWSER_REAP_STAMP="$WORK/reap-stamp" "$HB" 2>&1 >/dev/null)"
-grep -q "would reap" <<<"$out" \
-  && fail "reaper leaves live daemons alone (dry-run)" "$out" \
-  || pass "reaper leaves live daemons alone (dry-run)"
+mine="$(ps eww -o command= -p "${DPID:-0}" 2>/dev/null | tr ' ' '\n' | sed -n 's/^BU_NAME=//p' | head -1)"
+if [ -n "$mine" ] && grep -q "would reap orphan daemon.* $mine " <<<"$out"; then
+  fail "reaper leaves THIS session's live daemon alone" "flagged $mine: $out"
+else
+  pass "reaper leaves THIS session's live daemon alone${mine:+ ($mine)}"
+fi
 
 # ═════ 3. tabs: grouping, focus safety, the 🐴 mark ══════════════════════════
 say "[3] tabs + extension"
@@ -228,6 +233,111 @@ cdp("Target.closeTarget", targetId=tid)
 ')"
 grep -q "INNERSCROLL True" <<<"$out" && pass "wheel-at-coords scrolls inner overflow container" \
   || fail "wheel-at-coords scrolls inner overflow container" "$out"
+
+# The CORE claim: our input is TRUSTED. A recorder page captures e.isTrusted for every
+# event our verbs fire; an untrusted el.click() control proves the fixture can tell.
+out="$(hb '
+import json, urllib.parse
+html = """<title>hb-e2e-trust</title>
+<input id=t><button id=b>go</button>
+<script>
+window.rec = {};
+["keydown","keyup","input","mousedown","mouseup","click"].forEach(function(ev){
+  document.addEventListener(ev, function(e){
+    (window.rec[ev] = window.rec[ev] || []).push(e.isTrusted);
+  }, true);
+});
+window.report = function(){
+  var o = {};
+  Object.keys(window.rec).forEach(function(k){
+    o[k] = {n: window.rec[k].length, all: window.rec[k].every(Boolean)};
+  });
+  return JSON.stringify(o);
+};
+</script>"""
+tid = bh_open("data:text/html," + urllib.parse.quote(html))
+wait_for_load()
+type_into("#t", "Hi!")
+click("#b")
+r = json.loads(js("window.report()"))
+need = ["keydown", "keyup", "input", "mousedown", "mouseup", "click"]
+print("TRUSTED", all(r.get(k, {}).get("n", 0) > 0 and r.get(k, {}).get("all") for k in need), r)
+js("window.rec = {}; document.getElementById(\"b\").click()")
+r2 = json.loads(js("window.report()"))
+print("CONTROL", r2.get("click", {}).get("n", 0) > 0 and r2.get("click", {}).get("all") is False)
+cdp("Target.closeTarget", targetId=tid)
+')"
+grep -q "TRUSTED True" <<<"$out" && grep -q "CONTROL True" <<<"$out" \
+  && pass "every input event is isTrusted (untrusted control detected)" \
+  || fail "every input event is isTrusted" "$out"
+
+# Press & Hold fixture with real anti-bot semantics: must stay held 1.5s, a metronomic
+# move stream (>25 moves) fails, early release fails. press_hold must clear it, and
+# solve_challenge(act=False) must classify the page as an easy hold.
+out="$(hb '
+import urllib.parse
+html = """<title>hb-e2e-hold</title><body style=margin:0>
+<div id=px-captcha style=width:240px;height:80px;background:#dde>Press &amp; Hold</div>
+<div id=st>idle</div>
+<script>
+var down = 0, moves = 0, timer = null;
+var el = document.getElementById("px-captcha"), st = document.getElementById("st");
+el.addEventListener("mousedown", function(e){
+  if(!e.isTrusted){ st.textContent = "untrusted"; return; }
+  down = 1; moves = 0; st.textContent = "holding";
+  timer = setTimeout(function(){ st.textContent = "cleared"; down = 0; }, 1500);
+});
+document.addEventListener("mousemove", function(){
+  if(!down) return; moves++;
+  if(moves > 25){ clearTimeout(timer); st.textContent = "jitter-fail"; down = 0; }
+});
+document.addEventListener("mouseup", function(){
+  if(down){ clearTimeout(timer); st.textContent = "released-early"; down = 0; }
+});
+</script>"""
+tid = bh_open("data:text/html," + urllib.parse.quote(html))
+wait_for_load()
+print("DETECT", solve_challenge(act=False))
+press_hold("#px-captcha", 2)
+print("HOLD", js("document.getElementById(\"st\").textContent"))
+cdp("Target.closeTarget", targetId=tid)
+')"
+grep -q "HOLD cleared" <<<"$out" && pass "press_hold clears a steady-hold fixture (jitter would fail it)" \
+  || fail "press_hold clears a steady-hold fixture" "$out"
+grep -q "DETECT easy:hold" <<<"$out" && pass "solve_challenge classifies the hold challenge" \
+  || fail "solve_challenge classifies the hold challenge" "$(grep DETECT <<<"$out")"
+
+# Slide-to-verify fixture: knob follows held-button moves only; latches at the far end.
+out="$(hb '
+import urllib.parse
+html = """<title>hb-e2e-slide</title><body style=margin:0>
+<div id=track style=position:relative;width:320px;height:44px;background:#eee>
+<div id=knob style=position:absolute;left:0;top:0;width:44px;height:44px;background:#88a></div></div>
+<div id=ds>idle</div>
+<script>
+var down = false, kx = 0, left = 0;
+var k = document.getElementById("knob"), ds = document.getElementById("ds");
+k.addEventListener("mousedown", function(e){
+  if(!e.isTrusted) return;
+  down = true; kx = e.clientX - left; ds.textContent = "dragging";
+});
+document.addEventListener("mousemove", function(e){
+  if(!down) return;
+  left = Math.max(0, Math.min(276, e.clientX - kx)); k.style.left = left + "px";
+});
+document.addEventListener("mouseup", function(){
+  if(!down) return;
+  down = false; ds.textContent = left >= 270 ? "slid" : "short:" + left;
+});
+</script>"""
+tid = bh_open("data:text/html," + urllib.parse.quote(html))
+wait_for_load()
+drag("#knob", dx=320)
+print("SLIDE", js("document.getElementById(\"ds\").textContent"))
+cdp("Target.closeTarget", targetId=tid)
+')"
+grep -q "SLIDE slid" <<<"$out" && pass "drag completes a slide-to-verify fixture" \
+  || fail "drag completes a slide-to-verify fixture" "$out"
 
 # ═════ 6. screenshots: validity, per-session names, parallel correctness ═════
 say "[6] screenshots"

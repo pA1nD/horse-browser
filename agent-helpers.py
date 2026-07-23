@@ -31,15 +31,40 @@ from browser_harness.helpers import cdp as _real_cdp, _send, goto_url, wait_for_
 # THIS session's own tab whenever the daemon's current tab is foreign — recreating
 # group-aware attach without forking browser-harness.
 _homed = False
+_guarding = False
 
 
 def cdp(*args, **kwargs):
-    global _homed
+    global _homed, _guarding
     if not _homed:
         _homed = True              # set BEFORE homing so re-entrant cdp() is a plain passthrough
         try: _hb_home()
         except Exception: pass     # a home failure must never break cdp()
+    # Continuous drift guard: the daemon can be knocked off its session MID-script too
+    # (a stale target-destroyed event makes it fall back onto an arbitrary tab — possibly
+    # a neighbour's, which reads as cross-session contamination under multi-agent load).
+    # Before each session-scoped command, cheaply compare the daemon's current tab (a
+    # local meta call, no Chrome roundtrip) against the tab this session last drove; on
+    # drift, re-home. Same "foreign is never legitimate" policy as _hb_home, continuous.
+    method = args[0] if args else kwargs.get("method")
+    if not _guarding and isinstance(method, str) and not method.startswith("Target."):
+        _guarding = True
+        try: _hb_guard()
+        except Exception: pass
+        finally: _guarding = False
     return _real_cdp(*args, **kwargs)
+
+
+def _hb_guard():
+    want = _hb_recall()
+    if not want:
+        return
+    try:
+        cur = (current_tab() or {}).get("targetId")
+    except Exception:
+        return
+    if cur != want:
+        _hb_home()
 
 
 def _hb_home():
@@ -253,9 +278,30 @@ def _hb_sweep_shots(max_age_s=86400):
         pass
 
 
+def _hb_png_dims(p):
+    try:
+        with open(p, "rb") as f:
+            head = f.read(24)
+        if head[:8] == b"\x89PNG\r\n\x1a\n":
+            import struct
+            return struct.unpack(">II", head[16:24])
+    except Exception:
+        pass
+    return (0, 0)
+
+
 def capture_screenshot(path=None, full=False, max_dim=None):
     """Save a PNG of the current viewport to a per-call unique file; returns the path.
-    Args as stock browser-harness: full=capture beyond viewport, max_dim=downscale."""
+    Args as stock browser-harness: full=capture beyond viewport, max_dim=downscale.
+
+    Two multi-agent races are repaired here, both by re-homing onto this session's tab
+    and recapturing:
+    - a stale target-destroyed event knocks the daemon off its page session, so the
+      capture lands on the browser session ("Page.captureScreenshot wasn't found",
+      -32601) — re-attaching to the remembered tab restores it;
+    - a tab that has never been the window's VISIBLE tab has no compositor surface, so
+      Chrome answers with a degenerate 2x2 image — activateTab (window-visible, no OS
+      focus) forces one real raster and the surface then persists."""
     if path is None:
         _hb_sweep_shots()
         import tempfile
@@ -263,7 +309,37 @@ def capture_screenshot(path=None, full=False, max_dim=None):
             prefix=f"shot-{os.environ.get('BU_NAME', 'default')}-",
             suffix=".png", dir=str(_bh_ipc._TMP))
         os.close(fd)
-    return _real_capture_screenshot(path, full=full, max_dim=max_dim)
+    import time
+    last_exc = None
+    for attempt in range(4):
+        # On a retry, re-home and raise the tab to window-visible IMMEDIATELY before the
+        # capture (no intervening wait a neighbour could use to steal visibility back).
+        if attempt > 0:
+            try:
+                # recall FIRST: on a knocked-off session Target.getTargetInfo answers on
+                # the browser session and names the BROWSER target — no repair. The
+                # remembered tab is this session's target by definition.
+                tid = _hb_recall()
+                if not tid:
+                    try: tid = cdp("Target.getTargetInfo")["targetInfo"]["targetId"]
+                    except Exception: tid = None
+                if tid:
+                    bh_switch_tab(tid)
+                    ext_call("activateTab", tid)     # window-visible (no OS focus) → first raster
+                    time.sleep(0.25)                 # let one frame composite, THEN capture
+            except Exception:
+                pass
+        try:
+            out = _real_capture_screenshot(path, full=full, max_dim=max_dim) or path
+        except Exception as e:
+            last_exc = e
+            continue
+        w, h = _hb_png_dims(out)
+        if (w > 4 and h > 4) or attempt == 3:
+            return out
+    if last_exc:
+        raise last_exc
+    return path
 
 
 # ── page hints: a generic per-navigation plug point ──────────────────────────────
