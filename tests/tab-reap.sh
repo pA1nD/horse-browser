@@ -49,6 +49,17 @@ daemon_pid_for() {  # echo the daemon pid whose HORSE_SESSION == $1
     ps eww -o command= -p "$p" 2>/dev/null | tr ' ' '\n' | grep -qx "HORSE_SESSION=$1" && { echo "$p"; return; }
   done
 }
+ung_blanks() {  # count UNGROUPED, non-pinned about:blank tabs (the stray-blank pile)
+  HORSE_SESSION="$HSESS" "$HB" <<PY 2>/dev/null | sed -n 's/^UB //p'
+sw = next(t["targetId"] for t in cdp("Target.getTargets")["targetInfos"] if t.get("type")=="service_worker" and t.get("url","").startswith("chrome-extension://"))
+s = cdp("Target.attachToTarget", targetId=sw, flatten=True)["sessionId"]
+expr = "(async()=>{const t=await chrome.tabs.query({});return t.filter(x=>x.groupId<0 && !x.pinned && ((x.url||'')===''||x.url==='about:blank')).length;})()"
+print("UB", cdp("Runtime.evaluate", session_id=s, expression=expr, awaitPromise=True, returnByValue=True).get("result",{}).get("value"))
+PY
+}
+make_ungrouped_blank() {  # mint a raw ungrouped about:blank (like the daemon's attach-blank)
+  curl -s -X PUT "http://127.0.0.1:$PORT/json/new?about:blank" >/dev/null 2>&1
+}
 reap() { HORSE_BROWSER_REAP_INTERVAL=0 HORSE_BROWSER_REAP_STAMP="$(mktemp)" "$HB" >/dev/null 2>&1; }
 
 say "horse-browser tab-reap — port $PORT"
@@ -76,6 +87,17 @@ b1="$(blanks)"
 [ "$b1" -gt "$b0" ] \
   && pass "a tab-less read session leaks a never-closed about:blank ($b0->$b1)" \
   || fail "a tab-less read session leaks a blank" "$b0->$b1"
+
+# Adoption fix: the daemon's ungrouped attach-blank must be ADOPTED into the session group,
+# not left as a stray ungrouped orphan — so a read session grows GROUPED blanks, never the
+# ungrouped pile. Assert the ungrouped count doesn't rise across a fresh read session.
+u0="$(ung_blanks)"
+HORSE_SESSION="reaptest-$$-adopt" HORSE_BROWSER_NO_REAP=1 HORSE_BROWSER_NO_TAB_REAP=1 \
+  "$HB" <<<'page_info()' >/dev/null 2>&1
+u1="$(ung_blanks)"
+[ "${u1:-0}" -le "${u0:-0}" ] \
+  && pass "the daemon's ungrouped blank is adopted, not leaked (ungrouped $u0->$u1)" \
+  || fail "daemon blank adopted, not leaked as an ungrouped stray" "ungrouped $u0->$u1"
 
 # ═════ 2. reaper: dead vs live ═══════════════════════════════════════════════
 say "[2] orphan-tab reaper"
@@ -117,6 +139,16 @@ PY
   # cleanup the live session's leftover daemon + tab
   lpid="$(daemon_pid_for "$LIVE")"; [ -n "$lpid" ] && kill "$lpid" 2>/dev/null
   reap >/dev/null 2>&1
+
+  # a stray UNGROUPED about:blank (a daemon attach-blank that escaped adoption) must be reaped
+  ub0="$(ung_blanks)"
+  make_ungrouped_blank; sleep 0.5
+  ub1="$(ung_blanks)"
+  reap
+  ub2="$(ung_blanks)"
+  { [ "${ub1:-0}" -gt "${ub0:-0}" ] && [ "${ub2:-0}" -le "${ub0:-0}" ]; } \
+    && pass "reaper closes a stray ungrouped about:blank ($ub0->$ub1->$ub2)" \
+    || fail "reaper closes a stray ungrouped about:blank" "$ub0->$ub1->$ub2"
 fi
 
 # ═════ 3. safety: empty live set never reaps ═════════════════════════════════
