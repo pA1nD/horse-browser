@@ -790,6 +790,11 @@ def capture_screenshot(path=None, full=False, max_dim=None):
 #     <hook> <url>          (env carries HORSE_SESSION / HORSE_LANE; 2.5s cap)
 # and whatever it prints is surfaced to the agent — once per host per process.
 # A hint must never break or stall browsing: empty/slow/failing hooks are skipped.
+# This is the in-flow channel for PER-PAGE CONTEXT the operator has and the model can't
+# know — creds ready to auth for this site, "move human-like / go slow here", a "read-only,
+# don't submit" rule. New context = a new hook, zero core code. (Deliberately NOT used to
+# re-teach generic sharp edges — the always-on rule does that.) See memory
+# in-flow-context-channel + hints-d-plug-point.
 _hb_hinted = set()
 _hb_hint_hooks_cache = None
 
