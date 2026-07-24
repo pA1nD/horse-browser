@@ -476,6 +476,14 @@ if __name__ == "__main__":
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
+    # Singleton lock closes the cold-start spawn race: if a sibling daemon won the
+    # bind between our already_running() check and now, we get None and exit BEFORE
+    # connecting to Chrome — no orphan daemon/websocket. _lock is held for our whole
+    # life (module-global so it isn't GC'd); the OS frees it if we crash.
+    _lock = ipc.singleton_lock(NAME)
+    if _lock is None:
+        print(f"daemon for {NAME} already starting/running", file=sys.stderr)
+        sys.exit(0)
     open(LOG, "w").close()
     open(PID, "w").write(str(os.getpid()))
     try:

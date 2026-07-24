@@ -126,3 +126,30 @@ def test_ping_returns_false_when_pong_field_is_missing_or_not_true(monkeypatch):
         assert ipc.ping("default", timeout=0.0) is False, (
             f"ping() should require pong is exactly True; got: {resp!r}"
         )
+
+
+def test_singleton_lock_is_mutually_exclusive(tmp_path, monkeypatch):
+    """The per-name flock admits exactly one holder — the spawn-TOCTOU guard.
+    A second acquire while the first is held returns None; releasing the first
+    (closing its handle) frees it for the next."""
+    import horse_harness._ipc as _ipc
+    monkeypatch.setattr(_ipc, "_RUNTIME", tmp_path)
+
+    first = _ipc.singleton_lock("racer")
+    assert first not in (None, True)             # got a real held handle on POSIX
+    assert _ipc.singleton_lock("racer") is None  # second racer is locked out
+
+    first.close()                                # holder dies → lock frees
+    second = _ipc.singleton_lock("racer")
+    assert second not in (None, True)
+    second.close()
+
+
+def test_singleton_lock_is_per_name(tmp_path, monkeypatch):
+    """Different BU_NAMEs never contend — each name has its own daemon."""
+    import horse_harness._ipc as _ipc
+    monkeypatch.setattr(_ipc, "_RUNTIME", tmp_path)
+    a = _ipc.singleton_lock("name-a")
+    b = _ipc.singleton_lock("name-b")
+    assert a not in (None, True) and b not in (None, True)
+    a.close(); b.close()

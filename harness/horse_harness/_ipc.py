@@ -199,3 +199,31 @@ def cleanup_endpoint(name):  # best-effort; silent if already gone
     p = _sock_path(name) if not IS_WINDOWS else port_path(name)
     try: p.unlink()
     except FileNotFoundError: pass
+    # The .lock file is harmless to leave (flock state is on the open fd, not the
+    # inode), but sweep it so an ended session leaves nothing behind.
+    if not IS_WINDOWS:
+        try: (_RUNTIME / f"{_runtime_stem(name)}.lock").unlink()
+        except (FileNotFoundError, OSError): pass
+
+
+def singleton_lock(name):
+    """Acquire the per-name daemon singleton lock. Returns a held handle on success,
+    or None if another live daemon already holds it.
+
+    Closes the spawn TOCTOU: on a cold start, N `horse-browser` calls can each see
+    "no daemon" and spawn one; without this, serve()'s unlink-then-bind lets each
+    bind in turn, orphaning all but the last (every orphan still holding a CDP
+    websocket to Chrome). An flock serializes the racers — the first daemon binds,
+    the rest get None here and exit BEFORE connecting to Chrome, so no orphans. The
+    lock auto-releases when the holder dies, so a crashed daemon frees it for the
+    next spawn. Keep the returned handle referenced for the daemon's whole life."""
+    if IS_WINDOWS:
+        return True  # best-effort no-op; POSIX flock has no msvcrt equivalent worth the risk
+    import fcntl
+    f = open(_RUNTIME / f"{_runtime_stem(name)}.lock", "w")
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f

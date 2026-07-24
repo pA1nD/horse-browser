@@ -6,7 +6,7 @@
 # invariants are checked: exactly one browser, no cross-session tab contamination, no
 # duplicate daemons per BU_NAME, no leaked tabs, lock free. Also probes the known
 # daemon-spawn TOCTOU with 6 parallel cold first-calls on one BU_NAME
-# (duplicates WARN — upstream bug — and are cleaned up).
+# (now fixed by the _ipc singleton lock; a reproduction here is a REGRESSION).
 #
 # Soak (SOAK=<minutes>): one session daemon held across idle time with a call every
 # INTERVAL seconds — asserts the daemon never churns pids, every call succeeds, and
@@ -117,7 +117,7 @@ ndup="$(daemon_names | grep -c "^hb-$TSESS\$" || true)"
 if [ "$ndup" = 1 ]; then
   pass "parallel cold first-calls yielded a single daemon (TOCTOU not hit)"
 elif [ "$ndup" -gt 1 ]; then
-  warn "daemon-spawn TOCTOU reproduced: $ndup daemons for one BU_NAME (known upstream bug — cleaned up)"
+  warn "REGRESSION: daemon-spawn TOCTOU reproduced: $ndup daemons for one BU_NAME (the _ipc singleton lock should prevent this)"
 else
   fail "TOCTOU probe" "no daemon appeared for BU_NAME hb-$TSESS"
 fi
@@ -194,7 +194,7 @@ nb="$(pgrep -fl "remote-debugging-port=$PORT" | grep -cv "/Frameworks/" || true)
 
 dups="$(daemon_names | sort | uniq -d)"
 [ -z "$dups" ] && pass "no duplicate daemons per BU_NAME after chaos" \
-  || warn "duplicate daemons after chaos (known upstream TOCTOU): $(tr '\n' ' ' <<<"$dups")"
+  || warn "duplicate daemons after chaos (singleton-lock regression?): $(tr '\n' ' ' <<<"$dups")"
 
 leaked="$(curl -s --max-time 3 "http://127.0.0.1:$PORT/json" | python3 -c '
 import json, sys
