@@ -999,6 +999,11 @@ case "${1:-}" in
     # install.sh / postinstall call this to build the harness venv up front.
     ensure_harness && exit 0 || exit 1
     ;;
+  skill)
+    # Print the on-demand manual (the always-on rule points agents here for depth).
+    if [ -n "$ROOT" ] && [ -f "$ROOT/MANUAL.md" ]; then cat "$ROOT/MANUAL.md"; exit 0
+    else echo "horse-browser: MANUAL.md not found under $ROOT — reinstall the package" >&2; exit 1; fi
+    ;;
   focus-watch)
     # Log every macOS focus steal by the agent browser, to the millisecond. Run this, then
     # run whatever you suspect; grep the log for FOCUS-STOLEN. Ctrl-C to stop.

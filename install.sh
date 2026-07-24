@@ -32,12 +32,6 @@ mkdir -p "$CONFIG_DIR" "$BINDIR" "$CACHE"
 "$HERE/bin/horse-browser" harness-setup || exit 1
 echo "✓ harness: vendored horse-harness ready ($HERE/harness)"
 
-# Our own SKILL.md ships in the package dir — under `npm -g` that's a volatile Node-version
-# path (…/fnm/node-versions/vX/…). Copy it to a stable ~/.config home the rule file's
-# @-import points at. REQUIRED, and done here — before the Chrome fetch (which may degrade) — so it
-# always exists; set -e aborts the install if the copy can't be written.
-"$HERE/claude-md.sh" skill
-
 # 1. browser ──────────────────────────────────────────────────────────────────
 BIN="${HORSE_BROWSER_BIN:-}"
 if [ -n "$BIN" ]; then
@@ -111,11 +105,10 @@ for c in "$HOME/Developer/browser-harness" "$HOME/browser-harness"; do
 done
 echo "✓ helpers: folded into the vendored harness (workspace agent_helpers.py still loads for your own additions)"
 
-# Keep the stable ~/.config copy of the vendored harness SKILL current, so the rule
-# file's @-import never rots across npm/Node reinstalls. Writes only ~/.config (never
-# ~/.claude). Registering the rule file (~/.claude/rules/horse-browser.md) stays opt-in
-# via ./claude-md.sh apply; the npm next-steps note points the user at it.
-"$HERE/claude-md.sh" symlink || echo "  (skipped harness SKILL copy — see ./claude-md.sh)" >&2
+# The rule (~/.claude/rules/horse-browser.md) is now ONE self-contained file — no @-imports,
+# no ~/.config skill copies to keep current. Registering it stays opt-in via
+# ./claude-md.sh apply (never touch ~/.claude from a silent install); the next-steps note
+# below points the user at it. The full manual is on-demand behind `horse-browser skill`.
 
 # Wire the claude-code lane hook into ~/.claude/settings.json: PreToolUse gives each
 # SUBAGENT's horse-browser calls their own lane (own daemon + tab group — parallel

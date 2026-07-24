@@ -24,15 +24,6 @@ echo "horse-browser · setting up (harness venv + Chrome for Testing + config)�
 HORSE_FROM_NPM=1 HORSE_SKIP_LAUNCH=1 bash "$PKG/install.sh" || \
   echo "horse-browser · Chrome fetch didn't complete — run 'horse-browser update' to finish it." >&2
 
-# HARD requirement — the rule file's @-import depends on this stable copy existing.
-SKILL_COPY="$HOME/.config/horse-browser/skill.md"
-if [ ! -f "$SKILL_COPY" ]; then
-  echo "" >&2
-  echo "✗ horse-browser: required SKILL copy missing ($SKILL_COPY) — install aborted." >&2
-  echo "  Re-run:  bash \"$PKG/claude-md.sh\" skill" >&2
-  exit 1
-fi
-
 cat <<EOF
 
 horse-browser installed. Next:
@@ -40,8 +31,8 @@ horse-browser installed. Next:
   • Already running an older version? Apply the update (new launch flags +
     extension) with a tab-preserving relaunch:          horse-browser relaunch
   • Sign into your apps once — logins persist for every agent.
-  • Teach agents the bh_open discipline — register the rule file
-    (~/.claude/rules/horse-browser.md, built from stable, Node-independent paths):
+  • Teach agents the paved path — register the rule file
+    (~/.claude/rules/horse-browser.md, one self-contained file, no imports):
       bash "$PKG/claude-md.sh" apply
 EOF
 exit 0

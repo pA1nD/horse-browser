@@ -12,7 +12,6 @@
     "bin",
     "extension",
     "harness/horse_harness/*.py",
-    "harness/horse_harness/SKILL.md",
     "harness/pyproject.toml",
     "harness/tests/**/*.py",
     "integrations",
@@ -20,7 +19,8 @@
     "scripts",
     "install.sh",
     "claude-md.sh",
-    "SKILL.md"
+    "RULE.md",
+    "MANUAL.md"
   ],
   "scripts": {
     "postinstall": "bash scripts/postinstall.sh",
