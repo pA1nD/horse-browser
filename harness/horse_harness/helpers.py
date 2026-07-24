@@ -595,9 +595,11 @@ def _session_id():
 
 
 def bh_switch_tab(target_id):
-    # Switch the DRIVEN tab without Target.activateTarget AND without changing the
-    # window's visible tab: focus emulation lets us drive it fully in the background
-    # (navigate, click, screenshot), so concurrent agents never flip each other's view.
+    """Make `target_id` the tab this session drives — focus-safe. Attaches it
+    (`Target.attachToTarget flatten`), binds the daemon session to it, and enables
+    `Emulation.setFocusEmulationEnabled` so it drives live in the background. It does
+    NOT call `Target.activateTarget` and does NOT change which tab is visible in the
+    window, so concurrent agents and the operator never see their view flip."""
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]

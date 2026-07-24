@@ -15,7 +15,9 @@ menus). insertText sets the value but fires NO key events; `el.value=` fires not
   press_hold(css_or_xy,s) trusted press-and-hold (Press & Hold challenges)
   drag(css_or_xy, to=/dx=) trusted drag (slide-to-verify)
   solve_challenge(act=1)  classify a challenge -> solve the EASY ones, or escalate
-  insert_text_fast(text)  escape hatch: raw Input.insertText, NO key events
+
+For a listener-free <textarea> where speed beats fidelity, call
+cdp("Input.insertText", text=…) directly — no wrapper; it fires no key events.
 """
 import math as _im
 import random as _ir
@@ -231,10 +233,9 @@ def type_text(text):
         _key(ch)
 
 
-def insert_text_fast(text):
-    """The old fast path: Input.insertText in one shot. Fires NO key events — use ONLY for
-    dumping into a plain <textarea> with no keyup/input listeners, where speed matters."""
-    cdp("Input.insertText", text=text)
+# (No insert_text_fast wrapper: for a listener-free <textarea> where speed matters, call
+# cdp("Input.insertText", text=…) directly — it's one raw call, and type_text/type_into
+# above carry the "why real events matter" knowledge. Retired 2026-07-24.)
 
 
 # ── easy-challenge solving — a gesture, never perception ───────────────────────────

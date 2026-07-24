@@ -92,8 +92,9 @@ calls it makes, so when you outgrow it you already know the idiom to compose you
 - `click(css)` / `click_xy(x,y)`, `type_into(css,text, clear=?, enter=?)`, `type_text(text)`,
   `press(name)`, `press_hold(css_or_xy, s)`, `drag(css_or_xy, to=/dx=)`.
 - `fill_input(css,text)` / `press_key(key)` / `click_at_xy(x,y)` — lower-level variants.
-- `insert_text_fast(text)` = raw `Input.insertText`, **no key events** — only for a plain
-  `<textarea>` with no listeners.
+- For a listener-free `<textarea>` where speed beats fidelity: `cdp("Input.insertText",
+  text=…)` directly — it fires **no key events** (that's the point), so never use it on a
+  field the page listens to.
 
 **Visual**
 - `capture_screenshot(path=None, full=False, max_dim=None)` → attaches a **fresh** session to
