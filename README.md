@@ -19,7 +19,7 @@
 
 Every other tool hands each agent a *throwaway* browser. But you don't want throwaway — you want **your** browser, logged into your stuff, that agents quietly borrow. The catch: on macOS, every CDP command yanks the browser to the foreground ([a known open sore](https://github.com/ChromeDevTools/chrome-devtools-mcp/issues/1254) across [the big tools](https://github.com/vercel-labs/agent-browser/issues/1247)). Horse Browser fixes that — agents open tabs **in the background**, each in their own **colored group**, in a **dedicated browser** that coexists with your daily one and never steals your focus.
 
-> Why "horse"? *Browse* meant a horse grazing — nibbling shoots — long before it meant clicking links. A horse that browses is the *original* browser. And it rides in [browser-harness](https://github.com/browser-use/browser-harness): you harness a horse. 🐴
+> Why "horse"? *Browse* meant a horse grazing — nibbling shoots — long before it meant clicking links. A horse that browses is the *original* browser. And its harness began as a fork of [browser-harness](https://github.com/browser-use/browser-harness): you harness a horse. 🐴
 
 ## Setup
 
@@ -56,27 +56,19 @@ bh_open to open tabs from now on.
 
 ### Teaching agents the discipline
 
-`SKILL.md` isn't an optional skill — it's a guardrail (open tabs with `bh_open`, never bare `goto_url`) that must be in context *before* the first browser call. So you register it always-on — a rule file in `~/.claude/rules/` — not as a load-on-demand skill.
+The paved path (open tabs with `bh_open`; the shared-browser sharp edges) must be in context *before* the first browser call — so it's an always-on rule, not a load-on-demand skill. It's **one self-contained file** (`RULE.md`, ~650 tokens, no `@`-imports); the full reference stays out of context until an agent asks for it via `horse-browser skill`.
 
-**Recommended** — let `claude-md.sh` own a rule file at `~/.claude/rules/horse-browser.md` (rules files load into every session exactly like `CLAUDE.md`, `@`-imports included):
+**Recommended** — let `claude-md.sh` own a rule file at `~/.claude/rules/horse-browser.md` (rules files load into every session exactly like `CLAUDE.md`):
 
 ```bash
-./claude-md.sh apply     # write/refresh the rule file (idempotent; also removes the legacy CLAUDE.md block)
+./claude-md.sh apply     # write/refresh the rule file (idempotent; also removes any legacy CLAUDE.md block)
 ./claude-md.sh print     # just print it — to compare, or copy by hand
 ./claude-md.sh check     # is the rule file up to date? (exit 1 if drifted — good for a cron)
 ```
 
-It imports both playbooks via **stable paths** that don't rot across reinstalls: the vendored harness SKILL through a copy in `~/.config` kept current by `install.sh`, and horse-browser's own — when installed via npm — through a Node-independent copy in `~/.config` (the package dir sits under your Node-version manager and moves when Node changes; a checkout imports its `SKILL.md` live). `install.sh` refreshes both.
+`apply` copies `RULE.md` verbatim — no symlinks, no per-Python copies, nothing to rot across reinstalls. `RULE.md` is the single source; edit it and re-run `apply`.
 
-**By hand** — or just add the import yourself (global `~/.claude/CLAUDE.md`, or a single repo's `CLAUDE.md`):
-
-```text
-@~/path/to/horse-browser/SKILL.md
-```
-
-(Codex users: `~/.codex/AGENTS.md` works the same way.) Either way, the agent loads the `bh_open` discipline automatically from then on.
-
-> **Installed via npm?** Don't import the package dir directly — it lives under your Node-version manager (`…/fnm/node-versions/vX/…`) and vanishes when Node changes. The installer prints a **stable path** to paste instead: `@~/.config/horse-browser/skill.md` (a Node-independent copy it keeps current).
+**By hand** — or paste the rule into `~/.claude/CLAUDE.md` (or a single repo's `CLAUDE.md`) yourself: run `./claude-md.sh print` and drop the output in. (Codex users: `~/.codex/AGENTS.md` works the same way.) Either way, the agent loads the `bh_open` discipline automatically from then on.
 
 ## How it stays out of your way
 
@@ -100,7 +92,7 @@ Built around **stable slots**: a tab keeps its cell, so the picture never shuffl
 
 ## How agents drive it
 
-`horse-browser` is a drop-in for [browser-harness](https://github.com/browser-use/browser-harness) that brings the dedicated browser up first (launching if down, self-healing a frozen GPU after sleep) and points the harness at it — so agents never touch a port:
+`horse-browser` brings the dedicated browser up first (launching if down, self-healing a frozen GPU after sleep), then runs your script against it over CDP through its vendored harness — so agents never touch a port:
 
 ```bash
 horse-browser <<'PY'
@@ -115,7 +107,7 @@ It owns the CDP endpoint, so the port lives in exactly one place (its config) �
 horse-browser && export BU_CDP_URL=http://127.0.0.1:9223   # for an arbitrary CDP client
 ```
 
-Agents open tabs with `bh_open(url)` (their own colored group, no focus steal) rather than bare `goto_url` (which clobbers whoever's focused). The discipline lives in [SKILL.md](SKILL.md) — register it as an always-on rule ([see Setup](#teaching-agents-the-discipline)) and agents follow it automatically.
+Agents open tabs with `bh_open(url)` — their own colored group, in the background, no focus steal. The discipline lives in [RULE.md](RULE.md) — register it as an always-on rule ([see Setup](#teaching-agents-the-discipline)) and agents follow it automatically. (Once open, plain `goto_url` is safe: the daemon pins each session to its own tab, so a navigation can't land on another agent's page.)
 
 ## Design philosophy — power, not guardrails
 
@@ -136,12 +128,13 @@ The test for anything we add: does it **encode knowledge** the agent can't deriv
 ## What's inside
 
 - **`extension/`** — MV3 extension: the tab grouper, the Agent Monitor (sidebar collapsed by default), and a first-run welcome page.
-- **`bin/horse-browser`** — the launcher *and* a browser-harness drop-in: ensures the browser is up (self-heals a GPU wedge after sleep), then runs your script against it. Also `horse-browser status` (versions + state) and `horse-browser update` (fetch the latest Chrome for Testing — it has no auto-updater — and restart onto it).
-- **`install.sh`** — one-time setup; fetches the browser, registers the launcher + helpers.
-- **`claude-md.sh`** — registers horse-browser's guidance as a rule file at `~/.claude/rules/horse-browser.md` (`apply`/`print`/`check`), via version-proof `~/.config` copies of both SKILLs.
-- **`SKILL.md`** — the agent's playbook (the `bh_open` discipline + a helper recipe it self-installs).
+- **`bin/horse-browser`** — the launcher *and* the driver: ensures the browser is up (self-heals a GPU wedge after sleep), then runs your script against it through the vendored harness. Also `horse-browser status` (versions + state), `horse-browser skill` (print the manual), and `horse-browser update` (fetch the latest Chrome for Testing — it has no auto-updater — and restart onto it).
+- **`harness/`** — the vendored CDP harness (`horse_harness`): the daemon that holds the websocket to Chrome, the pre-imported helpers, and the shared-browser invariants (focus-safe activate, per-session tab pinning, self-reap). Runs from a private venv; a fork of browser-harness's core, no external dependency.
+- **`install.sh`** — one-time setup; fetches the browser, builds the harness venv, registers the launcher.
+- **`claude-md.sh`** — installs horse-browser's guidance as a rule file at `~/.claude/rules/horse-browser.md` (`apply`/`print`/`check`) — one self-contained file, no imports.
+- **`RULE.md`** — the always-on rule (the paved path + the sharp edges, ~650 tokens). **`MANUAL.md`** — the full on-demand reference (`horse-browser skill`).
 
-A thin, self-contained setup — browser-harness (or anything else speaking CDP) is just a *consumer* on port 9223.
+A thin, self-contained setup — the vendored harness (or anything else speaking CDP) is just a *consumer* on port 9223.
 
 ## Tests
 
