@@ -169,7 +169,7 @@ grep -q "TITLE 🐴" <<<"$out" && pass "🐴 active-work mark on the driven tab"
 
 hb 'cdp("Target.closeTarget", targetId=bh_list()[0]["targetId"])' >/dev/null 2>&1
 
-# Focus safety for the STOCK tab verbs. browser-harness's new_tab / switch_tab / ensure_real_tab
+# Focus safety for the STOCK tab verbs. The vendored harness's new_tab / switch_tab / ensure_real_tab
 # call Target.activateTarget → [NSApp activate] → the browser steals OS focus; the horse helpers
 # override all three to be focus-safe. Drive each and assert Chrome for Testing never became the
 # frontmost app (lsappinfo works without accessibility perms; skip if it can't read a name).

@@ -5,7 +5,7 @@
 # --lane) hammer open/verify/screenshot/close loops for DURATION seconds, then hard
 # invariants are checked: exactly one browser, no cross-session tab contamination, no
 # duplicate daemons per BU_NAME, no leaked tabs, lock free. Also probes the known
-# browser-harness daemon-spawn TOCTOU with 6 parallel cold first-calls on one BU_NAME
+# daemon-spawn TOCTOU with 6 parallel cold first-calls on one BU_NAME
 # (duplicates WARN — upstream bug — and are cleaned up).
 #
 # Soak (SOAK=<minutes>): one session daemon held across idle time with a call every
@@ -43,7 +43,7 @@ warn() { WARN=$((WARN+1)); say "  ! $1"; }
 # kill every daemon whose BU_NAME matches a pattern (default: any test tag)
 reap_matching() {
   local pat="${1:-BU_NAME=hb-(chaos|lane|toct|soak)}"
-  for p in $(pgrep -f browser_harness.daemon); do
+  for p in $(pgrep -f "(browser|horse)_harness.daemon"); do
     ps eww -o command= -p "$p" 2>/dev/null | grep -qE "$pat" && kill "$p" 2>/dev/null
   done
 }
@@ -52,7 +52,7 @@ cleanup() { reap_test_daemons; rm -rf "$WORK"; }
 trap cleanup EXIT
 
 daemon_names() {   # BU_NAME of every live daemon pinned to our port
-  for p in $(pgrep -f browser_harness.daemon); do
+  for p in $(pgrep -f "(browser|horse)_harness.daemon"); do
     env="$(ps eww -o command= -p "$p" 2>/dev/null)"
     case "$env" in *"BU_CDP_URL=http://127.0.0.1:$PORT"*) ;; *) continue ;; esac
     printf '%s\n' "$env" | tr ' ' '\n' | sed -n 's/^BU_NAME=//p' | head -1
@@ -78,7 +78,7 @@ if [ -n "${SOAK:-}" ]; then
   SESS="soak$$"
   HORSE_SESSION="$SESS" "$HB" <<<'print("WARM", page_info() is not None)' >/dev/null 2>&1
   DPID=""
-  for p in $(pgrep -f browser_harness.daemon); do
+  for p in $(pgrep -f "(browser|horse)_harness.daemon"); do
     ps eww -o command= -p "$p" 2>/dev/null | grep -q "BU_NAME=hb-$SESS" && DPID="$p"
   done
   [ -n "$DPID" ] || { fail "soak daemon spawned"; say "── 0 passed, 1 failed"; exit 1; }
