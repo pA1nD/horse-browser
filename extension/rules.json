@@ -8,7 +8,7 @@
         {
           "header": "sec-ch-ua",
           "operation": "set",
-          "value": "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\""
+          "value": "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"151\", \"Google Chrome\";v=\"151\""
         }
       ]
     },

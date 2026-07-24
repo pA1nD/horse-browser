@@ -16,6 +16,12 @@ chrome.runtime.onStartup.addListener(() => chrome.alarms.create("keepalive", { p
 chrome.alarms.onAlarm.addListener(() => {});
 chrome.tabs.onCreated.addListener(() => {});
 
+// One-time cleanup: an earlier build installed a dynamic declarativeNetRequest rule (id 1001)
+// for the sec-ch-ua header. The wire half now lives in the static rules.json (kept in sync
+// with the browser version by the launcher), so remove any leftover dynamic rule — a stale
+// one would supersede the correct static rule. Safe no-op once it's gone.
+try { chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [1001] }); } catch (e) {}
+
 const COLORS = ["blue", "cyan", "green", "yellow", "orange", "red", "pink", "purple"];
 
 function colorForName(name) {
