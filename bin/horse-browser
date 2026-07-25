@@ -191,7 +191,14 @@ focus_breadcrumb() {
 # CDP state. Re-entrant within one process (relaunch → ensure_browser → launch) via
 # a depth counter; crash-safe across processes via the holder pid — a dead holder's
 # lock is broken immediately, so no EXIT traps needed (exec wouldn't run them anyway).
-HB_LOCK="$HOME/.config/horse-browser/.browser-lock"
+# Per-BROWSER-INSTANCE, keyed to the profile (--user-data-dir): the single-flight guard is about
+# one browser, so an isolated instance on its own profile (e.g. a test run) never contends with
+# the live browser's lock. The default profile keeps the legacy path so existing installs don't churn.
+if [ "$PROFILE" = "$HOME/.config/horse-browser/profile" ]; then
+  HB_LOCK="$HOME/.config/horse-browser/.browser-lock"
+else
+  HB_LOCK="${PROFILE%/}.browser-lock"
+fi
 HB_LOCK_DEPTH=0
 hb_lock() {
   if [ "$HB_LOCK_DEPTH" -gt 0 ]; then HB_LOCK_DEPTH=$((HB_LOCK_DEPTH + 1)); return 0; fi
