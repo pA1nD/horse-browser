@@ -305,13 +305,39 @@ def _xorigin_challenge():
                 ['hcaptcha','hcaptcha.com'],['perimeterx','perimeterx'],['arkose','arkoselabs'],
                 ['recaptcha','recaptcha/api2/bframe'],['recaptcha','recaptcha/api2/anchor']];
       var fr=[].slice.call(document.querySelectorAll('iframe'));
-      for(var i=0;i<fr.length;i++){var f=fr[i],s=f.src||'';
-        for(var j=0;j<pats.length;j++){ if(s.indexOf(pats[j][1])>=0){
+      for(var i=0;i<fr.length;i++){var f=fr[i],s=f.src||'',ti=(f.title||'').toLowerCase(),id=(f.id||'');
+        var vendor=null;
+        for(var j=0;j<pats.length;j++){ if(s.indexOf(pats[j][1])>=0){ vendor=pats[j][0]; break; } }
+        // A full-page CF interstitial's Turnstile iframe often has an EMPTY/relative src but a
+        // telltale title ("…Cloudflare…") or id (cf-chl-widget-*) — src-only matching misses it,
+        // so solve_challenge would wrongly return 'none' on an interstitial. Catch it by title/id.
+        if(!vendor && (ti.indexOf('cloudflare')>=0 || /^cf-chl/.test(id))) vendor='cloudflare';
+        if(!vendor && ti.indexOf('hcaptcha')>=0) vendor='hcaptcha';
+        if(vendor){
           var b=f.getBoundingClientRect();
           if(b.width>40&&b.height>20&&getComputedStyle(f).visibility!=='hidden')
-            return {vendor:pats[j][0],x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.width),h:Math.round(b.height)};
-        }}}
+            return {vendor:vendor,x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.width),h:Math.round(b.height)};
+        }}
       return null;})()""")
+
+
+def _overlay_over(xo):
+    """A consent/cookie backdrop (OneTrust etc.) stacked over the challenge eats clicks: a
+    click_xy at the challenge coords hits the overlay, not the control (seen live on nestle).
+    If the topmost element at the challenge center isn't the challenge iframe, describe the
+    obstruction so the agent dismisses it first. Returns {tag,id,z,txt} or None."""
+    if not xo:
+        return None
+    cx = xo["x"] + xo["w"] // 2
+    cy = xo["y"] + xo["h"] // 2
+    return _eval(r"""(function(cx,cy){
+      var el=document.elementFromPoint(cx,cy); if(!el||el.tagName==='IFRAME') return null;
+      var r=el.getBoundingClientRect(), cs=getComputedStyle(el), z=parseInt(cs.zIndex)||0;
+      var big=r.width*r.height > 0.15*innerWidth*innerHeight;
+      if(!(big || z>=1000 || cs.position==='fixed' || cs.position==='sticky')) return null;
+      return {tag:el.tagName.toLowerCase(), id:(el.id||el.className||'').toString().slice(0,60),
+              z:z, txt:(el.innerText||'').replace(/\s+/g,' ').trim().slice(0,80)};
+    })(%d,%d)""" % (cx, cy))
 
 
 # per-vendor READING hint for the agent's eyes — a starting guess, NEVER authoritative coords
@@ -331,11 +357,19 @@ def _vision_handoff(xo, kind_hint=None):
     rect = ("iframe at rect(x=%d, y=%d, w=%d, h=%d)" % (xo["x"], xo["y"], xo["w"], xo["h"])) if xo else "the challenge widget"
     vendor = (xo or {}).get("vendor") or (kind_hint or "unknown")
     hint = _VISION_HINT.get((xo or {}).get("vendor"), "read the control (checkbox / slider / press-hold) and act by its coordinates")
-    return ("vision:%s — challenge sealed in a cross-origin iframe; the DOM can't be read, but CDP "
+    ov = _overlay_over(xo)
+    warn = ""
+    if ov:
+        warn = ("BLOCKED FIRST: a '%s' overlay (%s%s) covers the challenge center — a click at "
+                "these coords hits the overlay, not the control. Dismiss it first (accept/reject "
+                "the cookie/consent banner), then re-run solve_challenge(). "
+                % (ov.get("txt") or ov.get("tag"), ov.get("id") or ov.get("tag"),
+                   (" z=%s" % ov["z"]) if ov.get("z") else ""))
+    return ("vision:%s — %schallenge sealed in a cross-origin iframe; the DOM can't be read, but CDP "
             "input passes through by coordinate. %s. Hint: %s. Screenshot: %s. Act by COORDS "
             "(click_xy / press_hold((x,y),s) / drag((x,y),to=(x2,y2))), then confirm with "
             "challenge_cleared(); if it didn't clear, re-screenshot and adjust."
-            % (vendor, rect, hint, shot or "capture one with capture_screenshot()"))
+            % (vendor, warn, rect, hint, shot or "capture one with capture_screenshot()"))
 
 
 def challenge_cleared():
