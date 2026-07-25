@@ -12,7 +12,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HB="${HB:-$HERE/../bin/horse-browser}"
 [ -x "$HB" ] || HB="$(command -v horse-browser || true)"
 [ -x "$HB" ] || { echo "FATAL: horse-browser not found (set HB=…)"; exit 1; }
-PORT="$(sed -n 's/^PORT=//p' "$HOME/.config/horse-browser/config" 2>/dev/null | head -1 | tr -d '"')"
+# Disposable instance so this suite never touches the live :9223 browser. HB_ISOLATE=0 opts out.
+source "$HERE/lib/isolate.sh"; hb_isolate || exit 1
+PORT="${HORSE_BROWSER_PORT:-$(sed -n 's/^PORT=//p' "$HOME/.config/horse-browser/config" 2>/dev/null | head -1 | tr -d '"')}"
 PORT="${PORT:-9223}"
 PASS=0; FAIL=0; SKIP=0; FAILED=()
 say()  { printf '%s\n' "$*"; }
@@ -31,6 +33,7 @@ cleanup() {
   done
   sleep 1                 # let the kills propagate so the reaper sees these sessions as dead
   reap >/dev/null 2>&1 || true
+  _hb_isolate_teardown
 }
 trap cleanup EXIT
 

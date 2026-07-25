@@ -22,7 +22,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HB="${HB:-$HERE/../bin/horse-browser}"
 [ -x "$HB" ] || HB="$(command -v horse-browser || true)"
 [ -x "$HB" ] || { echo "FATAL: horse-browser not found (set HB=…)"; exit 1; }
-PORT="$(sed -n 's/^PORT=//p' "$HOME/.config/horse-browser/config" 2>/dev/null | head -1 | tr -d '"')"
+# Disposable instance so this chaos suite never touches the live :9223 browser. HB_ISOLATE=0 opts out.
+source "$HERE/lib/isolate.sh"; hb_isolate || exit 1
+PORT="${HORSE_BROWSER_PORT:-$(sed -n 's/^PORT=//p' "$HOME/.config/horse-browser/config" 2>/dev/null | head -1 | tr -d '"')}"
 PORT="${PORT:-9223}"
 DURATION="${DURATION:-75}"
 WORKERS="${WORKERS:-4}"        # solo sessions; two extra lane workers ride one shared session
@@ -32,7 +34,7 @@ INTERVAL="${INTERVAL:-45}"
 # more brutal than reality and dominated by OS scheduling luck; the default models real load.
 THINK="${THINK:-0.15}"
 WORK="$(mktemp -d /tmp/hb-chaos.XXXXXX)"
-LOCK="$HOME/.config/horse-browser/.browser-lock"
+LOCK="${HB_LOCK_PATH:-$HOME/.config/horse-browser/.browser-lock}"
 PASS=0; FAIL=0; WARN=0; FAILED=()
 
 say()  { printf '%s\n' "$*"; }
@@ -48,7 +50,7 @@ reap_matching() {
   done
 }
 reap_test_daemons() { reap_matching; }
-cleanup() { reap_test_daemons; rm -rf "$WORK"; }
+cleanup() { reap_test_daemons; rm -rf "$WORK"; _hb_isolate_teardown; }
 trap cleanup EXIT
 
 daemon_names() {   # BU_NAME of every live daemon pinned to our port

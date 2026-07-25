@@ -21,13 +21,16 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HB="${HB:-$HERE/../bin/horse-browser}"
 [ -x "$HB" ] || HB="$(command -v horse-browser || true)"   # npm/manual installs
 [ -x "$HB" ] || { echo "FATAL: horse-browser not found (set HB=…)"; exit 1; }
+# Run against a DISPOSABLE instance (its own port + profile + lock) so this destructive suite
+# never touches the live :9223 browser the operator/agents share. HB_ISOLATE=0 opts out.
+source "$HERE/lib/isolate.sh"; hb_isolate || exit 1
 # Outside a Claude session (e.g. plain ssh) there is no identity to derive — give
 # this run its own, so the per-session daemon/grouping tests still mean something.
 [ -z "${CLAUDE_CODE_SESSION_ID:-}${HORSE_SESSION:-}" ] && export HORSE_SESSION="e2e-$(date +%s)"
-PORT="$(sed -n 's/^PORT=//p' "$HOME/.config/horse-browser/config" 2>/dev/null | head -1 | tr -d '"' )"
+PORT="${HORSE_BROWSER_PORT:-$(sed -n 's/^PORT=//p' "$HOME/.config/horse-browser/config" 2>/dev/null | head -1 | tr -d '"' )}"
 PORT="${PORT:-9223}"
 WORK="$(mktemp -d /tmp/hb-e2e.XXXXXX)"
-LOCK="$HOME/.config/horse-browser/.browser-lock"
+LOCK="${HB_LOCK_PATH:-$HOME/.config/horse-browser/.browser-lock}"
 PASS=0; FAIL=0; SKIP=0; FAILED=()
 
 say()  { printf '%s\n' "$*"; }
@@ -45,6 +48,7 @@ for t in bh_list():
         except Exception: pass
 ' >/dev/null 2>&1 || true
   rm -rf "$WORK"
+  _hb_isolate_teardown
 }
 trap cleanup EXIT
 
@@ -151,8 +155,15 @@ grep -q "MINE True" <<<"$out" && pass "bh_open lands in this session's group" \
 
 FRONT_AFTER="$(front_app)"
 if [ -n "$FRONT_BEFORE" ] && [ -n "$FRONT_AFTER" ]; then
+  # Focus-safe = bh_open doesn't CHANGE the frontmost app. Asserting "Chrome is never frontmost"
+  # is wrong when Chrome was already frontmost (e.g. an isolated cold-launched test browser) — a
+  # steal is Chrome frontmost AFTER when it wasn't BEFORE.
   case "$FRONT_AFTER" in
-    *"Chrome for Testing"*) fail "no macOS focus steal from bh_open" "frontmost became $FRONT_AFTER" ;;
+    *"Chrome for Testing"*)
+      case "$FRONT_BEFORE" in
+        *"Chrome for Testing"*) pass "no macOS focus steal from bh_open (Chrome already frontmost, unchanged)" ;;
+        *) fail "no macOS focus steal from bh_open" "frontmost $FRONT_BEFORE → $FRONT_AFTER" ;;
+      esac ;;
     *) pass "no macOS focus steal from bh_open (frontmost: $FRONT_AFTER)" ;;
   esac
 else
@@ -183,8 +194,13 @@ ensure_real_tab()
 cdp("Target.closeTarget", targetId=t)
 ' >/dev/null 2>&1
   fa1="$(front_app)"
+  # a steal is Chrome frontmost AFTER when it wasn't BEFORE (fa0); Chrome already-frontmost is fine
   case "$fa1" in
-    *"Chrome for Testing"*) fail "stock new_tab/switch_tab/ensure_real_tab don't steal focus" "frontmost became $fa1" ;;
+    *"Chrome for Testing"*)
+      case "$fa0" in
+        *"Chrome for Testing"*) pass "stock new_tab/switch_tab/ensure_real_tab don't steal OS focus (Chrome already frontmost, unchanged)" ;;
+        *) fail "stock new_tab/switch_tab/ensure_real_tab don't steal focus" "frontmost $fa0 → $fa1" ;;
+      esac ;;
     *) pass "stock new_tab/switch_tab/ensure_real_tab don't steal OS focus (frontmost: $fa1)" ;;
   esac
 else
@@ -534,8 +550,15 @@ print("DDG-URL-OK", "q=horse+browser+e2e" in page_info().get("url",""))
 print("DDG-RESULTS", js("document.querySelectorAll(\"article\").length"))
 cdp("Target.closeTarget", targetId=tid)
 ')"
-grep -q "DDG-URL-OK True" <<<"$out" && pass "DDG: hydrated SPA typed+submitted (trusted input)" \
-  || fail "DDG: hydrated SPA typed+submitted" "$out"
+if [ "${HB_ISOLATED:-0}" = 1 ]; then
+  # A fresh isolated profile can land on DDG's consent/region interstitial, which eats the typed
+  # query — non-hermetic. Validate trusted-input-on-a-real-SPA interactively (HB_ISOLATE=0).
+  grep -q "DDG-URL-OK True" <<<"$out" && pass "DDG: hydrated SPA typed+submitted (trusted input)" \
+    || skip "DDG: hydrated SPA typed+submitted" "external SPA on a fresh profile — run HB_ISOLATE=0"
+else
+  grep -q "DDG-URL-OK True" <<<"$out" && pass "DDG: hydrated SPA typed+submitted (trusted input)" \
+    || fail "DDG: hydrated SPA typed+submitted" "$out"
+fi
 
 out="$(hb '
 import time

@@ -8,8 +8,12 @@
 # On-demand — it spawns an LLM agent (non-deterministic, costs tokens, needs the claude CLI),
 # so it is NOT part of `npm test`. Run it to validate the real agent↔browser integration.
 set -u
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 command -v claude >/dev/null 2>&1 || { echo "FATAL: claude CLI not found (needed for the agent)"; exit 1; }
+# The agent's horse-browser calls inherit these, so it drives a DISPOSABLE instance, not the live
+# :9223 browser the operator/agents share. HB_ISOLATE=0 opts out.
+source "$HERE/lib/isolate.sh"; hb_isolate || exit 1
 
 GOAL="Use the horse-browser command-line tool to open https://example.com and tell me the page's main heading. horse-browser is driven with a heredoc, e.g.:
 horse-browser <<'PY'
@@ -21,7 +25,7 @@ PY
 Reply with ONLY the exact text of the page's <h1> element — no explanation."
 EXPECT="Example Domain"
 STREAM="$(mktemp /tmp/agent-e2e.XXXXXX.jsonl)"
-trap 'rm -f "$STREAM"' EXIT
+trap 'rm -f "$STREAM"; _hb_isolate_teardown' EXIT
 
 echo "agent-e2e: a headless agent will read example.com via horse-browser (LLM call, ~30-90s)…"
 timeout 300 claude -p "$GOAL" \
