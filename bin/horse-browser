@@ -62,6 +62,14 @@ ensure_harness() {
   }
   if [ ! -x "$HARNESS_PY" ]; then
     echo "horse-browser: setting up the harness venv (one-time)…" >&2
+    # A non-login shell (an npm postinstall over ssh, cron) often has a bare PATH that misses
+    # Homebrew / cargo, so `command -v uv` fails even when uv IS installed, and the stock
+    # /usr/bin/python3 can be too old — the build then wrongly bails "need uv or python3 ≥3.11".
+    # Every npm update wipes this venv (it lives in the package dir), so add the usual tool dirs
+    # first, letting the rebuild self-heal without a login shell.
+    for _d in /opt/homebrew/bin /usr/local/bin "$HOME/.cargo/bin" "$HOME/.local/bin"; do
+      [ -d "$_d" ] && case ":$PATH:" in *":$_d:"*) ;; *) PATH="$_d:$PATH" ;; esac
+    done
     if command -v uv >/dev/null 2>&1; then
       uv venv --quiet --python 3.12 "$HARNESS_DIR/.venv" \
         && uv pip install --quiet --python "$HARNESS_PY" 'cdp-use==1.4.5' 'websockets==15.0.1'
