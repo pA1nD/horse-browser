@@ -14,13 +14,17 @@
   var u = navigator.userAgentData; if(!u) return;
   var m = navigator.userAgent.match(/Chrome\/(\d+)/); if(!m) return; var MAJOR = m[1];
   function low(){ return [{brand:'Not;A=Brand',version:'8'},{brand:'Chromium',version:MAJOR},{brand:'Google Chrome',version:MAJOR}]; }
-  // Keep every native full version; only normalise the grease brand (to match low()) and
-  // rename the "…for Testing" brand to "Google Chrome".
-  function maskFull(list){ return (list||[]).map(function(e){
-    if(/not[.;/]a?.?brand/i.test(e.brand)) return {brand:'Not;A=Brand', version:'8.0.0.0'};
-    if(/for testing/i.test(e.brand))       return {brand:'Google Chrome', version:e.version};
-    return e;
-  }); }
+  // CfT's high-entropy fullVersionList is [Chromium(full), <grease>] — it has NO "…for Testing"
+  // entry to rename and NO Google Chrome, so a rename-only pass leaves Google Chrome missing and
+  // the grease brand inconsistent with the sync list (a tell). Rebuild it real-Chrome-shaped from
+  // the Chromium FULL version — same brands as low(), but with full versions.
+  function maskFull(list){
+    var full = MAJOR + '.0.0.0';
+    (list||[]).forEach(function(e){ if(e.brand==='Chromium' && e.version) full = e.version; });
+    return [{brand:'Not;A=Brand', version:'8.0.0.0'},
+            {brand:'Chromium', version:full},
+            {brand:'Google Chrome', version:full}];
+  }
   var proto = Object.getPrototypeOf(u);
   function nativeProxy(orig, impl){ return new Proxy(orig, { apply:function(t,ta,a){ return impl(t,ta,a); } }); }
   var bd = Object.getOwnPropertyDescriptor(proto,'brands');
