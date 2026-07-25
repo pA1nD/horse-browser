@@ -33,10 +33,25 @@ mkdir -p "$CONFIG_DIR" "$BINDIR" "$CACHE"
 echo "✓ harness: vendored horse-harness ready ($HERE/harness)"
 
 # 1. browser ──────────────────────────────────────────────────────────────────
+# A re-run with a VALID existing config — a reinstall, an `npm update`, or a CI/shipmate
+# ephemeral `npm install` from a temp checkout — must NOT re-fetch Chrome or repoint the shared
+# config at wherever install.sh happens to be running from (a temp checkout's paths then get
+# deleted, leaving the config dangling). Preserve the existing setup and skip the fetch; only a
+# fresh install (or an explicit HORSE_BROWSER_BIN) runs the full flow. Chrome upgrades stay a
+# separate, explicit `horse-browser update`.
 BIN="${HORSE_BROWSER_BIN:-}"
-if [ -n "$BIN" ]; then
-  echo "Using your nominated browser: $BIN"
-else
+[ -n "$BIN" ] && echo "Using your nominated browser: $BIN"
+if [ -z "$BIN" ] && [ -f "$CONFIG" ]; then
+  _cfg_bin="$(sed -n 's/^BROWSER_BIN=//p' "$CONFIG" | tr -d '"' | head -1)"
+  _cfg_ext="$(sed -n 's/^EXTENSION_DIR=//p' "$CONFIG" | tr -d '"' | head -1)"
+  if [ -x "$_cfg_bin" ] && [ -d "$_cfg_ext" ]; then
+    BIN="$_cfg_bin"; EXT="$_cfg_ext"
+    _v="$(sed -n 's/^PORT=//p'    "$CONFIG" | tr -d '"' | head -1)"; [ -n "$_v" ] && PORT="$_v"
+    _v="$(sed -n 's/^PROFILE=//p' "$CONFIG" | tr -d '"' | head -1)"; [ -n "$_v" ] && PROFILE="$_v"
+    echo "✓ existing setup valid — reusing config (browser + extension), skipping the Chrome fetch"
+  fi
+fi
+if [ -z "$BIN" ]; then
   if ! command -v npx >/dev/null 2>&1; then
     echo "ERROR: npx (Node) not found — needed to fetch Chrome for Testing." >&2
     echo "  Install Node, or set HORSE_BROWSER_BIN to a Chromium binary, then re-run." >&2
