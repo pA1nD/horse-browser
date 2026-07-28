@@ -26,7 +26,7 @@ coloured tab group and driver — nothing to configure. Drive it with heredoc sc
 
 ```bash
 horse-browser <<'PY'
-tid = bh_open("https://example.com")   # open into YOUR tab group, no focus steal
+tid = open_tab("https://example.com")   # open into YOUR tab group, no focus steal
 wait_for_load()
 print(page_info())
 PY
@@ -34,9 +34,9 @@ PY
 
 Rules:
 
-- **Open tabs with `bh_open(url)`, never `new_tab` / bare `goto_url`** — bare
+- **Open tabs with `open_tab(url)`, never `open_tab` / bare `goto_url`** — bare
   `goto_url` navigates whatever tab is focused and clobbers other agents' (and the
-  human's) work. To re-navigate your own tab: `bh_switch_tab(tid)` then `goto_url(url)`.
+  human's) work. To re-navigate your own tab: `switch_tab(tid)` then `goto_url(url)`.
 - **Never launch a browser yourself** — `horse-browser` (bare, no stdin) brings the
   dedicated browser up, heals it if wedged, and no-ops if healthy.
 - **Trusted input**: drive forms with `click(css)` / `type_into(css, text)` /
@@ -44,5 +44,5 @@ Rules:
   `el.value = …` or `el.click()` in `js(...)` on anything that matters (login,
   checkout, bot-protected sites). Easy captcha gestures: `solve_challenge()`.
 - **Screenshots**: `capture_screenshot()` returns a fresh PNG path per call.
-- **Tab discipline**: `bh_list()` shows your group; when a task ends, close what you
+- **Tab discipline**: `list_tabs()` shows your group; when a task ends, close what you
   opened via `cdp("Target.closeTarget", targetId=t["targetId"])` per tab.

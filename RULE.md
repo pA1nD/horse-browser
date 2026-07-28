@@ -14,18 +14,18 @@ Two things follow — both handled by the substrate, you don't manage them:
 
 ```
 horse-browser <<'PY'
-tid = bh_open("https://example.com")   # your tab, in your colour group; no focus steal
+tid = open_tab("https://example.com")   # your tab, in your colour group; no focus steal
 wait_for_load()
 print(page_info())
 PY
 ```
 
 Go through `horse-browser` — never launch Chrome yourself. At end of task, prune your
-tabs: `for t in bh_list(): cdp("Target.closeTarget", targetId=t["targetId"])`.
+tabs: `for t in list_tabs(): cdp("Target.closeTarget", targetId=t["targetId"])`.
 
 ## Verbs — the paved path (everything else: raw `cdp`)
 
-`bh_open(url)` open/reuse your tab · `goto_url(url)` navigate it · `bh_list()` your tabs ·
+`open_tab(url)` open/reuse your tab · `goto_url(url)` navigate it · `list_tabs()` your tabs ·
 `page_info()` url/title/viewport · `js(expr)` run JS · `capture_screenshot()` PNG of your
 tab · `click(css)`/`click_xy(x,y)` trusted click · `type_into(css,text)` trusted type ·
 `press(key)` named key · `press_hold(t,s)`/`drag(t,to=)` challenge gestures ·
@@ -45,6 +45,20 @@ tab · `click(css)`/`click_xy(x,y)` trusted click · `type_into(css,text)` trust
 - **Challenges: solve, don't reload.** A press-hold / slide / checkbox is a reputation
   checkpoint. `solve_challenge()` (or a trusted gesture) banks IP + cookie trust that pays
   forward across the session; reloading to reroll banks nothing and reads as a bot.
+
+## Make it yours — you can write verbs
+
+The verbs above are a floor, not a ceiling. A raw-CDP sequence you'll reuse becomes a named
+verb: add it to `agent_helpers.py` in your workspace
+(`~/.config/browser-harness/agent-workspace/`). It loads last, so it always wins, and it's
+there next session. Agents rarely do this — do it.
+
+## Site skills — a per-site playbook
+
+A site's selectors, quirks, and your own helpers for it live in a skill file:
+`<workspace>/domain-skills/<domain.tld>/<name>.md`. On navigation the harness tells you when a
+host has one — read it before working the page. Visited a site a few times with no skill while
+building reusable things for it? Write one. Host is `domain.tld` (www/subdomain/path ignored).
 
 Full manual — every verb's CDP recipe, extension internals, challenge playbook, gotchas:
 `horse-browser skill`.

@@ -17,7 +17,7 @@ you drive with raw CDP plus a small paved-path helper set.
 
 ```bash
 horse-browser <<'PY'
-tid = bh_open("https://example.com")   # your tab, your colour group, no focus steal
+tid = open_tab("https://example.com")   # your tab, your colour group, no focus steal
 wait_for_load()
 print(page_info())
 PY
@@ -70,14 +70,14 @@ Helpers are worked examples of the right CDP idiom, not a wall over it. Each sho
 calls it makes, so when you outgrow it you already know the idiom to compose your own.
 
 **Tabs**
-- `bh_open(url)` → reuse a blank tab in your group or `Target.createTarget(background=True)`,
+- `open_tab(url)` → reuse a blank tab in your group or `Target.createTarget(background=True)`,
   group it via the extension, switch to it, navigate, `wait_for_load()`. Returns targetId.
-- `bh_list()` → the extension's `listTabs(yourGroup)`: your group's tabs with url/title/
+- `list_tabs()` → the extension's `listTabs(yourGroup)`: your group's tabs with url/title/
   lastAccessed/targetId.
-- `bh_switch_tab(tid)` → attach the target (`Target.attachToTarget flatten`), tell the daemon
+- `switch_tab(tid)` → attach the target (`Target.attachToTarget flatten`), tell the daemon
   to bind this session to it, `Emulation.setFocusEmulationEnabled` so it drives live in the
   background. No `activateTarget`.
-- `goto_url(url)` = `Page.navigate` on your bound tab. `current_tab()` / `list_tabs()` /
+- `goto_url(url)` = `Page.navigate` on your bound tab. `current_tab()` / `all_tabs()` /
   `close_tab(t)` as named.
 
 **Read**
@@ -91,7 +91,6 @@ calls it makes, so when you outgrow it you already know the idiom to compose you
 **Input — trusted, real events (see the section below)**
 - `click(css)` / `click_xy(x,y)`, `type_into(css,text, clear=?, enter=?)`, `type_text(text)`,
   `press(name)`, `press_hold(css_or_xy, s)`, `drag(css_or_xy, to=/dx=)`.
-- `fill_input(css,text)` / `press_key(key)` / `click_at_xy(x,y)` — lower-level variants.
 - For a listener-free `<textarea>` where speed beats fidelity: `cdp("Input.insertText",
   text=…)` directly — it fires **no key events** (that's the point), so never use it on a
   field the page listens to.
@@ -191,12 +190,12 @@ so a backgrounded tab still paints and fires events. Native popovers (autofill, 
 translate) are *not* gated by focus emulation — if you see typing-time focus theft, disable
 those at the profile level rather than chasing them through CDP.
 
-If `bh_open` is undefined, the vendored harness didn't load — run `horse-browser harness-setup`
+If `open_tab` is undefined, the vendored harness didn't load — run `horse-browser harness-setup`
 (or re-run `install.sh`); don't hand-roll your own, the focus-safe behaviour is subtle.
 
 ## Tab discipline
 
-Glance at `bh_list()` before opening many tabs; close stale ones via raw CDP
+Glance at `list_tabs()` before opening many tabs; close stale ones via raw CDP
 (`cdp("Target.closeTarget", targetId=t["targetId"])`). Close the rest when a task ends —
 Chrome removes empty groups, so a disciplined session leaves zero clutter. (A daemon whose
 session dies also self-reaps its group, so this is politeness, not a leak backstop.)

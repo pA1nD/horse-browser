@@ -48,7 +48,7 @@ You don't have to install by hand. Paste into **Claude Code** or **Codex**:
 Set up https://github.com/pA1nD/horse-browser for me.
 
 Clone it, run ./install.sh, then ./claude-md.sh apply so you always use
-bh_open to open tabs from now on.
+open_tab to open tabs from now on.
 ```
 
 `install.sh` does the same setup as the npm install; `./claude-md.sh apply` then registers the rule file (the npm install prints that step for you — see below).
@@ -56,7 +56,7 @@ bh_open to open tabs from now on.
 
 ### Teaching agents the discipline
 
-The paved path (open tabs with `bh_open`; the shared-browser sharp edges) must be in context *before* the first browser call — so it's an always-on rule, not a load-on-demand skill. It's **one self-contained file** (`RULE.md`, ~650 tokens, no `@`-imports); the full reference stays out of context until an agent asks for it via `horse-browser skill`.
+The paved path (open tabs with `open_tab`; the shared-browser sharp edges) must be in context *before* the first browser call — so it's an always-on rule, not a load-on-demand skill. It's **one self-contained file** (`RULE.md`, ~650 tokens, no `@`-imports); the full reference stays out of context until an agent asks for it via `horse-browser skill`.
 
 **Recommended** — let `claude-md.sh` own a rule file at `~/.claude/rules/horse-browser.md` (rules files load into every session exactly like `CLAUDE.md`):
 
@@ -68,7 +68,7 @@ The paved path (open tabs with `bh_open`; the shared-browser sharp edges) must b
 
 `apply` copies `RULE.md` verbatim — no symlinks, no per-Python copies, nothing to rot across reinstalls. `RULE.md` is the single source; edit it and re-run `apply`.
 
-**By hand** — or paste the rule into `~/.claude/CLAUDE.md` (or a single repo's `CLAUDE.md`) yourself: run `./claude-md.sh print` and drop the output in. (Codex users: `~/.codex/AGENTS.md` works the same way.) Either way, the agent loads the `bh_open` discipline automatically from then on.
+**By hand** — or paste the rule into `~/.claude/CLAUDE.md` (or a single repo's `CLAUDE.md`) yourself: run `./claude-md.sh print` and drop the output in. (Codex users: `~/.codex/AGENTS.md` works the same way.) Either way, the agent loads the `open_tab` discipline automatically from then on.
 
 ## How it stays out of your way
 
@@ -96,7 +96,7 @@ Built around **stable slots**: a tab keeps its cell, so the picture never shuffl
 
 ```bash
 horse-browser <<'PY'
-bh_open("https://example.com")   # own colored tab group, no focus steal
+open_tab("https://example.com")   # own colored tab group, no focus steal
 print(page_info())
 PY
 ```
@@ -107,7 +107,7 @@ It owns the CDP endpoint, so the port lives in exactly one place (its config) �
 horse-browser && export BU_CDP_URL=http://127.0.0.1:9223   # for an arbitrary CDP client
 ```
 
-Agents open tabs with `bh_open(url)` — their own colored group, in the background, no focus steal. The discipline lives in [RULE.md](RULE.md) — register it as an always-on rule ([see Setup](#teaching-agents-the-discipline)) and agents follow it automatically. (Once open, plain `goto_url` is safe: the daemon pins each session to its own tab, so a navigation can't land on another agent's page.)
+Agents open tabs with `open_tab(url)` — their own colored group, in the background, no focus steal. The discipline lives in [RULE.md](RULE.md) — register it as an always-on rule ([see Setup](#teaching-agents-the-discipline)) and agents follow it automatically. (Once open, plain `goto_url` is safe: the daemon pins each session to its own tab, so a navigation can't land on another agent's page.)
 
 ## Design philosophy — power, not guardrails
 
@@ -118,7 +118,7 @@ The reason a harness beats Playwright is **raw CDP**: the full protocol, and the
 
 So the harness does four things, then gets out of the way:
 
-1. **Pave the default.** The calls the skill points agents to (`bh_open`, `capture_screenshot`, a focus-safe `new_tab`) have no footguns — the recommended road is paved, not walled.
+1. **Pave the default.** The calls the skill points agents to (`open_tab`, `capture_screenshot`, a focus-safe `open_tab`) have no footguns — the recommended road is paved, not walled.
 2. **Teach the sharp edges.** One short, always-on note: *this is a shared browser; these specific raw calls steal the operator's focus or hang on an occluded window — here's why and the safe way.* Non-obvious side effects are the only thing worth a line in the manual; everything else the agent derives from CDP.
 3. **Keep the substrate coherent.** The one thing that's structural, not etiquette: *your tab means your tab.* Session isolation isn't restricting power — it's the ground honoring what the agent meant.
 4. **Trust the rest.** Full protocol, no wrapper per case, no interceptor-as-jail.
