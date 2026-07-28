@@ -171,6 +171,46 @@ PY
     || fail "empty live set is refused" "$out"
 fi
 
+# ═════ 4. hygiene gate: an UNCLEAN daemon death leaves NOTHING behind ═════════
+# The class-level guard. A daemon SIGKILLed (crash / OOM / killed parent — no atexit) must, after
+# one reap, leave: zero of its runtime files (pid/sock/lock/port), zero orphan daemon, zero tabs in
+# its group. This is what the behavioral checks above (tabs only) + the isolated suites structurally
+# missed — the runtime-FILE leak that shipped undetected until v0.9.5. Assert all three together, so
+# the suite fails on any leak of this class, not just the one instance we already fixed.
+say "[4] hygiene gate — unclean death leaves nothing"
+RT="$HOME/.config/browser-harness/runtime"
+HYG="reaptest-$$-hg$RANDOM"                       # prefix matches cleanup(); unique last segment
+BU="hb-${HYG##*-}"                                # launcher: BU_NAME = hb-<last dash-segment>
+HTAIL="$(printf %s "$HYG" | tail -c 4 | tr a-z A-Z)"
+HORSE_SESSION="$HYG" "$HB" <<'PY' >/dev/null 2>&1
+import urllib.parse
+open_tab("data:text/html,"+urllib.parse.quote("<title>HYG-WORK</title>x"))   # a real work tab to leak
+wait_for_load()
+PY
+hpid="$(daemon_pid_for "$HYG")"
+fb=0; for e in pid sock lock; do [ -e "$RT/bu-$BU.$e" ] && fb=$((fb+1)); done
+if [ -z "$hpid" ] || [ "$fb" -eq 0 ]; then
+  skip "hygiene gate" "session did not materialize (BU=$BU pid=${hpid:-none} files=$fb)"
+else
+  kill -9 "$hpid" 2>/dev/null; sleep 1            # UNCLEAN crash: no atexit — leaves files + tab
+  reap >/dev/null 2>&1                            # the real maybe_reap: daemons + tabs + runtime files
+  fa=0; for e in pid sock lock port; do [ -e "$RT/bu-$BU.$e" ] && fa=$((fa+1)); done
+  [ "$fa" -eq 0 ] \
+    && pass "runtime files GC'd after an unclean death ($fb->0)" \
+    || fail "runtime files GC'd after an unclean death" "$fa remain (bu-$BU.*)"
+  [ -z "$(daemon_pid_for "$HYG")" ] \
+    && pass "no orphan daemon survives" \
+    || fail "no orphan daemon survives"
+  if [ "$have_fn" = "function" ]; then
+    ht="$(group_tabs "$HTAIL")"
+    [ "${ht:-0}" -eq 0 ] \
+      && pass "no leaked tabs in the dead session's group" \
+      || fail "no leaked tabs after an unclean death" "group $HTAIL still has ${ht} tab(s)"
+  else
+    skip "no leaked tabs after an unclean death" "extension reapDeadTabs not loaded"
+  fi
+fi
+
 say ""
 say "── $PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -gt 0 ] && { for f in "${FAILED[@]}"; do say "   FAILED: $f"; done; exit 1; }
