@@ -33,7 +33,7 @@ mkdir -p "$CONFIG_DIR" "$BINDIR" "$CACHE"
 echo "✓ harness: vendored horse-harness ready ($HERE/harness)"
 
 # 1. browser ──────────────────────────────────────────────────────────────────
-# A re-run with a VALID existing config — a reinstall, an `npm update`, or a CI/shipmate
+# A re-run with a VALID existing config — a reinstall, an `npm update`, or a CI
 # ephemeral `npm install` from a temp checkout — must NOT re-fetch Chrome or repoint the shared
 # config at wherever install.sh happens to be running from (a temp checkout's paths then get
 # deleted, leaving the config dangling). Preserve the existing setup and skip the fetch; only a

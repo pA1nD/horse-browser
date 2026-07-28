@@ -22,7 +22,7 @@ import sys
 
 SAFE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # horse-browser in command position — start of command, or after ; & | ( ` or a newline,
-# optionally behind env-var assignments. Never a path segment like ~/pro/horse-browser.
+# optionally behind env-var assignments. Never a path segment like /path/to/horse-browser.
 CMD_POS = re.compile(r"(^|[;&|(`]\s*|\n\s*)((?:[A-Za-z_][A-Za-z_0-9]*=\S*\s+)*)horse-browser(?=\s|$|;|<)")
 STAMPED = re.compile(r"(horse-browser\s+--lane[= ])[A-Za-z0-9_-]+")
 
