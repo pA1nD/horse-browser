@@ -134,13 +134,13 @@ worker() {  # $1 tag  $2 extra-cli-args  $3 session
     local marker="hbchaos$$-$tag-i$n"
     out="$(HORSE_SESSION="$sess" "$HB" $args <<PY 2>&1
 import os, urllib.parse
-tid = bh_open("data:text/html," + urllib.parse.quote("<title>$marker</title><h1>$marker</h1>"))
+tid = open_tab("data:text/html," + urllib.parse.quote("<title>$marker</title><h1>$marker</h1>"))
 try:
     wait_for_load()
     t = page_info().get("title") or ""
     assert "$marker" in t, "OWNERSHIP-VIOLATION saw: " + t
     if $n % 4 == 0:
-        bh_switch_tab(tid)
+        switch_tab(tid)
         goto_url("data:text/html," + urllib.parse.quote("<title>$marker-nav</title>ok"))
         wait_for_load()
         t2 = page_info().get("title") or ""

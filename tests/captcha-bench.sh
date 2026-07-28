@@ -54,8 +54,8 @@ tid = None
 passed = attempted = escalated = 0
 for name, url, klass, token_js, activate in SITES:
     try:
-        if tid is None: tid = bh_open(url)
-        else: bh_switch_tab(tid); goto_url(url)
+        if tid is None: tid = open_tab(url)
+        else: switch_tab(tid); goto_url(url)
         wait_for_load(); time.sleep(6)
         tok = js(token_js) or ""
         if tok:

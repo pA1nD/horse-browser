@@ -17,7 +17,7 @@ source "$HERE/lib/isolate.sh"; hb_isolate || exit 1
 
 GOAL="Use the horse-browser command-line tool to open https://example.com and tell me the page's main heading. horse-browser is driven with a heredoc, e.g.:
 horse-browser <<'PY'
-tid = bh_open('https://example.com')
+tid = open_tab('https://example.com')
 wait_for_load()
 print(page_info().get('title'))
 print(js('document.querySelector(\"h1\").innerText'))

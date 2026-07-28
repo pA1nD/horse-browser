@@ -87,13 +87,13 @@ else
 fi
 
 # 3. workspace migration — retire the old loader stub ───────────────────────────
-# The bh_open/trusted-input helpers are FOLDED INTO the vendored harness now
+# The open_tab/trusted-input helpers are FOLDED INTO the vendored harness now
 # (harness/horse_harness/helpers.py + input.py). Older installs synced them into the
 # browser-harness workspace as horse_helpers.py/horse_input.py plus a loader stub in
 # agent_helpers.py — retire all of that so stale copies can't shadow the packaged
 # versions. Everything the user keeps in agent_helpers.py is preserved byte-for-byte
 # (the harness still loads that file and pre-seeds it with every public helper).
-LOADER_MARKER="# >>> horse-browser: bh_open helpers (managed loader — do not edit) >>>"
+LOADER_MARKER="# >>> horse-browser: open_tab helpers (managed loader — do not edit) >>>"
 migrate_workspace() {
   local ws="$1" dst="$1/agent_helpers.py"
   [ -d "$ws" ] || return 0
@@ -104,8 +104,8 @@ import re, sys
 p = sys.argv[1]
 text = open(p).read()
 pat = re.compile(
-    r"\n*# >>> horse-browser: bh_open helpers \(managed loader — do not edit\) >>>"
-    r".*?# <<< horse-browser: bh_open helpers <<<\n*",
+    r"\n*# >>> horse-browser: open_tab helpers \(managed loader — do not edit\) >>>"
+    r".*?# <<< horse-browser: open_tab helpers <<<\n*",
     re.S)
 new = pat.sub("\n\n", text, count=1).strip("\n")
 if new != text:
@@ -173,8 +173,8 @@ echo "Launching for the first time…"
 "$BINDIR/horse-browser" || true
 
 read -r -d '' check <<'PY' || true
-# bh_open + trusted input are folded into the harness — both must be pre-imported.
-if "bh_open" not in globals() or "type_into" not in globals():
+# open_tab + trusted input are folded into the harness — both must be pre-imported.
+if "open_tab" not in globals() or "type_into" not in globals():
     print("NOHELPERS"); raise SystemExit(0)
 sw = next((t["targetId"] for t in cdp("Target.getTargets")["targetInfos"]
            if t.get("type") == "service_worker"
@@ -197,7 +197,7 @@ for _ in $(seq 1 20); do   # ~40s — must clear the SW's first 30s keepalive ti
   sleep 2
 done
 if [ -n "$verified" ]; then
-  echo "✓ verified — bh_open + trusted input loaded, listTabs() answered over CDP; the extension is live"
+  echo "✓ verified — open_tab + trusted input loaded, listTabs() answered over CDP; the extension is live"
 elif [ "$result" = "NOHELPERS" ]; then
   echo "! helpers did NOT load — the vendored harness looks broken; re-run: horse-browser harness-setup" >&2
 else

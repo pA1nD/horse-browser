@@ -112,7 +112,7 @@ else
   DEAD="reaptest-$$-dead"; DTAIL="$(printf %s "$DEAD" | tail -c 4 | tr a-z A-Z)"
   HORSE_SESSION="$DEAD" "$HB" <<'PY' >/dev/null 2>&1
 import urllib.parse
-bh_open("data:text/html,"+urllib.parse.quote("<title>DEAD-WORK</title>x"))   # left open on purpose
+open_tab("data:text/html,"+urllib.parse.quote("<title>DEAD-WORK</title>x"))   # left open on purpose
 wait_for_load()
 PY
   dpid="$(daemon_pid_for "$DEAD")"
@@ -123,7 +123,7 @@ PY
   LIVE="reaptest-$$-live"; LTAIL="$(printf %s "$LIVE" | tail -c 4 | tr a-z A-Z)"
   HORSE_SESSION="$LIVE" "$HB" <<'PY' >/dev/null 2>&1
 import urllib.parse
-bh_open("data:text/html,"+urllib.parse.quote("<title>LIVE-WORK</title>x"))
+open_tab("data:text/html,"+urllib.parse.quote("<title>LIVE-WORK</title>x"))
 wait_for_load()
 PY
   before_live="$(group_tabs "$LTAIL")"

@@ -42,7 +42,7 @@ hb() { "$HB" <<<"$1" 2>&1; }        # run a driver script, capture stdout+stderr
 
 cleanup() {
   hb '
-for t in bh_list():
+for t in list_tabs():
     if t["targetId"]:
         try: cdp("Target.closeTarget", targetId=t["targetId"])
         except Exception: pass
@@ -146,41 +146,41 @@ say "[3] tabs + extension"
 
 FRONT_BEFORE="$(front_app)"
 out="$(hb '
-tid = bh_open("data:text/html,<title>hb-e2e-one</title><h1>one</h1>")
+tid = open_tab("data:text/html,<title>hb-e2e-one</title><h1>one</h1>")
 wait_for_load()
-print("MINE", any(t["targetId"] == tid for t in bh_list()))
+print("MINE", any(t["targetId"] == tid for t in list_tabs()))
 ')"
-grep -q "MINE True" <<<"$out" && pass "bh_open lands in this session's group" \
-  || fail "bh_open lands in this session's group" "$out"
+grep -q "MINE True" <<<"$out" && pass "open_tab lands in this session's group" \
+  || fail "open_tab lands in this session's group" "$out"
 
 FRONT_AFTER="$(front_app)"
 if [ -n "$FRONT_BEFORE" ] && [ -n "$FRONT_AFTER" ]; then
-  # Focus-safe = bh_open doesn't CHANGE the frontmost app. Asserting "Chrome is never frontmost"
+  # Focus-safe = open_tab doesn't CHANGE the frontmost app. Asserting "Chrome is never frontmost"
   # is wrong when Chrome was already frontmost (e.g. an isolated cold-launched test browser) — a
   # steal is Chrome frontmost AFTER when it wasn't BEFORE.
   case "$FRONT_AFTER" in
     *"Chrome for Testing"*)
       case "$FRONT_BEFORE" in
-        *"Chrome for Testing"*) pass "no macOS focus steal from bh_open (Chrome already frontmost, unchanged)" ;;
-        *) fail "no macOS focus steal from bh_open" "frontmost $FRONT_BEFORE → $FRONT_AFTER" ;;
+        *"Chrome for Testing"*) pass "no macOS focus steal from open_tab (Chrome already frontmost, unchanged)" ;;
+        *) fail "no macOS focus steal from open_tab" "frontmost $FRONT_BEFORE → $FRONT_AFTER" ;;
       esac ;;
-    *) pass "no macOS focus steal from bh_open (frontmost: $FRONT_AFTER)" ;;
+    *) pass "no macOS focus steal from open_tab (frontmost: $FRONT_AFTER)" ;;
   esac
 else
   skip "no macOS focus steal" "frontmost not readable"
 fi
 
 out="$(hb '
-tabs = bh_list()
-bh_switch_tab(tabs[0]["targetId"])
+tabs = list_tabs()
+switch_tab(tabs[0]["targetId"])
 print("TITLE", page_info().get("title", ""))
 ')"
 grep -q "TITLE 🐴" <<<"$out" && pass "🐴 active-work mark on the driven tab" \
   || fail "🐴 active-work mark on the driven tab" "$out"
 
-hb 'cdp("Target.closeTarget", targetId=bh_list()[0]["targetId"])' >/dev/null 2>&1
+hb 'cdp("Target.closeTarget", targetId=list_tabs()[0]["targetId"])' >/dev/null 2>&1
 
-# Focus safety for the STOCK tab verbs. The vendored harness's new_tab / switch_tab / ensure_real_tab
+# Focus safety for the STOCK tab verbs. The vendored harness's open_tab / switch_tab / ensure_real_tab
 # call Target.activateTarget → [NSApp activate] → the browser steals OS focus; the horse helpers
 # override all three to be focus-safe. Drive each and assert Chrome for Testing never became the
 # frontmost app (lsappinfo works without accessibility perms; skip if it can't read a name).
@@ -188,7 +188,7 @@ fa0="$(front_app)"
 if [ -n "$fa0" ] && command -v lsappinfo >/dev/null 2>&1; then
   hb '
 import urllib.parse
-t = new_tab("data:text/html," + urllib.parse.quote("<title>hb-e2e-focus</title>x"))
+t = open_tab("data:text/html," + urllib.parse.quote("<title>hb-e2e-focus</title>x"))
 switch_tab(t)
 ensure_real_tab()
 cdp("Target.closeTarget", targetId=t)
@@ -198,10 +198,10 @@ cdp("Target.closeTarget", targetId=t)
   case "$fa1" in
     *"Chrome for Testing"*)
       case "$fa0" in
-        *"Chrome for Testing"*) pass "stock new_tab/switch_tab/ensure_real_tab don't steal OS focus (Chrome already frontmost, unchanged)" ;;
-        *) fail "stock new_tab/switch_tab/ensure_real_tab don't steal focus" "frontmost $fa0 → $fa1" ;;
+        *"Chrome for Testing"*) pass "stock open_tab/switch_tab/ensure_real_tab don't steal OS focus (Chrome already frontmost, unchanged)" ;;
+        *) fail "stock open_tab/switch_tab/ensure_real_tab don't steal focus" "frontmost $fa0 → $fa1" ;;
       esac ;;
-    *) pass "stock new_tab/switch_tab/ensure_real_tab don't steal OS focus (frontmost: $fa1)" ;;
+    *) pass "stock open_tab/switch_tab/ensure_real_tab don't steal OS focus (frontmost: $fa1)" ;;
   esac
 else
   skip "stock tab verbs don't steal focus" "lsappinfo unavailable"
@@ -225,7 +225,7 @@ for name in ("_focus", "_eval", "_center", "_keyinfo", "_key"):
     if not src.endswith(("horse_harness/input.py", "horse_input.py")):
         bad.append(name + "<-" + src)
 print("SHADOWED", ",".join(bad) if bad else "none")
-missing = [n for n in ("bh_open", "bh_list", "bh_switch_tab", "click", "type_into",
+missing = [n for n in ("open_tab", "list_tabs", "switch_tab", "click", "type_into",
                        "press", "press_hold", "drag", "solve_challenge",
                        "challenge_cleared") if n not in globals()]
 print("MISSING", ",".join(missing) if missing else "none")
@@ -249,7 +249,7 @@ html = """<title>hb-e2e-form</title>
   t.addEventListener("keyup", () => log.dataset.keyup = "1");
   b.addEventListener("click", () => log.textContent = "CLICKED:" + t.value);
 </script>"""
-tid = bh_open("data:text/html," + urllib.parse.quote(html))
+tid = open_tab("data:text/html," + urllib.parse.quote(html))
 wait_for_load()
 type_into("#t", "Horse!")
 print("ENABLED", js("!document.getElementById(\"b\").disabled"))
@@ -272,7 +272,7 @@ html = """<title>hb-e2e-scroll</title><style>
   .inner{height:100%;overflow-y:auto} .pad{height:3000px}
 </style><div class=pin><div class=inner id=sc><div class=pad>
 <div id=deep style=margin-top:2500px>DEEP</div></div></div></div>"""
-tid = bh_open("data:text/html," + urllib.parse.quote(html))
+tid = open_tab("data:text/html," + urllib.parse.quote(html))
 wait_for_load()
 for _ in range(8):
     cdp("Input.dispatchMouseEvent", type="mouseWheel", x=300, y=300, deltaX=0, deltaY=300)
@@ -306,7 +306,7 @@ window.report = function(){
   return JSON.stringify(o);
 };
 </script>"""
-tid = bh_open("data:text/html," + urllib.parse.quote(html))
+tid = open_tab("data:text/html," + urllib.parse.quote(html))
 wait_for_load()
 type_into("#t", "Hi!")
 click("#b")
@@ -346,7 +346,7 @@ document.addEventListener("mouseup", function(){
   if(down){ clearTimeout(timer); st.textContent = "released-early"; down = 0; }
 });
 </script>"""
-tid = bh_open("data:text/html," + urllib.parse.quote(html))
+tid = open_tab("data:text/html," + urllib.parse.quote(html))
 wait_for_load()
 print("DETECT", solve_challenge(act=False))
 press_hold("#px-captcha", 2)
@@ -381,7 +381,7 @@ document.addEventListener("mouseup", function(){
   down = false; ds.textContent = left >= 270 ? "slid" : "short:" + left;
 });
 </script>"""
-tid = bh_open("data:text/html," + urllib.parse.quote(html))
+tid = open_tab("data:text/html," + urllib.parse.quote(html))
 wait_for_load()
 drag("#knob", dx=320)
 print("SLIDE", js("document.getElementById(\"ds\").textContent"))
@@ -395,7 +395,7 @@ say "[6] screenshots"
 
 out="$(hb '
 import urllib.parse
-tid = bh_open("data:text/html," + urllib.parse.quote(
+tid = open_tab("data:text/html," + urllib.parse.quote(
   "<title>hb-e2e-red</title><body style=background:#f00;margin:0>"))
 wait_for_load()
 print("SHOT", capture_screenshot())
@@ -415,7 +415,7 @@ fi
 lane_shot() {  # $1 lane  $2 color-name  $3 hex
   "$HB" --lane "$1" <<PY 2>&1
 import urllib.parse
-tid = bh_open("data:text/html," + urllib.parse.quote(
+tid = open_tab("data:text/html," + urllib.parse.quote(
   "<title>hb-e2e-$2</title><body style=background:#$3;margin:0>"))
 wait_for_load()
 print("SHOT-$2", capture_screenshot())
@@ -457,7 +457,7 @@ fi
 # scenario agents actually hit; it exercises the per-target-session + screencast capture.
 vtid="$(hb '
 import urllib.parse
-v = bh_open("data:text/html," + urllib.parse.quote("<title>hb-e2e-viewer2</title>"))
+v = open_tab("data:text/html," + urllib.parse.quote("<title>hb-e2e-viewer2</title>"))
 wait_for_load(); ext_call("activateTab", v); print("VTID", v)
 ' | sed -n 's/^VTID //p' | head -1)"
 cap_worker() {  # $1 = worker index — its OWN session (distinct daemon + tab group).
@@ -467,7 +467,7 @@ cap_worker() {  # $1 = worker index — its OWN session (distinct daemon + tab g
 import struct, urllib.parse
 ok = bad = 0
 for i in range(6):
-    tid = bh_open("data:text/html," + urllib.parse.quote(
+    tid = open_tab("data:text/html," + urllib.parse.quote(
         f"<title>hb-e2e-cap$1-{i}</title><body style=background:#0a{i%9}>c{i}"))
     wait_for_load()
     p = capture_screenshot()
@@ -504,10 +504,10 @@ fi
 if hb 'print("HAS", ext_call("activeTabTargets") is not None)' | grep -q "HAS True"; then
   out="$(hb '
 import time, urllib.parse
-a = bh_open("data:text/html," + urllib.parse.quote("<title>hb-e2e-viewer</title>viewing"))
+a = open_tab("data:text/html," + urllib.parse.quote("<title>hb-e2e-viewer</title>viewing"))
 wait_for_load(); ext_call("activateTab", a); time.sleep(0.2)
 before = ext_call("activeTabTargets")
-b = bh_open("data:text/html," + urllib.parse.quote("<title>hb-e2e-agent</title><body style=background:#08f>"))
+b = open_tab("data:text/html," + urllib.parse.quote("<title>hb-e2e-agent</title><body style=background:#08f>"))
 wait_for_load()
 capture_screenshot()                       # forces b window-visible to raster, then restores
 after = ext_call("activeTabTargets")
@@ -525,7 +525,7 @@ fi
 say "[7] real websites"
 
 out="$(hb '
-tid = bh_open("https://news.ycombinator.com")
+tid = open_tab("https://news.ycombinator.com")
 wait_for_load()
 print("HN", "Hacker News" in page_info().get("title",""),
       js("document.querySelectorAll(\".athing\").length"))
@@ -536,7 +536,7 @@ grep -q "HN True" <<<"$out" && pass "HN loads with a story list ($(sed -n 's/^HN
 
 out="$(hb '
 import time
-tid = bh_open("https://duckduckgo.com")
+tid = open_tab("https://duckduckgo.com")
 wait_for_load()
 for _ in range(20):                     # SPA hydration: the box appears late
     if js("!!document.querySelector(\"#searchbox_input\")"): break
@@ -562,7 +562,7 @@ fi
 
 out="$(hb '
 import time
-tid = bh_open("https://en.wikipedia.org/wiki/Chrome_DevTools_Protocol")
+tid = open_tab("https://en.wikipedia.org/wiki/Chrome_DevTools_Protocol")
 wait_for_load()
 time.sleep(1)
 h1 = js("(document.querySelector(\"#firstHeading, h1\") || {}).textContent || \"\"") or ""
@@ -581,7 +581,7 @@ say "[8] realness / anti-bot fingerprint"
 # only Chromium + Not;A=Brand), in BOTH the sync brands and getHighEntropyValues.
 out="$(hb '
 import json
-tid = bh_open("https://example.com")
+tid = open_tab("https://example.com")
 wait_for_load()
 fp = json.loads(js("""JSON.stringify({
   webdriver: navigator.webdriver === true,
@@ -620,7 +620,7 @@ import json, urllib.parse
 html = """<title>hb-e2e-shift</title><input id=t><script>window.ev=[];
 document.getElementById(\"t\").addEventListener(\"keydown\",function(e){
   if(e.key.length===1) window.ev.push({k:e.key, s:e.shiftKey});});</script>"""
-tid = bh_open("data:text/html," + urllib.parse.quote(html))
+tid = open_tab("data:text/html," + urllib.parse.quote(html))
 wait_for_load()
 type_into("#t", "aB$3^")
 ev = {d["k"]: d["s"] for d in json.loads(js("JSON.stringify(window.ev)"))}
