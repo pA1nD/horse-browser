@@ -22,7 +22,7 @@ def _fresh_daemon():
 
 
 def test_set_session_enables_all_four_default_domains_on_new_session():
-    """Regression: switch_tab() / new_tab() in helpers.py route through the
+    """Regression: switch_tab() / open_tab() in helpers.py route through the
     `set_session` IPC, which previously only enabled Page on the new
     session. With Network disabled, wait_for_network_idle() silently stops
     receiving events after a tab switch. Initial attach enables all four

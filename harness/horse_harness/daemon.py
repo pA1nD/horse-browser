@@ -146,7 +146,7 @@ class Daemon:
         present, the daemon only ever attaches to the tab this session last drove
         (the persisted binding) — never to a neighbour's tab. No bound tab alive →
         mint a fresh about:blank and group it into the session's tab group, so a
-        raw cdp()/page_info()/js() before any bh_open still lands on OWN ground.
+        raw cdp()/page_info()/js() before any open_tab still lands on OWN ground.
         Without identity (manual/default use) the legacy first-real-page pick stays.
         """
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
@@ -213,7 +213,7 @@ class Daemon:
         """Enable Page/DOM/Runtime/Network on a CDP session.
 
         Used by both initial attach and set_session (called after switch_tab/
-        new_tab). Without this, helpers that depend on Network.* events —
+        open_tab). Without this, helpers that depend on Network.* events —
         notably wait_for_network_idle() — silently stop receiving events
         after a tab switch, because each fresh CDP session starts with all
         domains disabled.

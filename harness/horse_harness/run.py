@@ -11,48 +11,83 @@ for _stream in (sys.stdout, sys.stderr):
 
 from .lifecycle import ensure_daemon, restart_daemon, daemon_alive
 from .helpers import *
-from .input import *
 
 
-def _load_agent_helpers():
-    """Load the operator's workspace agent_helpers.py into this namespace.
+# Three tiers of verbs, loaded lowest-precedence first (later wins on a name clash):
+#   core     — helpers.py (the wildcard import above)
+#   plugins  — <workspace>/plugins/*.py, sorted
+#   local    — <workspace>/agent_helpers.py, LAST, so the operator's own file always wins.
+# The broker's security lives in the daemon (origin-checked, policy-gated at the socket), not in the
+# Python verb, so letting local shadow anything is safe — worst case it breaks its own convenience.
+# NB precedence is ENTRY-POINT scoped: overriding e.g. `cdp` changes what the agent's script calls,
+# but a core verb that calls `cdp` internally still uses helpers.py's own. `verbs --json` shows shadows.
+_VERB_SOURCES = {}   # name -> "core" | "plugin:<file>" | "local"
+_VERB_FILES = {}     # name -> absolute source path
+_VERB_SHADOWS = {}   # name -> [tiers it shadowed], so overriding a core/plugin verb is visible
 
-    The workspace file was written against the ambient-namespace world (it calls
-    cdp/type_into/bh_open without imports, and may `import browser_harness.*`), so:
-    seed its namespace with every public helper first, alias browser_harness ->
-    horse_harness in sys.modules, and never let a broken workspace file take down
-    the CLI — warn and continue instead."""
-    from .helpers import AGENT_WORKSPACE
-    p = AGENT_WORKSPACE / "agent_helpers.py"
-    if not p.exists():
-        return
+
+def _exec_into_globals(path, tier):
+    """Exec a workspace/plugin file in a namespace seeded with the CURRENT globals (so each file
+    sees core + everything loaded before it), then copy its public names back — later files win.
+    Never raise: a broken file warns to stderr and is skipped, never taking down the CLI."""
     import types
+    module = types.ModuleType("horse_harness_ext")
+    module.__file__ = str(path)
+    module.__dict__.update({n: v for n, v in globals().items() if not n.startswith("_")})
+    seeded = dict(module.__dict__)   # snapshot the seed so we can tell what THIS file introduces
+    try:
+        exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), module.__dict__)
+    except Exception as e:
+        print(f"horse-harness: {path.name} failed to load ({e!r}) — fix or remove {path}",
+              file=sys.stderr)
+        return
+    for name, value in vars(module).items():
+        if name.startswith("_") or (name in seeded and seeded[name] is value):
+            continue                 # unchanged seed (a core verb / stdlib import) — leave its tier
+        globals()[name] = value
+        if getattr(value, "__code__", None) is None or getattr(value, "_renamed_to", None):
+            continue   # not a verb (import/class/const), or a deprecated alias — callable but not listed
+        if name in _VERB_SOURCES and _VERB_SOURCES[name] != tier:
+            _VERB_SHADOWS.setdefault(name, []).append(_VERB_SOURCES[name])   # this file shadows an earlier tier
+        _VERB_SOURCES[name] = tier   # tags functions defined here AND re-exports/aliases (screenshot = capture_screenshot)
+        _VERB_FILES[name] = str(path)
+
+
+def _load_workspace():
+    """Load the plugin tier then the local tier onto the core verbs already imported.
+
+    The files were written against the ambient-namespace world (they call cdp/type_into/open_tab
+    without imports, and may `import browser_harness.*`), so alias browser_harness -> horse_harness
+    in sys.modules; each file's namespace is seeded with every public helper by _exec_into_globals."""
+    from .helpers import AGENT_WORKSPACE
     import horse_harness
     from . import helpers as _helpers_mod, _ipc as _ipc_mod
     sys.modules.setdefault("browser_harness", horse_harness)
     sys.modules.setdefault("browser_harness.helpers", _helpers_mod)
     sys.modules.setdefault("browser_harness._ipc", _ipc_mod)
-    module = types.ModuleType("horse_harness_agent_helpers")
-    module.__file__ = str(p)
-    module.__dict__.update({n: v for n, v in globals().items() if not n.startswith("_")})
-    try:
-        exec(compile(p.read_text(encoding="utf-8"), str(p), "exec"), module.__dict__)
-    except Exception as e:
-        print(f"horse-harness: workspace agent_helpers.py failed to load ({e!r}) — "
-              f"fix or remove {p}", file=sys.stderr)
-        return
-    for name, value in vars(module).items():
-        if not name.startswith("_"):
-            globals()[name] = value
+    # tag the core verbs already present from the two wildcard imports above
+    for name, value in list(globals().items()):
+        if name.startswith("_") or not callable(value):
+            continue
+        if getattr(value, "__module__", "") == "horse_harness.helpers" and not getattr(value, "_renamed_to", None):
+            _VERB_SOURCES.setdefault(name, "core")   # skip deprecated aliases — they warn+forward, not listed
+            _VERB_FILES.setdefault(name, getattr(sys.modules.get(value.__module__), "__file__", "") or "")
+    plugins = AGENT_WORKSPACE / "plugins"
+    if plugins.is_dir():
+        for p in sorted(plugins.glob("*.py")):
+            _exec_into_globals(p, f"plugin:{p.name}")
+    local = AGENT_WORKSPACE / "agent_helpers.py"
+    if local.exists():
+        _exec_into_globals(local, "local")
 
 
-_load_agent_helpers()
+_load_workspace()
 
 HELP = """horse-harness (vendored browser-harness core)
 
 Typical usage:
   horse-browser <<'PY'
-  tid = bh_open("https://example.com")
+  tid = open_tab("https://example.com")
   print(page_info())
   PY
 
@@ -100,9 +135,35 @@ def _doctor():
     return 0
 
 
+def _print_verbs(as_json):
+    """`horse-browser verbs [--json]` — every loaded verb with its tier + first docstring line."""
+    import json, inspect
+    rows = []
+    for name in sorted(_VERB_SOURCES):
+        fn = globals().get(name)
+        if not callable(fn):
+            continue
+        try:
+            sig = str(inspect.signature(fn))
+        except (ValueError, TypeError):
+            sig = "(...)"
+        doc = (inspect.getdoc(fn) or "").strip().splitlines()
+        rows.append({"name": name, "tier": _VERB_SOURCES[name], "file": _VERB_FILES.get(name, ""),
+                     "signature": sig, "doc": doc[0].strip() if doc else "",
+                     "shadows": _VERB_SHADOWS.get(name, [])})
+    if as_json:
+        print(json.dumps(rows))
+    else:
+        for r in rows:
+            print(f"{r['tier']:20} {r['name']}{r['signature']}")
+
+
 def _run(args):
     if args and args[0] in {"-h", "--help"}:
         print(HELP)
+        return
+    if args and args[0] == "verbs":
+        _print_verbs("--json" in args)
         return
     if args and args[0] in {"--doctor", "doctor"}:
         sys.exit(_doctor())

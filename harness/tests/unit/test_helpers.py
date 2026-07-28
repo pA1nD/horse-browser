@@ -29,28 +29,37 @@ def test_max_dim_default_is_no_resize(fake_png):
     assert _run(fake_png, 4592, 2286) == (4592, 2286)
 
 
-def _seed_skill(tmp_path):
-    site = tmp_path / "domain-skills" / "example"
+def test_registrable_host_normalizes_to_domain_tld():
+    assert helpers._registrable_host("https://mail.google.com/x?y=1") == "google.com"
+    assert helpers._registrable_host("http://www.example.com/") == "example.com"
+    assert helpers._registrable_host("https://example.com") == "example.com"
+    assert helpers._registrable_host("http://localhost:3000/") == "localhost"
+
+
+def _reset_skill_state(tmp_path, monkeypatch, session):
+    monkeypatch.setattr(helpers, "AGENT_WORKSPACE", tmp_path)
+    monkeypatch.setattr(helpers.ipc, "_TMP", tmp_path)
+    monkeypatch.setenv("BU_NAME", session)
+    helpers._hb_skill_state = None
+
+
+def test_skill_hint_announces_existing_skill_on_first_visit(tmp_path, monkeypatch):
+    _reset_skill_state(tmp_path, monkeypatch, "s1")
+    site = tmp_path / "domain-skills" / "example.com"
     site.mkdir(parents=True)
     (site / "scraping.md").write_text("hi")
+    first = helpers._hb_skill_hint("https://www.example.com/")
+    assert first and "site skill" in first[0] and "scraping.md" in first[0]
+    assert helpers._hb_skill_hint("https://example.com/other") == []   # deduped after
 
 
-def test_goto_url_omits_domain_skills_by_default(tmp_path, monkeypatch):
-    monkeypatch.delenv("BH_DOMAIN_SKILLS", raising=False)
-    monkeypatch.setattr(helpers, "AGENT_WORKSPACE", tmp_path)
-    _seed_skill(tmp_path)
-    with patch("horse_harness.helpers.cdp", return_value={"frameId": "f"}):
-        result = helpers.goto_url("https://www.example.com/")
-    assert result == {"frameId": "f"}
-
-
-def test_goto_url_includes_domain_skills_when_enabled(tmp_path, monkeypatch):
-    monkeypatch.setenv("BH_DOMAIN_SKILLS", "1")
-    monkeypatch.setattr(helpers, "AGENT_WORKSPACE", tmp_path)
-    _seed_skill(tmp_path)
-    with patch("horse_harness.helpers.cdp", return_value={"frameId": "f"}):
-        result = helpers.goto_url("https://www.example.com/")
-    assert result == {"frameId": "f", "domain_skills": ["scraping.md"]}
+def test_skill_hint_nudges_after_third_visit_when_absent(tmp_path, monkeypatch):
+    _reset_skill_state(tmp_path, monkeypatch, "s2")
+    assert helpers._hb_skill_hint("https://acme.io/a") == []
+    assert helpers._hb_skill_hint("https://acme.io/b") == []
+    third = helpers._hb_skill_hint("https://www.acme.io/c")
+    assert third and "no site skill for acme.io" in third[0]
+    assert helpers._hb_skill_hint("https://acme.io/d") == []           # once only
 
 
 def test_page_info_raises_clear_error_on_js_exception():
@@ -77,92 +86,6 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
-# --- fill_input ---
-
-def test_fill_input_focuses_types_and_fires_events():
-    cdp_calls = []
-    js_calls = []
-
-    def fake_cdp(method, **kwargs):
-        cdp_calls.append((method, kwargs))
-        return {}
-
-    def fake_js(expr, **kwargs):
-        js_calls.append(expr)
-        return True  # focus call must return True (element found)
-
-    with patch("horse_harness.helpers.cdp", side_effect=fake_cdp), \
-         patch("horse_harness.helpers.js", side_effect=fake_js):
-        helpers.fill_input("#my-input", "hello")
-
-    assert any("#my-input" in e for e in js_calls)
-    key_downs = [m for m, _ in cdp_calls if m == "Input.dispatchKeyEvent"]
-    assert len(key_downs) > 0
-    assert any("input" in e and "change" in e for e in js_calls)
-
-
-def test_fill_input_raises_when_element_not_found():
-    def fake_js(expr, **kwargs):
-        return False  # element not found
-
-    with patch("horse_harness.helpers.js", side_effect=fake_js):
-        with pytest.raises(RuntimeError, match="element not found"):
-            helpers.fill_input("#missing", "hello")
-
-
-def test_fill_input_clear_first_sends_select_all_then_backspace():
-    import sys
-
-    key_events = []
-
-    def fake_cdp(method, **kwargs):
-        if method == "Input.dispatchKeyEvent":
-            key_events.append(kwargs)
-        return {}
-
-    def fake_js(expr, **kwargs):
-        return True  # element found
-
-    with patch("horse_harness.helpers.cdp", side_effect=fake_cdp), \
-         patch("horse_harness.helpers.js", side_effect=fake_js):
-        helpers.fill_input("#inp", "x", clear_first=True)
-
-    # The "a" must be dispatched with the platform-correct modifier (Meta=4 on
-    # macOS, Ctrl=2 elsewhere). Without the modifier, the field would never get
-    # selected — it would just receive a literal "a".
-    expected_mod = 4 if sys.platform == "darwin" else 2
-    a_events = [e for e in key_events if e.get("key") == "a"]
-    assert a_events, "expected an 'a' key event for select-all"
-    assert all(e.get("modifiers") == expected_mod for e in a_events), \
-        f"select-all 'a' must carry modifiers={expected_mod}; got {[e.get('modifiers') for e in a_events]}"
-
-    # Crucial: no `char` event for the "a" — emitting one makes Chrome treat
-    # Cmd/Ctrl+A as a printable letter instead of a shortcut.
-    assert not any(e.get("type") == "char" and e.get("text") == "a" for e in key_events), \
-        "select-all must not emit a 'char' event with text='a' (would cancel the shortcut)"
-
-    # Backspace still fires (via press_key, which uses keyDown).
-    keys_down = [e.get("key") for e in key_events if e.get("type") in ("keyDown", "rawKeyDown")]
-    assert "Backspace" in keys_down
-
-
-def test_fill_input_no_clear_skips_ctrl_a():
-    key_events = []
-
-    def fake_cdp(method, **kwargs):
-        if method == "Input.dispatchKeyEvent":
-            key_events.append(kwargs)
-        return {}
-
-    def fake_js(expr, **kwargs):
-        return True  # element found
-
-    with patch("horse_harness.helpers.cdp", side_effect=fake_cdp), \
-         patch("horse_harness.helpers.js", side_effect=fake_js):
-        helpers.fill_input("#inp", "x", clear_first=False)
-
-    keys_seen = [e.get("key") for e in key_events if e.get("type") == "keyDown"]
-    assert "Backspace" not in keys_seen
 
 
 # --- wait_for_element ---
