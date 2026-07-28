@@ -93,7 +93,10 @@ fi
 # agent_helpers.py — retire all of that so stale copies can't shadow the packaged
 # versions. Everything the user keeps in agent_helpers.py is preserved byte-for-byte
 # (the harness still loads that file and pre-seeds it with every public helper).
-LOADER_MARKER="# >>> horse-browser: open_tab helpers (managed loader — do not edit) >>>"
+# NB: this marker is a HISTORICAL fingerprint of the stub shipped by past versions (≤0.9.2
+# wrote it as "bh_open helpers") — it must match what's on disk in the wild, so DON'T rename it
+# when verbs are renamed, or upgrades stop stripping the old stub.
+LOADER_MARKER="# >>> horse-browser: bh_open helpers (managed loader — do not edit) >>>"
 migrate_workspace() {
   local ws="$1" dst="$1/agent_helpers.py"
   [ -d "$ws" ] || return 0
@@ -104,8 +107,8 @@ import re, sys
 p = sys.argv[1]
 text = open(p).read()
 pat = re.compile(
-    r"\n*# >>> horse-browser: open_tab helpers \(managed loader — do not edit\) >>>"
-    r".*?# <<< horse-browser: open_tab helpers <<<\n*",
+    r"\n*# >>> horse-browser: bh_open helpers \(managed loader — do not edit\) >>>"
+    r".*?# <<< horse-browser: bh_open helpers <<<\n*",
     re.S)
 new = pat.sub("\n\n", text, count=1).strip("\n")
 if new != text:
