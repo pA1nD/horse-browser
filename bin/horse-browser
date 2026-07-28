@@ -647,6 +647,49 @@ except Exception:
 PY
 }
 
+# reap_stale_runtime: GC the per-session runtime files (pid/sock/lock/port) left by daemons that
+# died UNCLEANLY (SIGKILL, crash, a chaos test, a killed parent). A clean shutdown unlinks its own
+# PID, but an unclean death leaves the set — and session names are UNIQUE (hb-<hash>, hb-<pid>-lane,
+# test names), so lifecycle's same-name cleanup never fires and they pile up forever (observed 53
+# stale sets over 4 days). Only removes a set whose .pid process is PROVABLY DEAD; a live daemon's
+# files (kill -0 succeeds — including a recycled PID, kept conservatively) are never touched. Bare
+# "bu.*" files (BH_RUNTIME_DIR-isolated daemons that own their whole dir) don't match "bu-*".
+reap_stale_runtime() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - <<'PY' || true
+import os, sys, glob, time
+dry = bool(os.environ.get("HORSE_BROWSER_REAP_DRYRUN"))
+rt = os.environ.get("BH_RUNTIME_DIR")
+rt = os.path.expanduser(rt) if rt else os.path.expanduser("~/.config/browser-harness/runtime")
+def alive(pid):
+    try: os.kill(int(pid), 0); return True
+    except Exception: return False
+def rm(f):
+    if os.path.exists(f) and not dry:
+        try: os.unlink(f)
+        except OSError: pass
+sets = 0; have_pid = set()
+# 1) a bu-*.pid whose process is dead -> drop the whole set
+for pidf in glob.glob(os.path.join(rt, "bu-*.pid")):
+    stem = pidf[:-4]; have_pid.add(stem)
+    try: pid = open(pidf).read().strip()
+    except Exception: continue
+    if not pid or alive(pid): continue
+    for ext in (".pid", ".sock", ".lock", ".port"): rm(stem + ext)
+    sets += 1
+# 2) an orphan sock/lock/port with no .pid sibling, older than the reap interval (never mid-spawn)
+cutoff = time.time() - 300
+for f in glob.glob(os.path.join(rt, "bu-*")):
+    if f.endswith(".pid") or f.rsplit(".", 1)[0] in have_pid: continue
+    try:
+        if os.path.getmtime(f) < cutoff: rm(f)
+    except OSError: pass
+if sets:
+    print("horse-browser: %s %d stale daemon runtime set(s)" % ("would reap" if dry else "reaped", sets),
+          file=sys.stderr, flush=True)
+PY
+}
+
 # maybe_reap: run reap_orphan_daemons at most once per interval (cheap stamp-file throttle),
 # so it costs nothing on the hot path. HORSE_BROWSER_NO_REAP=1 disables it entirely.
 maybe_reap() {
@@ -659,6 +702,7 @@ maybe_reap() {
   echo "$now" > "$stamp" 2>/dev/null || true
   reap_orphan_daemons
   reap_orphan_tabs
+  reap_stale_runtime
 }
 
 # recycle_daemons: after a browser (re)launch, every harness daemon pinned to our
