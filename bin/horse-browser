@@ -741,8 +741,11 @@ PY
 )"
   fi
   ver="${ver:-?}"
+  # `|| true` is load-bearing: with the browser DOWN, curl fails, pipefail hands that status to
+  # the assignment, and set -e kills the command before it prints anything — `status` went
+  # silent and `update` stopped applying, in exactly the situation you run them for.
   running="$(curl -s "http://127.0.0.1:$PORT/json/version" 2>/dev/null \
-             | grep -oE '"Browser": *"[^"]*"' | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1)"
+             | grep -oE '"Browser": *"[^"]*"' | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1 || true)"
   echo "horse-browser $ver"
   printf '  %-18s %s\n' "chrome (pinned)"  "$(_chrome_ver "$BIN")"
   if cdp_up; then printf '  %-18s %s  (live on :%s)\n' "chrome (running)" "${running:-?}" "$PORT"
@@ -838,8 +841,11 @@ PY
   fi
   # Apply it: restart onto the latest, unless the browser is already running that version.
   local running
+  # `|| true` is load-bearing: with the browser DOWN, curl fails, pipefail hands that status to
+  # the assignment, and set -e kills the command before it prints anything — `status` went
+  # silent and `update` stopped applying, in exactly the situation you run them for.
   running="$(curl -s "http://127.0.0.1:$PORT/json/version" 2>/dev/null \
-             | grep -oE '"Browser": *"[^"]*"' | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1)"
+             | grep -oE '"Browser": *"[^"]*"' | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1 || true)"
   if [ "$running" = "$newver" ]; then echo "horse-browser: already running $newver — nothing to apply."; return 0; fi
   echo "horse-browser: restarting onto ${newver}…"
   # Profile-scoped restart via the relaunch machinery (tabs preserved, single-flight

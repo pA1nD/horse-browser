@@ -67,6 +67,14 @@ out="$("$HB" status 2>&1)"
 grep -q "chrome (running)" <<<"$out" && grep -q "live on :$PORT" <<<"$out" \
   && pass "status reports a live browser" || fail "status reports a live browser" "$out"
 
+# …and reports a DOWN browser instead of dying silently. It used to: curl fails, pipefail
+# hands that to the assignment, set -e kills the command before its first line — so the one
+# command you run when things look broken printed nothing and exited 1.
+out="$(HORSE_BROWSER_PORT="$(_hb_free_port)" "$HB" status 2>&1)"; rc=$?
+[ "$rc" = 0 ] && grep -q "chrome (running)   down" <<<"$out" \
+  && pass "status reports a down browser (no silent set -e exit)" \
+  || fail "status reports a down browser (no silent set -e exit)" "rc=$rc out=${out:-<empty>}"
+
 t0=$(date +%s); "$HB" >/dev/null 2>&1; t1=$(date +%s)
 [ $((t1 - t0)) -le 3 ] && pass "hot no-op is fast ($((t1-t0))s)" \
   || fail "hot no-op is fast" "took $((t1-t0))s"
