@@ -19,11 +19,35 @@ s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.clos
 PY
 }
 
+# Resolve a Chrome binary WITHOUT depending on the machine's horse-browser setup, so the
+# suites run on a box where horse-browser was never installed (CI, shipmate, a fresh clone).
+# Order: HORSE_BROWSER_BIN (explicit) → the user's config (fast path, no download) → a
+# test-owned cache at ~/.cache/horse-browser-tests, fetched once via @puppeteer/browsers
+# and reused forever. The extension needs nothing: the launcher falls back to the repo's own.
+_hb_test_browser() {
+  [ -n "${HORSE_BROWSER_BIN:-}" ] && return 0
+  local cfg="$HOME/.config/horse-browser/config" bin
+  bin="$(sed -n 's/^BROWSER_BIN=//p' "$cfg" 2>/dev/null | tr -d '"' | head -1)"
+  [ -x "$bin" ] && return 0   # launcher will read the config itself
+  local cache="${HB_TEST_BROWSER_CACHE:-$HOME/.cache/horse-browser-tests}"
+  bin="$(ls -d "$cache"/chrome/*/chrome-*/"Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" 2>/dev/null | sort | tail -1)"
+  if [ ! -x "$bin" ]; then
+    command -v npx >/dev/null 2>&1 || { echo "isolate: no configured browser and no npx to fetch one — set HORSE_BROWSER_BIN" >&2; return 1; }
+    echo "isolate: no configured browser — fetching Chrome for Testing into $cache (one-time, ~170MB)…" >&2
+    local out; out="$(npx -y @puppeteer/browsers install chrome@stable --path "$cache")" || return 1
+    bin="$(printf '%s\n' "$out" | grep '^chrome@' | tail -1 | sed 's/^[^ ]* //')"
+    [ -x "$bin" ] || { echo "isolate: Chrome fetch did not yield an executable" >&2; return 1; }
+  fi
+  export HORSE_BROWSER_BIN="$bin"
+  echo "isolate: using test-cache browser ($bin)" >&2
+}
+
 hb_isolate() {
   if [ "${HB_ISOLATE:-1}" = "0" ]; then
     echo "isolate: DISABLED (HB_ISOLATE=0) — running against the live/config instance" >&2
     return 0
   fi
+  _hb_test_browser || return 1
   local port; port="$(_hb_free_port)"
   [ -n "$port" ] && [ "$port" != 0 ] || { echo "isolate: could not find a free port" >&2; return 1; }
   HB_ISO_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/hb-iso.XXXXXX")"
