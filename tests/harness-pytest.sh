@@ -11,13 +11,29 @@ PY="$ROOT/harness/.venv/bin/python"
 
 "$ROOT/bin/horse-browser" harness-setup >/dev/null
 
-# pytest is the pyproject's optional [test] extra, not a runtime dep — install on demand.
-if ! "$PY" -m pytest --version >/dev/null 2>&1; then
-  if command -v uv >/dev/null 2>&1; then
-    uv pip install --quiet --python "$PY" pytest
-  else
-    "$PY" -m pip install --quiet pytest
-  fi
+# The test deps are the pyproject's optional [test] extra, not runtime deps: the venv
+# deliberately holds only cdp-use/websockets, because the harness package itself is imported
+# over PYTHONPATH so an npm update can swap the code in place with no reinstall.
+#
+# Read the list FROM pyproject instead of naming packages here, and install UNCONDITIONALLY.
+# Both matter, and the old code got both wrong: it hardcoded "pytest" and skipped the install
+# whenever pytest already imported — so pillow (added to the extra later) was never installed.
+# A machine that happened to have pillow passed; a fresh export failed collection for the whole
+# suite on conftest's `from PIL import Image`. Installing is a fast no-op when satisfied, and is
+# allowed to fail so an offline box with the deps present still runs.
+extras="$(python3 - "$ROOT/harness/pyproject.toml" <<'PY'
+import re, sys
+try: src = open(sys.argv[1]).read()
+except OSError: src = ""
+m = re.search(r'^\s*test\s*=\s*\[([^\]]*)\]', src, re.M)
+print(" ".join(re.findall(r'"([^"]+)"', m.group(1))) if m else "pytest pillow")
+PY
+)"
+# shellcheck disable=SC2086
+if command -v uv >/dev/null 2>&1; then
+  uv pip install --quiet --python "$PY" $extras || true
+else
+  "$PY" -m pip install --quiet $extras || true
 fi
 
 exec "$PY" -m pytest "$ROOT/harness/tests" -q
