@@ -575,19 +575,25 @@ setInterval(() => {
 
 (async () => {
   layout();
+  // Armed BEFORE the first resolution attempt, not after the last: the launcher can write the
+  // port in the window between a storage read and the end of the loop, and that seed is the
+  // only way a browser on a port outside the fallback sweep ever becomes findable.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.hbCdpPort && !CDP) location.reload();
+  });
   let ok = false;
   for (let i = 0; i < 60 && !ok; i++) {
     try { await connect(); ok = true; }
     catch { statTabs.textContent = "…"; await new Promise((r) => setTimeout(r, 1000)); }
   }
-  // Giving up for good would be wrong: the launcher re-seeds the port (next launch, or its
-  // throttled sweep), and a browser on a port outside the fallback range only ever becomes
-  // findable that way. Wait for the seed instead of leaving a permanently blank wall.
+  // Say WHY the wall is blank rather than looking like an idle browser — and keep waiting:
+  // the listener above reloads us the moment the launcher seeds this browser's port.
   if (!ok) {
     statTabs.textContent = "—";
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === "local" && changes.hbCdpPort) location.reload();
-    });
+    emptyEl.querySelector(".empty-title").textContent = "Waiting for this browser's port";
+    emptyEl.querySelector(".empty-sub").textContent =
+      "Run `horse-browser` against this browser — the launcher tells the extension which debug port it lives on.";
+    emptyEl.hidden = false;
     return;
   }
   ws.onclose = () => setTimeout(() => location.reload(), 1500); // browser restart → reconnect

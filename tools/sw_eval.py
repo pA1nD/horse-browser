@@ -68,23 +68,15 @@ def ws_recv(s):
     return rd(ln)
 
 
-def service_workers(port, wait_s=0):
-    """Every extension service-worker target in that browser. An MV3 worker can be asleep
-    or still registering right after launch, so callers that need one may wait for it."""
-    deadline = time.monotonic() + max(0, wait_s)
-    while True:
-        try:
-            out = [t for t in http_json(port, "/json/list")
-                   if t.get("type") == "service_worker"
-                   and t.get("url", "").startswith("chrome-extension://")
-                   and t.get("webSocketDebuggerUrl")]
-            if out:
-                return out
-        except Exception:
-            pass
-        if time.monotonic() >= deadline:
-            return []
-        time.sleep(0.5)
+def service_workers(port):
+    """Every extension service-worker target in that browser, ours or not."""
+    try:
+        return [t for t in http_json(port, "/json/list")
+                if t.get("type") == "service_worker"
+                and t.get("url", "").startswith("chrome-extension://")
+                and t.get("webSocketDebuggerUrl")]
+    except Exception:
+        return []
 
 
 # The operator's profile can carry OTHER extensions (a password manager, an ad blocker),
@@ -115,13 +107,21 @@ def _eval_on(port, ws_url, expr, timeout):
 def evaluate(port, expr, wait_s=0, timeout=8):
     """Evaluate `expr` in the horse-browser extension's service worker; return its value
     (None on any failure — every caller here is best-effort and must never break the
-    launcher, and None is also what a browser without our extension yields)."""
-    for sw in service_workers(port, wait_s):
-        val = _eval_on(port, sw["webSocketDebuggerUrl"], expr, timeout)
-        if val is None or val == _NOT_MINE:
-            continue                        # unreachable, or somebody else's extension
-        return val
-    return None
+    launcher, and None is also what a browser without our extension yields).
+
+    `wait_s` waits for OUR worker, not for any worker: an MV3 worker can still be
+    registering right after launch, and a profile with other extensions would otherwise
+    satisfy the wait with a stranger's worker on the first poll and give up."""
+    deadline = time.monotonic() + max(0, wait_s)
+    while True:
+        for sw in service_workers(port):
+            val = _eval_on(port, sw["webSocketDebuggerUrl"], expr, timeout)
+            if val is None or val == _NOT_MINE:
+                continue                    # unreachable, or somebody else's extension
+            return val
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":

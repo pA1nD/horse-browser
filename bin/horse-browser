@@ -158,7 +158,15 @@ cdp_up() { curl -sf "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
 # Stamp of the last GPU-process kill, for the backoff above. Keyed to the profile, like
 # HB_LOCK below: the backoff is about ONE browser's crash count, so a sibling instance's
 # heal must not make us skip our own kill (or escalate to a needless relaunch).
+# Adopt the pre-0.9.7 global stamp once, so an upgrade landing inside the backoff window
+# still sees the kill that just happened instead of stacking a second one.
 HEAL_STAMP="${PROFILE%/}.last-heal"
+# Only the default profile inherits it: the global stamp can only ever have belonged to the
+# one browser that existed before, and a disposable test profile must not swallow it.
+if [ "$PROFILE" = "$HOME/.config/horse-browser/profile" ] \
+   && [ ! -f "$HEAL_STAMP" ] && [ -f "$HOME/.config/horse-browser/.last-heal" ]; then
+  mv "$HOME/.config/horse-browser/.last-heal" "$HEAL_STAMP" 2>/dev/null || true
+fi
 
 # heal_log <event> [k=v …]: one tab-separated line per incident, with enough context
 # (time since wake, process ages, trigger details) to understand over time WHY the
@@ -677,7 +685,7 @@ maybe_reap() {
   reap_orphan_daemons
   reap_orphan_tabs
   reap_stale_runtime
-  seed_instance_env 3   # re-assert the port for a browser that was already up (e.g. across an upgrade)
+  seed_instance_env   # re-assert the port for a browser that was already up (e.g. across an upgrade)
 }
 
 # recycle_daemons: after a browser (re)launch, every harness daemon pinned to our

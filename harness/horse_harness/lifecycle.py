@@ -93,7 +93,12 @@ def _endpoint_key(url):
     resolved `ws://127.0.0.1:9223/devtools/browser/<id>` all name the SAME browser — only the
     port tells two instances apart. Comparing raw strings would restart a healthy daemon over
     a spelling difference, and a client that alternates BU_CDP_URL / BU_CDP_WS would restart
-    it on every call."""
+    it on every call.
+
+    The limit of that identity: a REMOTE grid multiplexing several browsers behind one
+    host:port (distinct ws paths) reads as one browser here. horse-browser always drives a
+    local browser it launched itself, so that case never arises through it — and it reuses
+    the daemon exactly as it did before this guard existed."""
     if not url:
         return None
     u = urlsplit(url if "//" in url else "//" + url)

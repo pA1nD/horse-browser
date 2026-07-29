@@ -43,7 +43,7 @@ printf '<title>instance B</title><h1>B</h1>' > "$PAGE_B"
 SID="hbmulti-$$"
 cleanup() {
   for p in $(pgrep -f "horse_harness.daemon" 2>/dev/null || true); do
-    ps eww -o command= -p "$p" 2>/dev/null | tr ' ' '\n' | grep -q "^HORSE_SESSION=$SID" \
+    ps eww -o command= -p "$p" 2>/dev/null | tr ' ' '\n' | grep -q "^HORSE_SESSION=$SID-" \
       && kill "$p" 2>/dev/null
   done
   for prof in "$PROF_A" "$PROF_B"; do
@@ -58,7 +58,7 @@ trap cleanup EXIT
 run() {
   local port="$1" prof="$2"; shift 2
   HORSE_BROWSER_PORT="$port" HORSE_BROWSER_PROFILE="$prof" \
-  HORSE_SESSION="$SID-$port" "$HB" "$@"
+  HORSE_SESSION="$SID-x$$p$port" "$HB" "$@"
 }
 # sw <port> <expr>: evaluate in that instance's extension service worker.
 sw() { python3 "$REPO/tools/sw_eval.py" "$1" "$2" 5 2>/dev/null; }
@@ -153,9 +153,10 @@ fi
 # shedding the inherited session id; the guard makes it correct instead of merely avoided.)
 printf '<title>shared 1</title>' > "$ROOT_DIR/s1.html"
 printf '<title>shared 2</title>' > "$ROOT_DIR/s2.html"
-# BU_NAME is derived from the text after the session's LAST dash, so the tail has to be
-# unique too — "…-shared" would make every run of this suite claim the daemon named hb-shared.
-SHARED="$SID-s$PORT_A"
+# BU_NAME is derived from the text after the session's LAST dash, so the tail carries the pid
+# too — a bare "…-shared" would make every run claim the daemon named hb-shared, and a bare
+# port would collide with any unrelated daemon whose session happens to end in that number.
+SHARED="$SID-x$$s$PORT_A"
 HORSE_BROWSER_PORT="$PORT_A" HORSE_BROWSER_PROFILE="$PROF_A" HORSE_SESSION="$SHARED" \
   "$HB" <<<"open_tab('file://$ROOT_DIR/s1.html')" >/dev/null 2>&1
 HORSE_BROWSER_PORT="$PORT_B" HORSE_BROWSER_PROFILE="$PROF_B" HORSE_SESSION="$SHARED" \
@@ -174,6 +175,7 @@ fi
 # Monitor must sit blank rather than screencast B's tabs. Without the nonce proof this is the
 # original bug with extra steps, and every other check here would still pass.
 sw "$PORT_A" "chrome.storage.local.set({hbCdpPort:$PORT_B}).then(()=>1)" >/dev/null
+wrote="$(sw "$PORT_A" "chrome.storage.local.get('hbCdpPort').then(o=>String(o.hbCdpPort))")"
 monitor "$PORT_A" "setTimeout(()=>location.reload(),0)" >/dev/null 2>&1
 lied=""
 for _ in $(seq 1 12); do
@@ -181,10 +183,12 @@ for _ in $(seq 1 12); do
   lied="$(monitor "$PORT_A" "JSON.stringify({cdp:CDP,ws:ws?ws.readyState:null})")"
   [[ "$lied" == *"$PORT_B"* ]] && break
 done
-if [[ "$lied" != *"$PORT_B"* ]]; then
+# The lie has to have LANDED and the Monitor has to still be answering, or "it didn't attach
+# to B" would pass for the boring reasons (write failed / page dead) instead of the real one.
+if [ "$wrote" = "$PORT_B" ] && [[ "$lied" == *'"cdp"'* ]] && [[ "$lied" != *"$PORT_B"* ]]; then
   pass "a seed pointing at another browser is refused (proof beats hint)"
 else
-  fail "a seed pointing at another browser is refused (proof beats hint)" "A=$lied"
+  fail "a seed pointing at another browser is refused (proof beats hint)" "seed=$wrote A=$lied"
 fi
 sw "$PORT_A" "chrome.storage.local.set({hbCdpPort:$PORT_A}).then(()=>1)" >/dev/null
 
@@ -198,7 +202,7 @@ fi
 # ── [8] source guard: per-instance launcher state derives from the profile ───
 # A global path here means two instances clobber each other: a concurrent relaunch reopens
 # the wrong browser's tabs, and one instance's GPU heal corrupts the other's kill backoff.
-bad="$(grep -nE '\$HOME/\.config/horse-browser/\.(relaunch-tabs\.json|last-heal)' "$HB" || true)"
+bad="$(grep -nE '\$HOME/\.config/horse-browser/\.(relaunch-tabs\.json|last-reap)|HEAL_STAMP="\$HOME' "$HB" || true)"
 if [ -z "$bad" ]; then
   pass "relaunch-tabs + heal + reap stamps are keyed to the profile, not global"
 else
