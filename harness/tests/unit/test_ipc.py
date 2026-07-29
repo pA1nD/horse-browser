@@ -153,3 +153,26 @@ def test_singleton_lock_is_per_name(tmp_path, monkeypatch):
     b = _ipc.singleton_lock("name-b")
     assert a not in (None, True) and b not in (None, True)
     a.close(); b.close()
+
+
+# --- endpoint(): which browser is the live daemon pinned to? ---
+
+def test_endpoint_returns_the_daemons_frozen_endpoint(monkeypatch):
+    _patch_identify_response(monkeypatch, {"pong": True, "pid": 1, "endpoint": "http://127.0.0.1:9224"})
+
+    assert ipc.endpoint("default", timeout=0.0) == "http://127.0.0.1:9224"
+
+
+def test_endpoint_returns_none_for_a_daemon_that_doesnt_report_one(monkeypatch):
+    """Pre-upgrade daemons reply {pong, pid} only. None means UNKNOWN — callers
+    must not read it as a mismatch and restart a perfectly healthy daemon."""
+    _patch_identify_response(monkeypatch, {"pong": True, "pid": 1})
+
+    assert ipc.endpoint("default", timeout=0.0) is None
+
+
+def test_endpoint_rejects_non_string_and_empty_payloads(monkeypatch):
+    for payload in ({"pong": True, "endpoint": 9224}, {"pong": True, "endpoint": ""},
+                    {"pong": False, "endpoint": "http://127.0.0.1:9224"}, [1, 2], None):
+        _patch_identify_response(monkeypatch, payload)
+        assert ipc.endpoint("default", timeout=0.0) is None, f"accepted {payload!r}"

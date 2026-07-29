@@ -92,6 +92,8 @@ Click the 🐴 toolbar button for a live **2×2 / 3×3 wall** of screencasts —
 
 Built around **stable slots**: a tab keeps its cell, so the picture never shuffles under you. Activity lights up *in place* (a green pulse on the tab an agent just acted on) instead of reordering everything; the wall only changes membership when a tab has gone idle and a busier one is waiting. A theme-aware sidebar **groups every tab by session** — coloured Chrome-style groups (emoji + code), favicon rows, and a slot number on each on-wall tab so a row maps straight to its preview. Click any pane to jump to that tab. Pure read-only over CDP (a *second* client alongside whatever's driving), so it costs the agents nothing.
 
+Run several browsers side by side (`HORSE_BROWSER_PORT` + `HORSE_BROWSER_PROFILE`, one per agent) and each one's Monitor shows only its own tabs — the launcher tells every browser's extension which port it lives on, and the wall proves the port is its own before attaching.
+
 ## How agents drive it
 
 `horse-browser` brings the dedicated browser up first (launching if down, self-healing a frozen GPU after sleep), then runs your script against it over CDP through its vendored harness — so agents never touch a port:

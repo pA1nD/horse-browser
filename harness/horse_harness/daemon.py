@@ -338,7 +338,12 @@ class Daemon:
         # daemon and not an unrelated process that reused our port post-crash.
         # `pid` lets restart_daemon() verify the live daemon's identity before
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
-        if meta == "ping":        return {"pong": True, "pid": os.getpid()}
+        # `endpoint` is the CDP endpoint this daemon was SPAWNED with (its env is frozen
+        # for life). Several browsers run side by side, one per agent; a daemon is reused
+        # by name, so a caller pointed at a different browser has to be able to tell that
+        # this one is pinned elsewhere and rebuild it — see lifecycle.ensure_daemon.
+        if meta == "ping":        return {"pong": True, "pid": os.getpid(),
+                                          "endpoint": os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")}
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}

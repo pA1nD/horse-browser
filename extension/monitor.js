@@ -1,8 +1,8 @@
 // monitor.js — Horse Browser console.
 //
-// This page is a *second* CDP client on :9223 (browser-harness is the first).
-// Modern Chrome allows multiple flat sessions per target, so we can screencast a
-// tab while an agent drives it.
+// This page is a *second* CDP client on its own browser's debug port (the harness is
+// the first). Modern Chrome allows multiple flat sessions per target, so we can
+// screencast a tab while an agent drives it.
 //
 // THE WALL IS A FIXED SET OF SLOTS. The grid is N² slots (2×2 / 3×3), row-major:
 // slot 0 = top-left … slot N²-1 = bottom-right. A tab, once placed in a slot,
@@ -16,7 +16,45 @@
 // The sidebar mirrors this: slot order on top (numbered, hard-linked to cells),
 // a divider, then the bench (everything not shown) ranked by recency.
 
-const CDP = "http://127.0.0.1:9223";
+// ── which browser am I in? ───────────────────────────────────────────────────
+// Never hardcode a port. Several horse-browsers run at once — one per agent, each on
+// its own --remote-debugging-port + profile — and this page is served INSIDE one of
+// them. A wrong port isn't a dead wall, it's a wall quietly screencasting ANOTHER
+// agent's tabs while our own sidebar (chrome.* APIs, always own-browser) shows ours.
+// So: the launcher seeds the port into this profile's storage at launch (per-profile
+// ⇒ per-instance; bin/horse-browser: seed_instance_env), and we still PROVE it before
+// trusting it — this page tags its own URL with a nonce, and a port is ours only if
+// its target list contains that exact URL. Unseeded browsers (launched some other
+// way, or upgraded under a running instance) fall back to a small verified sweep.
+// Nothing is ever assumed: unproven means we wait, not that we guess.
+const SELF_TAG = "hbid=" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+// A FRAGMENT, deliberately: CDP reports it in the target URL (that's what makes us
+// findable), while chrome.tabs.query match patterns ignore it — so background.js's
+// showMonitor still recognises this tab as THE monitor and never opens a second one.
+history.replaceState(null, "", location.pathname + "#" + SELF_TAG);
+const SWEEP = [];
+for (let p = 9222; p <= 9242; p++) SWEEP.push(p);
+
+let CDP = null;   // "http://127.0.0.1:<our port>", once proven
+
+async function isOurs(port) {
+  try {
+    const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`, { cache: "no-store" })).json();
+    return targets.some((t) => typeof t.url === "string" && t.url.includes(SELF_TAG));
+  } catch { return false; }
+}
+
+async function resolveCdp() {
+  const seeded = await new Promise((r) =>
+    chrome.storage.local.get("hbCdpPort", (o) => r(o && Number(o.hbCdpPort))));
+  const tried = new Set();
+  for (const p of seeded ? [seeded, ...SWEEP] : SWEEP) {
+    if (!p || tried.has(p)) continue;
+    tried.add(p);
+    if (await isOurs(p)) return `http://127.0.0.1:${p}`;
+  }
+  return null;
+}
 
 // How long a slot stays "hot" after its last activity: it glows, and it is
 // PROTECTED from eviction for this long. Tunable — we may try 5s / 10s / 15s.
@@ -62,6 +100,8 @@ function send(method, params, sessionId, timeoutMs = 8000) {
 }
 
 async function connect() {
+  if (!CDP) CDP = await resolveCdp();
+  if (!CDP) throw new Error("no debug port for this browser yet");
   const ver = await (await fetch(CDP + "/json/version")).json();
   ws = new WebSocket(ver.webSocketDebuggerUrl);
   ws.onmessage = (e) => {

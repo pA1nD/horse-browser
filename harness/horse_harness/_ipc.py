@@ -162,6 +162,28 @@ def identify(name, timeout=1.0):
         except OSError: pass
 
 
+def endpoint(name, timeout=1.0):
+    """The CDP endpoint the live daemon is pinned to, or None if it can't be read.
+
+    None covers both "no daemon" and "a daemon too old to report it" — callers must
+    treat it as "unknown", never as a mismatch, or they'd restart a healthy daemon."""
+    try:
+        c, token = connect(name, timeout=timeout)
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError):
+        return None
+    try:
+        resp = request(c, token, {"meta": "ping"})
+        if not isinstance(resp, dict) or resp.get("pong") is not True:
+            return None
+        ep = resp.get("endpoint")
+        return ep if isinstance(ep, str) and ep else None
+    except (OSError, ValueError, AttributeError):
+        return None
+    finally:
+        try: c.close()
+        except OSError: pass
+
+
 async def serve(name, handler):
     """Run the server until cancelled. handler(reader, writer) sees the same interface either way."""
     global _server_token

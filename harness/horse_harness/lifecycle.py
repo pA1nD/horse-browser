@@ -92,21 +92,32 @@ def daemon_alive(name=None):
 
 
 def ensure_daemon(wait=60.0, name=None, env=None):
-    """Idempotent. Self-heals a stale daemon (socket alive, CDP WS dead)."""
-    if daemon_alive(name):
-        # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
-        # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
-        for last in (False, True):
-            try:
-                s, token = ipc.connect(name or NAME, timeout=3.0)
-                resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
-                if "result" in resp: return
-            except Exception:
-                pass
-            if not last: time.sleep(0.5)
-        restart_daemon(name)
-
+    """Idempotent. Self-heals a stale daemon (socket alive, CDP WS dead) — and one
+    pinned to a DIFFERENT browser than the caller asked for."""
     e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+    if daemon_alive(name):
+        # Daemons are reused by NAME, but this machine runs several browsers at once
+        # (one per agent, each its own port + profile) and a daemon's endpoint is frozen
+        # at spawn. Distinct agents have distinct names, so this only fires when ONE
+        # session points at a second browser — where reuse would silently drive the
+        # wrong one. Unknown (old daemon, unreadable) is never a mismatch.
+        want = e.get("BU_CDP_WS") or e.get("BU_CDP_URL")
+        have = ipc.endpoint(name or NAME)
+        if want and have and have != want:
+            restart_daemon(name)                     # pinned elsewhere — rebuild on ours
+        else:
+            # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
+            # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
+            for last in (False, True):
+                try:
+                    s, token = ipc.connect(name or NAME, timeout=3.0)
+                    resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
+                    if "result" in resp: return
+                except Exception:
+                    pass
+                if not last: time.sleep(0.5)
+            restart_daemon(name)
+
     try:
         stderr_sink = open(ipc.log_path(name or NAME), "ab")
     except OSError:

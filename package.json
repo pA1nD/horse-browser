@@ -1,6 +1,6 @@
 {
   "name": "@pa1nd/horse-browser",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "publishConfig": {
     "access": "public"
   },
@@ -24,7 +24,7 @@
   ],
   "scripts": {
     "postinstall": "bash scripts/postinstall.sh",
-    "test": "bash tests/harness-pytest.sh && bash tests/e2e.sh && bash tests/tab-reap.sh && bash tests/reap-hygiene.sh"
+    "test": "bash tests/harness-pytest.sh && bash tests/e2e.sh && bash tests/tab-reap.sh && bash tests/reap-hygiene.sh && bash tests/multi-instance.sh"
   },
   "dependencies": {
     "@puppeteer/browsers": "^3.0.6"

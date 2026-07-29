@@ -146,7 +146,8 @@ self.listTabs = async (session) => {
 };
 
 // The Agent Monitor — a CCTV grid of every session's live tabs. It's a normal extension
-// page that does its own CDP work as a second client on :9223. We keep exactly one, pinned
+// page that does its own CDP work as a second client on this browser's debug port (which the
+// launcher seeds into chrome.storage.local — see monitor.js). We keep exactly one, pinned
 // as the first tab, "permanently": Chrome already shields pinned tabs from "Close other
 // tabs", and showMonitor() reopens it if it's closed any other way. Defined as a const arrow
 // (not a function declaration) right after MONITOR_URL — both bind reliably in the worker.

@@ -155,8 +155,10 @@ cdp_up() { curl -sf "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
 # cases escalate to a full quit + relaunch (tabs preserved) — the only thing that
 # restores hardware GL.
 
-# Stamp of the last GPU-process kill, for the backoff above.
-HEAL_STAMP="$HOME/.config/horse-browser/.last-heal"
+# Stamp of the last GPU-process kill, for the backoff above. Keyed to the profile, like
+# HB_LOCK below: the backoff is about ONE browser's crash count, so a sibling instance's
+# heal must not make us skip our own kill (or escalate to a needless relaunch).
+HEAL_STAMP="${PROFILE%/}.last-heal"
 
 # heal_log <event> [k=v …]: one tab-separated line per incident, with enough context
 # (time since wake, process ages, trigger details) to understand over time WHY the
@@ -398,7 +400,9 @@ relaunch_browser() {
   say "horse-browser: relaunching the browser ($reason) — open tabs will be restored…"
 
   # 1. save real page URLs so nothing is lost across the quit
-  local saved="$HOME/.config/horse-browser/.relaunch-tabs.json" tabs_n
+  # Keyed to the profile: concurrent relaunches (many sessions healing after a wake) would
+  # otherwise overwrite each other's saved tab list and reopen the wrong browser's tabs.
+  local saved="${PROFILE%/}.relaunch-tabs.json" tabs_n
   tabs_n=$(python3 - "$PORT" "$saved" 2>/dev/null <<'PY' || echo "?"
 import json, sys, urllib.request
 port, out = sys.argv[1], sys.argv[2]
@@ -534,9 +538,9 @@ PY
 reap_orphan_tabs() {
   [ -n "${HORSE_BROWSER_NO_TAB_REAP:-}" ] && return 0
   command -v python3 >/dev/null 2>&1 || return 0
-  python3 - "$PORT" <<'PY' || true
-import sys, os, json, socket, base64, struct, subprocess, urllib.request
-port = sys.argv[1]
+  python3 - "$PORT" "$ROOT/tools" <<'PY' || true
+import sys, os, json, subprocess
+port, tools = sys.argv[1], sys.argv[2]
 dry = bool(os.environ.get("HORSE_BROWSER_REAP_DRYRUN"))
 
 def alive(pid):
@@ -576,49 +580,11 @@ live = live_sessions()
 if not live:                                # safety: never reap when we can see no live session
     sys.exit(0)
 
-# Minimal CDP-over-websocket to call the extension service worker's self.reapDeadTabs.
-def http_json(p):
-    return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}{p}", timeout=4))
-def ws_connect(ws_url):
-    path = "/" + ws_url.split("://", 1)[1].split("/", 1)[1]
-    s = socket.create_connection(("127.0.0.1", int(port)), timeout=5)
-    key = base64.b64encode(os.urandom(16)).decode()
-    s.sendall((f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
-               "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
-    buf = b""
-    while b"\r\n\r\n" not in buf:
-        c = s.recv(1024)
-        if not c: raise ConnectionError("handshake closed")
-        buf += c
-    if b" 101 " not in buf.split(b"\r\n", 1)[0]: raise ConnectionError("no upgrade")
-    return s
-def ws_send(s, payload):
-    d = payload.encode(); n = len(d); m = os.urandom(4); h = bytearray([0x81])
-    if n < 126: h.append(0x80 | n)
-    elif n < 65536: h.append(0x80 | 126); h += struct.pack(">H", n)
-    else: h.append(0x80 | 127); h += struct.pack(">Q", n)
-    h += m; s.sendall(bytes(h) + bytes(b ^ m[i % 4] for i, b in enumerate(d)))
-def ws_recv(s):
-    def rd(n):
-        b = b""
-        while len(b) < n:
-            c = s.recv(n - len(b))
-            if not c: raise ConnectionError("closed")
-            b += c
-        return b
-    b0, b1 = rd(2); ln = b1 & 0x7f
-    if ln == 126: ln = struct.unpack(">H", rd(2))[0]
-    elif ln == 127: ln = struct.unpack(">Q", rd(8))[0]
-    return rd(ln)
-
+sys.path.insert(0, tools)                   # sw_eval: our one channel into a live browser
 try:
-    sw = next(t for t in http_json("/json/list")
-              if t.get("type") == "service_worker"
-              and t.get("url", "").startswith("chrome-extension://")
-              and t.get("webSocketDebuggerUrl"))
-except (StopIteration, Exception):
-    sys.exit(0)                             # no extension SW reachable — nothing to do
+    from sw_eval import evaluate
+except Exception:
+    sys.exit(0)
 
 expr = "self.reapDeadTabs(%s)" % json.dumps(sorted(live))
 if dry:
@@ -628,24 +594,29 @@ if dry:
             "const byid=new Map(gs.map(g=>[g.id,g.title]));"
             "return JSON.stringify({closed:tabs.filter(t=>t.groupId>=0&&!live.has(byid.get(t.groupId))).length});})()"
             % json.dumps(sorted(live)))
-try:
-    s = ws_connect(sw["webSocketDebuggerUrl"])
-    ws_send(s, json.dumps({"id": 1, "method": "Runtime.evaluate",
-                           "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}}))
-    s.settimeout(8)
-    for _ in range(200):
-        m = json.loads(ws_recv(s))
-        if m.get("id") == 1:
-            val = (((m.get("result") or {}).get("result") or {}).get("value"))
-            try: closed = json.loads(val).get("closed", 0) if isinstance(val, str) else (val or {}).get("closed", 0)
-            except Exception: closed = 0
-            if closed:
-                print("horse-browser: %s %d orphan tab(s) from ended sessions"
-                      % ("would reap" if dry else "reaped", closed), file=sys.stderr, flush=True)
-            break
-except Exception:
-    pass
+val = evaluate(port, expr)
+try: closed = json.loads(val).get("closed", 0) if isinstance(val, str) else (val or {}).get("closed", 0)
+except Exception: closed = 0
+if closed:
+    print("horse-browser: %s %d orphan tab(s) from ended sessions"
+          % ("would reap" if dry else "reaped", closed), file=sys.stderr, flush=True)
 PY
+}
+
+# seed_instance_env: tell THIS browser's extension which debug port it lives on.
+# Many horse-browsers run at once (one per agent), each on its own port + profile, and an
+# extension can't read argv — so the in-browser Monitor, which is a second CDP client and
+# therefore needs a port, has no way to find its own browser. We write it into the profile's
+# chrome.storage.local (per-profile ⇒ per-instance) at every launch, which is exactly when
+# the port can change. Best-effort: the Monitor verifies the port before trusting it and
+# falls back to a self-identifying probe, so a missed seed degrades, it doesn't break.
+seed_instance_env() {
+  local wait="${1:-0}"                      # seconds to wait for the (MV3, sleepy) service worker
+  [ -n "$EXT" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -n "$ROOT" ] && [ -f "$ROOT/tools/sw_eval.py" ] || return 0
+  python3 "$ROOT/tools/sw_eval.py" "$PORT" \
+    "(async()=>{await chrome.storage.local.set({hbCdpPort:$PORT});return 1})()" "$wait" >/dev/null 2>&1 || true
 }
 
 # reap_stale_runtime: GC the per-session runtime files (pid/sock/lock/port) left by daemons that
@@ -693,9 +664,11 @@ PY
 
 # maybe_reap: run reap_orphan_daemons at most once per interval (cheap stamp-file throttle),
 # so it costs nothing on the hot path. HORSE_BROWSER_NO_REAP=1 disables it entirely.
+# The stamp is per-profile: two instances share nothing here, so a sibling's sweep can't
+# make THIS browser skip its own tab reap (and port re-seed) for the rest of the interval.
 maybe_reap() {
   [ -n "${HORSE_BROWSER_NO_REAP:-}" ] && return 0
-  local stamp="${HORSE_BROWSER_REAP_STAMP:-$HOME/.config/horse-browser/.last-reap}"
+  local stamp="${HORSE_BROWSER_REAP_STAMP:-${PROFILE%/}.last-reap}"
   local interval="${HORSE_BROWSER_REAP_INTERVAL:-600}" now last
   now=$(date +%s); last=$(cat "$stamp" 2>/dev/null || echo 0)
   [ $(( now - last )) -lt "$interval" ] && return 0
@@ -704,6 +677,7 @@ maybe_reap() {
   reap_orphan_daemons
   reap_orphan_tabs
   reap_stale_runtime
+  seed_instance_env   # re-assert the port for a browser that was already up (e.g. across an upgrade)
 }
 
 # recycle_daemons: after a browser (re)launch, every harness daemon pinned to our
@@ -1058,7 +1032,7 @@ PY
   args=( --remote-debugging-port="$PORT" --user-data-dir="$PROFILE"
          --test-type             # suppresses the "unsupported command-line flag" infobar
          --disable-infobars      # hides the Chrome-for-Testing infobar (per Playwright's chromiumSwitches)
-         --remote-allow-origins=* # lets the in-browser Monitor page open the CDP socket (:9223)
+         --remote-allow-origins=* # lets the in-browser Monitor page open this browser's CDP socket
          --disable-renderer-backgrounding
          --disable-background-timer-throttling
          --disable-backgrounding-occluded-windows
@@ -1084,7 +1058,7 @@ PY
 
   say "horse-browser: launching… (waiting for CDP :$PORT)"
   for _ in $(seq 1 30); do
-    cdp_up && { say "horse-browser: ready on :$PORT"; recycle_daemons; return 0; }
+    cdp_up && { say "horse-browser: ready on :$PORT"; seed_instance_env 10; recycle_daemons; return 0; }
     sleep 1
   done
   # Log the incident with the one number that diagnoses the known cause: how many

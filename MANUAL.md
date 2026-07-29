@@ -190,6 +190,15 @@ so a backgrounded tab still paints and fires events. Native popovers (autofill, 
 translate) are *not* gated by focus emulation — if you see typing-time focus theft, disable
 those at the profile level rather than chasing them through CDP.
 
+Several browsers run side by side (one per agent, each its own `HORSE_BROWSER_PORT` +
+`HORSE_BROWSER_PROFILE`), so nothing in the extension may assume a port. An extension can't
+read argv, so the launcher writes its own into that profile's storage at launch
+(`chrome.storage.local.hbCdpPort`); the Monitor page — the one part that needs a raw CDP
+socket — reads it and still proves the port is its own (it tags its URL with a nonce and
+looks for that URL in the target list) before attaching. `tools/sw_eval.py` is the launcher's
+side of that channel: `sw_eval.py <port> <expression> [wait_s]` evaluates anything in the
+service worker.
+
 If `open_tab` is undefined, the vendored harness didn't load — run `horse-browser harness-setup`
 (or re-run `install.sh`); don't hand-roll your own, the focus-safe behaviour is subtle.
 
