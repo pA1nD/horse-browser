@@ -839,6 +839,43 @@ if data.get("version") != ver:
 PY
 }
 
+# reset_stale_sw: make an extension UPGRADE actually take effect.
+#
+# Chrome's MV3 worker can keep executing STALE COMPILED BYTECODE from an earlier version of
+# background.js. The tell is nasty because everything else looks right: the manifest reads the
+# new version, fetching the script serves the new source, and only the newly-added functions
+# are missing (`typeof … === "undefined"`), so the new code's listeners silently never run.
+# Measured on a real upgrade (0.9.7 → 0.9.8): the browser relaunched onto the new package and
+# kept running the old worker. `chrome.runtime.reload()` does NOT fix it — it kills the worker
+# and it does not come back. The only fix is wiping the registration with the browser stopped.
+#
+# So: remember which extension version this profile last launched with, and when that changes,
+# drop the profile's Service Worker registry. Called from launch_browser only, i.e. behind the
+# pre-launch gate where the browser is provably stopped — wiping while it runs leaves a dead
+# worker (that is why the `relaunch` subcommand deliberately doesn't do it mid-flight).
+#
+# What is lost: SITE service workers re-register and their offline caches rebuild. Cookies,
+# logins and storage live elsewhere in the profile and are untouched. A fresh profile has no
+# registry yet, so it is a silent no-op there.
+reset_stale_sw() {
+  [ -n "$EXT" ] && [ -f "$EXT/manifest.json" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  local ver stamp prev d wiped=
+  ver="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' \
+         "$EXT/manifest.json" 2>/dev/null)" || return 0
+  [ -n "$ver" ] || return 0
+  stamp="${PROFILE%/}.ext-version"
+  prev="$(cat "$stamp" 2>/dev/null || echo "")"
+  [ "$ver" = "$prev" ] && return 0
+  for d in "$PROFILE"/Default "$PROFILE"/Profile\ *; do
+    [ -d "$d/Service Worker" ] || continue
+    rm -rf "$d/Service Worker" 2>/dev/null && wiped=1
+  done
+  echo "$ver" > "$stamp" 2>/dev/null || true
+  [ -n "$wiped" ] && say "horse-browser: extension ${prev:-?} → $ver — cleared the service-worker registry so the new code actually runs."
+  return 0
+}
+
 hb_update() {
   require_macos || return 1
   command -v npx >/dev/null 2>&1 || { echo "horse-browser: npx (Node) not found — needed to fetch Chrome." >&2; return 1; }
@@ -1082,6 +1119,7 @@ PY
          --disable-backgrounding-occluded-windows
          --no-first-run --no-default-browser-check )
   sync_manifest_version   # keep the extension's manifest version matched to the package before load
+  reset_stale_sw          # …and make sure the browser will actually RUN that version's code
   [ -n "$EXT" ] && args+=( --load-extension="$EXT" )
 
   # Launch WITHOUT stealing focus. `open -g` starts the app in the background, so
@@ -1125,7 +1163,9 @@ case "${1:-}" in
     # is re-read from disk on relaunch. A single deliberate relaunch loads the new SW code
     # cleanly (the stale-SW-bytecode gotcha is specific to RAPID reload cycles, not this).
     # Do NOT wipe the Service Worker cache here — the browser rewrites it on exit, and wiping
-    # mid-relaunch leaves the SW dead. (The focus-safe helpers load per-call, no relaunch.)
+    # mid-relaunch leaves the SW dead. reset_stale_sw does it at the only safe moment (inside
+    # launch_browser, behind the pre-launch gate) and only when the extension version changed.
+    # (The focus-safe helpers load per-call, no relaunch.)
     relaunch_browser "apply-package-update" && exit 0 || exit 1
     ;;
   harness-setup)

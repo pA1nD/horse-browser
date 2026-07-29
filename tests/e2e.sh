@@ -676,6 +676,28 @@ else
     fail "cold relaunch after hard kill" "rc=$rc after $((t1-t0))s"
   fi
 
+  # An extension upgrade must actually RUN: Chrome's MV3 worker can keep executing stale
+  # compiled bytecode from the previous version (manifest reads new, worker runs old, the new
+  # code's listeners silently never fire — hit for real on 0.9.7 → 0.9.8). reset_stale_sw drops
+  # the profile's SW registry when the extension version changes. Faked by rewinding the stamp;
+  # a sentinel inside the registry proves the directory was really wiped, not just recreated.
+  swdir="$HORSE_BROWSER_PROFILE/Default/Service Worker"
+  stamp="${HORSE_BROWSER_PROFILE%/}.ext-version"
+  if [ -d "$swdir" ] && [ -f "$stamp" ]; then
+    : > "$swdir/hb-sentinel"
+    echo "0.0.0-stale" > "$stamp"
+    pkill -f "remote-debugging-port=$PORT" 2>/dev/null; sleep 2
+    "$HB" >/dev/null 2>&1
+    if [ ! -e "$swdir/hb-sentinel" ] && [ "$(cat "$stamp" 2>/dev/null)" != "0.0.0-stale" ]; then
+      pass "extension version change clears the stale service-worker registry"
+    else
+      fail "extension version change clears the stale service-worker registry" \
+           "sentinel=$([ -e "$swdir/hb-sentinel" ] && echo kept || echo gone) stamp=$(cat "$stamp" 2>/dev/null)"
+    fi
+  else
+    skip "extension version change clears the stale service-worker registry" "no SW registry/stamp yet"
+  fi
+
   # the pre-kill daemon must NOT be left holding a websocket into the dead browser
   out="$(hb 'print("ALIVE", page_info() is not None)')"
   grep -q "ALIVE True" <<<"$out" && pass "no dead-websocket daemon after relaunch (recycle works)" \
