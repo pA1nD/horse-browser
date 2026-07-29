@@ -135,6 +135,33 @@ say() { if [ -n "$PASSTHROUGH" ]; then echo "$@" >&2; else echo "$@"; fi; }
 
 cdp_up() { curl -sf "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
 
+# require_macos: the launcher OWNS a browser, and every mechanism it owns one with is a macOS
+# mechanism — focus-free launch via `open -g -n`, the GPU-wedge heal, CGDisplayIsAsleep, the
+# lock's stat(1) flags. package.json gates npm to darwin, but a --force install (or a copied
+# checkout) gets past that and would otherwise discover all this as a 30-second CDP timeout.
+# Say it once, plainly, at the two entry points that touch a browser. The vendored HARNESS is
+# portable — its unit suite passes on Linux — so the honest fallback is to point it at a
+# browser you launched yourself; that is what the message offers.
+require_macos() {
+  [ "$(uname -s)" = "Darwin" ] && return 0
+  if [ -n "${HORSE_BROWSER_ALLOW_UNSUPPORTED_OS:-}" ]; then
+    say "horse-browser: unsupported OS ($(uname -s)) — continuing anyway (HORSE_BROWSER_ALLOW_UNSUPPORTED_OS). Launch, heal and display handling are macOS-shaped; expect them to misbehave."
+    return 0
+  fi
+  cat >&2 <<EOF
+horse-browser: macOS only — this machine is $(uname -s).
+  The launcher's job is owning a browser (focus-free launch, GPU heal, display state), and
+  each of those is a macOS mechanism. Chrome for Testing also ships no linux-arm64 build.
+  The vendored harness itself IS portable — drive a browser you launched yourself:
+      <your chrome> --remote-debugging-port=9223 --user-data-dir=/some/profile &
+      BU_CDP_URL=http://127.0.0.1:9223 python3 -m horse_harness.run <<'PY'
+      print(page_info())
+      PY
+  To push past this guard anyway: HORSE_BROWSER_ALLOW_UNSUPPORTED_OS=1 horse-browser …
+EOF
+  return 1
+}
+
 # ── self-heal: GPU-process wedge after macOS sleep/wake ──────────────────────
 # After the machine or an external display sleeps, Chrome for Testing's GPU process
 # can get stuck in the frame-present path and never re-acquire its window-server
@@ -813,6 +840,7 @@ PY
 }
 
 hb_update() {
+  require_macos || return 1
   command -v npx >/dev/null 2>&1 || { echo "horse-browser: npx (Node) not found — needed to fetch Chrome." >&2; return 1; }
   local oldver out newbin newver
   oldver="$(_chrome_ver "$BIN")"
@@ -861,6 +889,7 @@ PY
 # ensure_browser: bring the browser up (launching if needed) and self-heal a GPU
 # wedge. Returns 0 when CDP is live and painting; non-zero if it can't recover.
 ensure_browser() {
+  require_macos || return 1
   if cdp_up; then
     say "horse-browser: already up on :$PORT"
     if gpu_fallback; then

@@ -173,10 +173,13 @@ def subagentstop(d):
         pass
     try:
         pid = int(open(pidf).read().strip())
-        # only kill a process that really is a browser-harness daemon (stale-pidfile guard)
+        # Only kill a process that really is a harness daemon (stale-pidfile guard). BOTH
+        # names: the harness is vendored as horse_harness now, and matching only the old
+        # browser_harness meant this guard rejected every real daemon — so the lane's
+        # daemon was never signalled, and only its pid/sock files got tidied below.
         cmdline = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
                                  capture_output=True, text=True, timeout=3).stdout
-        if "browser_harness" in cmdline:
+        if "horse_harness" in cmdline or "browser_harness" in cmdline:
             os.kill(pid, signal.SIGTERM)
     except Exception:
         pass

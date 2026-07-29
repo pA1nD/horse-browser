@@ -75,6 +75,21 @@ out="$(HORSE_BROWSER_PORT="$(_hb_free_port)" "$HB" status 2>&1)"; rc=$?
   && pass "status reports a down browser (no silent set -e exit)" \
   || fail "status reports a down browser (no silent set -e exit)" "rc=$rc out=${out:-<empty>}"
 
+# A forced install off macOS must say so, fast — the launcher owns a browser through macOS-only
+# mechanisms, and without the guard that surfaces as a 30s CDP timeout. Faked with a uname stub
+# on PATH; require_macos is the launcher's only uname caller.
+mkdir -p "$WORK/fakeos"
+printf '#!/bin/sh\n[ "$1" = "-s" ] && echo Linux || /usr/bin/uname "$@"\n' > "$WORK/fakeos/uname"
+chmod +x "$WORK/fakeos/uname"
+out="$(PATH="$WORK/fakeos:$PATH" "$HB" </dev/null 2>&1)"; rc=$?
+[ "$rc" = 1 ] && grep -q "macOS only" <<<"$out" \
+  && pass "non-macOS fails fast with a clear message (not a 30s timeout)" \
+  || fail "non-macOS fails fast with a clear message" "rc=$rc out=$(head -1 <<<"$out")"
+out="$(PATH="$WORK/fakeos:$PATH" HORSE_BROWSER_ALLOW_UNSUPPORTED_OS=1 "$HB" </dev/null 2>&1)"
+grep -q "continuing anyway" <<<"$out" \
+  && pass "the unsupported-OS escape hatch still runs" \
+  || fail "the unsupported-OS escape hatch still runs" "$(head -1 <<<"$out")"
+
 t0=$(date +%s); "$HB" >/dev/null 2>&1; t1=$(date +%s)
 [ $((t1 - t0)) -le 3 ] && pass "hot no-op is fast ($((t1-t0))s)" \
   || fail "hot no-op is fast" "took $((t1-t0))s"
