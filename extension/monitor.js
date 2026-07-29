@@ -37,10 +37,15 @@ for (let p = 9222; p <= 9242; p++) SWEEP.push(p);
 
 let CDP = null;   // "http://127.0.0.1:<our port>", once proven
 
+// Ours iff this very page is one of that port's targets. Exact href, not "contains the
+// nonce": a sibling could hold a page whose URL merely embeds our tag. The deadline matters
+// as much as the check — a half-started listener that accepts the connection and never
+// answers would otherwise stall the whole sweep on its first candidate.
 async function isOurs(port) {
   try {
-    const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`, { cache: "no-store" })).json();
-    return targets.some((t) => typeof t.url === "string" && t.url.includes(SELF_TAG));
+    const r = await fetch(`http://127.0.0.1:${port}/json/list`,
+                          { cache: "no-store", signal: AbortSignal.timeout(1500) });
+    return (await r.json()).some((t) => t.type === "page" && t.url === location.href);
   } catch { return false; }
 }
 
@@ -575,7 +580,16 @@ setInterval(() => {
     try { await connect(); ok = true; }
     catch { statTabs.textContent = "…"; await new Promise((r) => setTimeout(r, 1000)); }
   }
-  if (!ok) { statTabs.textContent = "—"; return; }
+  // Giving up for good would be wrong: the launcher re-seeds the port (next launch, or its
+  // throttled sweep), and a browser on a port outside the fallback range only ever becomes
+  // findable that way. Wait for the seed instead of leaving a permanently blank wall.
+  if (!ok) {
+    statTabs.textContent = "—";
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes.hbCdpPort) location.reload();
+    });
+    return;
+  }
   ws.onclose = () => setTimeout(() => location.reload(), 1500); // browser restart → reconnect
   await reconcile();
 })();

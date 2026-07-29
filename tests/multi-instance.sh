@@ -36,9 +36,14 @@ PAGE_A="$ROOT_DIR/a.html"; PAGE_B="$ROOT_DIR/b.html"
 printf '<title>instance A</title><h1>A</h1>' > "$PAGE_A"
 printf '<title>instance B</title><h1>B</h1>' > "$PAGE_B"
 
+# Every session this suite creates carries the SID stem, and BU_NAME derives from the text
+# after the session's last dash — so both are unique to this run. Cleanup keys on that, never
+# on the port: _hb_free_port binds-then-closes, so a port can belong to somebody else by the
+# time we tear down, and killing by port would take out another instance's daemon.
+SID="hbmulti-$$"
 cleanup() {
   for p in $(pgrep -f "horse_harness.daemon" 2>/dev/null || true); do
-    ps eww -o command= -p "$p" 2>/dev/null | grep -qE "BU_CDP_URL=http://127.0.0.1:($PORT_A|$PORT_B)\b" \
+    ps eww -o command= -p "$p" 2>/dev/null | tr ' ' '\n' | grep -q "^HORSE_SESSION=$SID" \
       && kill "$p" 2>/dev/null
   done
   for prof in "$PROF_A" "$PROF_B"; do
@@ -53,7 +58,7 @@ trap cleanup EXIT
 run() {
   local port="$1" prof="$2"; shift 2
   HORSE_BROWSER_PORT="$port" HORSE_BROWSER_PROFILE="$prof" \
-  HORSE_SESSION="hbmulti-$$-$port" "$HB" "$@"
+  HORSE_SESSION="$SID-$port" "$HB" "$@"
 }
 # sw <port> <expr>: evaluate in that instance's extension service worker.
 sw() { python3 "$REPO/tools/sw_eval.py" "$1" "$2" 5 2>/dev/null; }
@@ -110,24 +115,35 @@ else
 fi
 
 # ── [3] each Monitor resolved + connected to its own port ────────────────────
-sleep 4   # the Monitor resolves, connects, attaches and screencasts on its own clock
-st_a="$(monitor "$PORT_A" "JSON.stringify({cdp:CDP,ws:ws?ws.readyState:null})")"
-st_b="$(monitor "$PORT_B" "JSON.stringify({cdp:CDP,ws:ws?ws.readyState:null})")"
-if [ "$st_a" = "{\"cdp\":\"http://127.0.0.1:$PORT_A\",\"ws\":1}" ] \
-   && [ "$st_b" = "{\"cdp\":\"http://127.0.0.1:$PORT_B\",\"ws\":1}" ]; then
+# Poll, don't sleep: the Monitor resolves, connects and attaches on its own clock, and a fixed
+# wait is exactly what goes flaky on a loaded machine.
+want_a="{\"cdp\":\"http://127.0.0.1:$PORT_A\",\"ws\":1}"
+want_b="{\"cdp\":\"http://127.0.0.1:$PORT_B\",\"ws\":1}"
+st_a=""; st_b=""
+for _ in $(seq 1 30); do
+  st_a="$(monitor "$PORT_A" "JSON.stringify({cdp:CDP,ws:ws?ws.readyState:null})")"
+  st_b="$(monitor "$PORT_B" "JSON.stringify({cdp:CDP,ws:ws?ws.readyState:null})")"
+  [ "$st_a" = "$want_a" ] && [ "$st_b" = "$want_b" ] && break
+  sleep 1
+done
+if [ "$st_a" = "$want_a" ] && [ "$st_b" = "$want_b" ]; then
   pass "each Monitor connected to its own browser's port"
 else
   fail "each Monitor connected to its own browser's port" "A=$st_a B=$st_b"
 fi
 
-# ── [4] neither Monitor sees the other's tabs ────────────────────────────────
-seen_a="$(monitor "$PORT_A" "discover().then(a=>JSON.stringify(a.map(x=>x.url)))")"
-seen_b="$(monitor "$PORT_B" "discover().then(a=>JSON.stringify(a.map(x=>x.url)))")"
+# ── [4] the WALL's own socket is attached to its own browser ─────────────────
+# Deliberately NOT discover(): that reads chrome.tabs, which is always own-browser, so it
+# stays green even with the wall's websocket pointed at a sibling — precisely the split-brain
+# this release fixes. Ask over `ws`, the socket the screencast actually runs on.
+q='send("Target.getTargets",{}).then(r=>JSON.stringify(((r.result||{}).targetInfos||[]).map(t=>t.url)))'
+seen_a="$(monitor "$PORT_A" "$q")"
+seen_b="$(monitor "$PORT_B" "$q")"
 if [[ "$seen_a" == *"a.html"* && "$seen_a" != *"b.html"* \
    && "$seen_b" == *"b.html"* && "$seen_b" != *"a.html"* ]]; then
-  pass "each Monitor's wall shows only its own instance's tabs"
+  pass "each Monitor's wall socket sees only its own instance's tabs"
 else
-  fail "each Monitor's wall shows only its own instance's tabs" "A=$seen_a B=$seen_b"
+  fail "each Monitor's wall socket sees only its own instance's tabs" "A=$seen_a B=$seen_b"
 fi
 
 # ── [5] one session pointed at a second browser gets a daemon on THAT browser ─
@@ -137,7 +153,9 @@ fi
 # shedding the inherited session id; the guard makes it correct instead of merely avoided.)
 printf '<title>shared 1</title>' > "$ROOT_DIR/s1.html"
 printf '<title>shared 2</title>' > "$ROOT_DIR/s2.html"
-SHARED="hbmulti-$$-shared"
+# BU_NAME is derived from the text after the session's LAST dash, so the tail has to be
+# unique too — "…-shared" would make every run of this suite claim the daemon named hb-shared.
+SHARED="$SID-s$PORT_A"
 HORSE_BROWSER_PORT="$PORT_A" HORSE_BROWSER_PROFILE="$PROF_A" HORSE_SESSION="$SHARED" \
   "$HB" <<<"open_tab('file://$ROOT_DIR/s1.html')" >/dev/null 2>&1
 HORSE_BROWSER_PORT="$PORT_B" HORSE_BROWSER_PROFILE="$PROF_B" HORSE_SESSION="$SHARED" \
@@ -151,21 +169,40 @@ else
        "A=$(grep -o 's[12].html' <<<"$ua" | tr '\n' ' ') B=$(grep -o 's[12].html' <<<"$ub" | tr '\n' ' ')"
 fi
 
-# ── [6] source guard: the extension carries no hardcoded debug port ──────────
+# ── [6] a WRONG seed is refused, never trusted ───────────────────────────────
+# The seed is a hint, not an authority: point instance A's extension at instance B and A's
+# Monitor must sit blank rather than screencast B's tabs. Without the nonce proof this is the
+# original bug with extra steps, and every other check here would still pass.
+sw "$PORT_A" "chrome.storage.local.set({hbCdpPort:$PORT_B}).then(()=>1)" >/dev/null
+monitor "$PORT_A" "setTimeout(()=>location.reload(),0)" >/dev/null 2>&1
+lied=""
+for _ in $(seq 1 12); do
+  sleep 1
+  lied="$(monitor "$PORT_A" "JSON.stringify({cdp:CDP,ws:ws?ws.readyState:null})")"
+  [[ "$lied" == *"$PORT_B"* ]] && break
+done
+if [[ "$lied" != *"$PORT_B"* ]]; then
+  pass "a seed pointing at another browser is refused (proof beats hint)"
+else
+  fail "a seed pointing at another browser is refused (proof beats hint)" "A=$lied"
+fi
+sw "$PORT_A" "chrome.storage.local.set({hbCdpPort:$PORT_A}).then(()=>1)" >/dev/null
+
+# ── [7] source guard: the extension carries no hardcoded debug port ──────────
 if grep -nE "127\.0\.0\.1:9[0-9]{3}\b" "$REPO"/extension/*.js >/dev/null 2>&1; then
   fail "extension has no hardcoded CDP port" "$(grep -nE "127\.0\.0\.1:9[0-9]{3}\b" "$REPO"/extension/*.js | head -3 | tr '\n' ' ')"
 else
   pass "extension has no hardcoded CDP port"
 fi
 
-# ── [7] source guard: per-instance launcher state derives from the profile ───
+# ── [8] source guard: per-instance launcher state derives from the profile ───
 # A global path here means two instances clobber each other: a concurrent relaunch reopens
 # the wrong browser's tabs, and one instance's GPU heal corrupts the other's kill backoff.
 bad="$(grep -nE '\$HOME/\.config/horse-browser/\.(relaunch-tabs\.json|last-heal)' "$HB" || true)"
 if [ -z "$bad" ]; then
-  pass "relaunch-tabs + heal stamp are keyed to the profile, not global"
+  pass "relaunch-tabs + heal + reap stamps are keyed to the profile, not global"
 else
-  fail "relaunch-tabs + heal stamp are keyed to the profile, not global" "$(tr '\n' ' ' <<<"$bad")"
+  fail "relaunch-tabs + heal + reap stamps are keyed to the profile, not global" "$(tr '\n' ' ' <<<"$bad")"
 fi
 
 say ""

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import _ipc as ipc
 from . import paths
@@ -85,6 +86,27 @@ def _log_tail(name):
         return None
 
 
+def _endpoint_key(url):
+    """host:port identity of a CDP endpoint, or None if there isn't one.
+
+    `http://127.0.0.1:9223`, the same with a trailing slash, `http://localhost:9223` and the
+    resolved `ws://127.0.0.1:9223/devtools/browser/<id>` all name the SAME browser — only the
+    port tells two instances apart. Comparing raw strings would restart a healthy daemon over
+    a spelling difference, and a client that alternates BU_CDP_URL / BU_CDP_WS would restart
+    it on every call."""
+    if not url:
+        return None
+    u = urlsplit(url if "//" in url else "//" + url)
+    host = (u.hostname or "").lower()
+    if host in ("localhost", "::1"):
+        host = "127.0.0.1"
+    try:
+        port = u.port
+    except ValueError:
+        port = None
+    return f"{host}:{port}" if port else (host or None)
+
+
 def daemon_alive(name=None):
     # Ping handshake (not a bare connect) so a stale .port file + port reuse
     # after a daemon crash doesn't make us mistake an unrelated listener for ours.
@@ -101,8 +123,8 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         # at spawn. Distinct agents have distinct names, so this only fires when ONE
         # session points at a second browser — where reuse would silently drive the
         # wrong one. Unknown (old daemon, unreadable) is never a mismatch.
-        want = e.get("BU_CDP_WS") or e.get("BU_CDP_URL")
-        have = ipc.endpoint(name or NAME)
+        want = _endpoint_key(e.get("BU_CDP_WS") or e.get("BU_CDP_URL"))
+        have = _endpoint_key(ipc.endpoint(name or NAME))
         if want and have and have != want:
             restart_daemon(name)                     # pinned elsewhere — rebuild on ours
         else:
@@ -129,8 +151,20 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     if stderr_sink is not subprocess.DEVNULL:
         stderr_sink.close()
     deadline = time.time() + wait
+    want = _endpoint_key(e.get("BU_CDP_WS") or e.get("BU_CDP_URL"))
     while time.time() < deadline:
-        if daemon_alive(name): return
+        if daemon_alive(name):
+            # The daemon that answers may not be OURS: the singleton lock lets exactly one
+            # spawn win, so two concurrent callers of the same session name pointed at two
+            # browsers both see "alive" and the loser would silently drive the winner's
+            # browser. Say so instead — the fix is one session name per browser.
+            got = _endpoint_key(ipc.endpoint(name or NAME))
+            if want and got and got != want:
+                raise RuntimeError(
+                    f"daemon {name or NAME} is pinned to {got}, not {want} — another call with "
+                    f"the same session is driving a different browser. Give each browser its "
+                    f"own HORSE_SESSION.")
+            return
         if p.poll() is not None: break
         time.sleep(0.2)
     msg = _log_tail(name) or ""

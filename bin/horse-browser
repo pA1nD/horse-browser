@@ -677,7 +677,7 @@ maybe_reap() {
   reap_orphan_daemons
   reap_orphan_tabs
   reap_stale_runtime
-  seed_instance_env   # re-assert the port for a browser that was already up (e.g. across an upgrade)
+  seed_instance_env 3   # re-assert the port for a browser that was already up (e.g. across an upgrade)
 }
 
 # recycle_daemons: after a browser (re)launch, every harness daemon pinned to our

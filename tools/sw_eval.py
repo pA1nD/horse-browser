@@ -68,35 +68,40 @@ def ws_recv(s):
     return rd(ln)
 
 
-def service_worker(port, wait_s=0):
-    """The extension's service-worker target, or None. An MV3 worker can be asleep or
-    still registering right after launch, so callers that need it may wait for it."""
+def service_workers(port, wait_s=0):
+    """Every extension service-worker target in that browser. An MV3 worker can be asleep
+    or still registering right after launch, so callers that need one may wait for it."""
     deadline = time.monotonic() + max(0, wait_s)
     while True:
         try:
-            for t in http_json(port, "/json/list"):
-                if (t.get("type") == "service_worker"
-                        and t.get("url", "").startswith("chrome-extension://")
-                        and t.get("webSocketDebuggerUrl")):
-                    return t
+            out = [t for t in http_json(port, "/json/list")
+                   if t.get("type") == "service_worker"
+                   and t.get("url", "").startswith("chrome-extension://")
+                   and t.get("webSocketDebuggerUrl")]
+            if out:
+                return out
         except Exception:
             pass
         if time.monotonic() >= deadline:
-            return None
+            return []
         time.sleep(0.5)
 
 
-def evaluate(port, expr, wait_s=0, timeout=8):
-    """Evaluate `expr` in the extension service worker; return its value (None on any
-    failure — every caller here is best-effort and must never break the launcher)."""
-    sw = service_worker(port, wait_s)
-    if not sw:
-        return None
+# The operator's profile can carry OTHER extensions (a password manager, an ad blocker),
+# each with its own service worker — so "the first chrome-extension:// worker" is not ours.
+# Evaluating in the wrong one would seed the port into a stranger's storage and leave the
+# Monitor unseeded. Ours is the one that defines the verbs the launcher drives it through;
+# ask before trusting, in the same round trip.
+_MINE = "typeof self.groupTab==='function'&&typeof self.reapDeadTabs==='function'"
+_NOT_MINE = "__not_horse_sw__"
+
+
+def _eval_on(port, ws_url, expr, timeout):
     try:
-        s = ws_connect(port, sw["webSocketDebuggerUrl"])
+        s = ws_connect(port, ws_url)
         ws_send(s, json.dumps({"id": 1, "method": "Runtime.evaluate",
-                               "params": {"expression": expr, "awaitPromise": True,
-                                          "returnByValue": True}}))
+                               "params": {"expression": f"({_MINE}) ? ({expr}) : '{_NOT_MINE}'",
+                                          "awaitPromise": True, "returnByValue": True}}))
         s.settimeout(timeout)
         for _ in range(200):
             m = json.loads(ws_recv(s))
@@ -104,6 +109,18 @@ def evaluate(port, expr, wait_s=0, timeout=8):
                 return ((m.get("result") or {}).get("result") or {}).get("value")
     except Exception:
         return None
+    return None
+
+
+def evaluate(port, expr, wait_s=0, timeout=8):
+    """Evaluate `expr` in the horse-browser extension's service worker; return its value
+    (None on any failure — every caller here is best-effort and must never break the
+    launcher, and None is also what a browser without our extension yields)."""
+    for sw in service_workers(port, wait_s):
+        val = _eval_on(port, sw["webSocketDebuggerUrl"], expr, timeout)
+        if val is None or val == _NOT_MINE:
+            continue                        # unreachable, or somebody else's extension
+        return val
     return None
 
 
