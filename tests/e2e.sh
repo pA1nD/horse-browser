@@ -222,7 +222,7 @@ bad = []
 for name in ("_focus", "_eval", "_center", "_keyinfo", "_key"):
     f = g.get(name)
     src = getattr(getattr(f, "__code__", None), "co_filename", "MISSING")
-    if not src.endswith(("horse_harness/input.py", "horse_input.py")):
+    if not src.endswith("horse_harness/helpers.py"):
         bad.append(name + "<-" + src)
 print("SHADOWED", ",".join(bad) if bad else "none")
 missing = [n for n in ("open_tab", "list_tabs", "switch_tab", "click", "type_into",
@@ -231,8 +231,8 @@ missing = [n for n in ("open_tab", "list_tabs", "switch_tab", "click", "type_int
 print("MISSING", ",".join(missing) if missing else "none")
 ')"
 grep -q "SHADOWED none" <<<"$out" && grep -q "MISSING none" <<<"$out" \
-  && pass "input privates resolve from the harness input module; all verbs present" \
-  || fail "input privates resolve from the harness input module" "$out"
+  && pass "input privates resolve from the harness helpers module; all verbs present" \
+  || fail "input privates resolve from the harness helpers module" "$out"
 
 # ═════ 5. trusted input mechanics (local pages, deterministic) ═══════════════
 say "[5] trusted input mechanics"
