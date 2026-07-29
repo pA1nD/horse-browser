@@ -192,14 +192,25 @@ else
 fi
 sw "$PORT_A" "chrome.storage.local.set({hbCdpPort:$PORT_A}).then(()=>1)" >/dev/null
 
-# ── [7] source guard: the extension carries no hardcoded debug port ──────────
+# ── [7] each browser NAMES itself on its toolbar button ──────────────────────
+# Several identical windows, and the Monitor is a pinned tab — a pinned tab shows only its
+# favicon, so the badge is the only place on screen that says which instance you are looking at.
+badge_a="$(sw "$PORT_A" "chrome.action.getBadgeText({}).then(t=>String(t))")"
+badge_b="$(sw "$PORT_B" "chrome.action.getBadgeText({}).then(t=>String(t))")"
+if [ "$badge_a" = "$PORT_A" ] && [ "$badge_b" = "$PORT_B" ]; then
+  pass "each toolbar badge shows its own instance's port"
+else
+  fail "each toolbar badge shows its own instance's port" "A=$badge_a B=$badge_b"
+fi
+
+# ── [8] source guard: the extension carries no hardcoded debug port ──────────
 if grep -nE "127\.0\.0\.1:9[0-9]{3}\b" "$REPO"/extension/*.js >/dev/null 2>&1; then
   fail "extension has no hardcoded CDP port" "$(grep -nE "127\.0\.0\.1:9[0-9]{3}\b" "$REPO"/extension/*.js | head -3 | tr '\n' ' ')"
 else
   pass "extension has no hardcoded CDP port"
 fi
 
-# ── [8] source guard: per-instance launcher state derives from the profile ───
+# ── [9] source guard: per-instance launcher state derives from the profile ───
 # A global path here means two instances clobber each other: a concurrent relaunch reopens
 # the wrong browser's tabs, and one instance's GPU heal corrupts the other's kill backoff.
 bad="$(grep -nE '\$HOME/\.config/horse-browser/\.(relaunch-tabs\.json|last-reap)|HEAL_STAMP="\$HOME' "$HB" || true)"

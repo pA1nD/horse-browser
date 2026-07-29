@@ -167,6 +167,31 @@ const showMonitor = async (focus) => {
   for (const t of tabs.slice(1)) { try { await chrome.tabs.remove(t.id); } catch (e) {} }
 };
 
+// ── which browser is this? — the toolbar badge answers it ───────────────────
+// Several horse-browsers are open at once, one per agent, and they look identical: the Monitor
+// is a PINNED tab, and a pinned tab shows only its favicon, so there is nowhere else on screen
+// that names the instance. The badge carries the debug port the launcher seeded (see
+// bin/horse-browser: seed_instance_env), which is the one number that identifies a browser —
+// the tooltip spells it out for ports too long to fit. Colour is derived from the port, so two
+// windows side by side differ at a glance rather than by reading digits.
+const BADGE_COLORS = ["#1a73e8", "#12a150", "#c5221f", "#8430ce", "#b06000", "#00838f"];
+async function showInstanceBadge() {
+  const { hbCdpPort: port } = await chrome.storage.local.get("hbCdpPort");
+  if (!port) {   // not seeded (yet) — say nothing rather than guess
+    await chrome.action.setBadgeText({ text: "" });
+    await chrome.action.setTitle({ title: "Open Agent Monitor" });
+    return;
+  }
+  await chrome.action.setBadgeText({ text: String(port) });
+  await chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS[port % BADGE_COLORS.length] });
+  try { await chrome.action.setBadgeTextColor({ color: "#ffffff" }); } catch (e) {}  // Chrome ≥110
+  await chrome.action.setTitle({ title: `Agent Monitor — this browser is CDP :${port}` });
+}
+showInstanceBadge();                                              // every worker start
+chrome.storage.onChanged.addListener((changes, area) => {         // …and whenever the port lands
+  if (area === "local" && changes.hbCdpPort) showInstanceBadge();
+});
+
 chrome.action.onClicked.addListener(() => showMonitor(true));     // toolbar button → focus it
 chrome.runtime.onStartup.addListener(() => showMonitor(false));   // profile start → ensure pinned
 // Closed any other way (explicit close, etc.) → reopen, unless the window itself is going away.

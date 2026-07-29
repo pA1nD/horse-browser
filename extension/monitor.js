@@ -107,6 +107,9 @@ function send(method, params, sessionId, timeoutMs = 8000) {
 async function connect() {
   if (!CDP) CDP = await resolveCdp();
   if (!CDP) throw new Error("no debug port for this browser yet");
+  // Name the instance in the footer too: with several browsers open the wall is the other
+  // place you look, and the port is the only thing that tells them apart.
+  document.getElementById("stat-port").textContent = ":" + CDP.split(":").pop();
   const ver = await (await fetch(CDP + "/json/version")).json();
   ws = new WebSocket(ver.webSocketDebuggerUrl);
   ws.onmessage = (e) => {
