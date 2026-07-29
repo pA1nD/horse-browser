@@ -58,13 +58,15 @@ open_tab to open tabs from now on.
 
 The paved path (open tabs with `open_tab`; the shared-browser sharp edges) must be in context *before* the first browser call — so it's an always-on rule, not a load-on-demand skill. It's **one self-contained file** (`RULE.md`, ~650 tokens, no `@`-imports); the full reference stays out of context until an agent asks for it via `horse-browser skill`.
 
-**Recommended** — let `claude-md.sh` own a rule file at `~/.claude/rules/horse-browser.md` (rules files load into every session exactly like `CLAUDE.md`):
+**Recommended** — let horse-browser own a rule file at `~/.claude/rules/horse-browser.md` (rules files load into every session exactly like `CLAUDE.md`):
 
 ```bash
-./claude-md.sh apply     # write/refresh the rule file (idempotent; also removes any legacy CLAUDE.md block)
-./claude-md.sh print     # just print it — to compare, or copy by hand
-./claude-md.sh check     # is the rule file up to date? (exit 1 if drifted — good for a cron)
+horse-browser rule apply     # write/refresh the rule file (idempotent; also removes any legacy CLAUDE.md block)
+horse-browser rule print     # just print it — to compare, or copy by hand
+horse-browser rule check     # is the rule file up to date? (exit 1 if drifted — good for a cron)
 ```
+
+(`rule` fronts the package's `claude-md.sh` — from a clone, `./claude-md.sh apply` is the same thing.)
 
 `apply` copies `RULE.md` verbatim — no symlinks, no per-Python copies, nothing to rot across reinstalls. `RULE.md` is the single source; edit it and re-run `apply`.
 

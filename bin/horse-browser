@@ -1118,6 +1118,13 @@ case "${1:-}" in
     if [ -n "$ROOT" ] && [ -f "$ROOT/MANUAL.md" ]; then cat "$ROOT/MANUAL.md"; exit 0
     else echo "horse-browser: MANUAL.md not found under $ROOT — reinstall the package" >&2; exit 1; fi
     ;;
+  rule)
+    # First-class front for claude-md.sh (apply/print/check) — so setup docs can say
+    # `horse-browser rule apply` instead of locating the package via `npm root -g`.
+    shift
+    if [ -n "$ROOT" ] && [ -f "$ROOT/claude-md.sh" ]; then exec bash "$ROOT/claude-md.sh" "$@"
+    else echo "horse-browser: claude-md.sh not found under $ROOT — reinstall the package" >&2; exit 1; fi
+    ;;
   verbs)
     # Introspect every loaded verb (core / plugins / local) with docstrings — powers the dashboard.
     # No browser needed: the harness prints and exits before touching the daemon.

@@ -33,6 +33,6 @@ horse-browser installed. Next:
   • Sign into your apps once — logins persist for every agent.
   • Teach agents the paved path — register the rule file
     (~/.claude/rules/horse-browser.md, one self-contained file, no imports):
-      bash "$PKG/claude-md.sh" apply
+      horse-browser rule apply
 EOF
 exit 0
