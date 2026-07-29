@@ -119,7 +119,7 @@ ndup="$(daemon_names | grep -c "^hb-$TSESS\$" || true)"
 if [ "$ndup" = 1 ]; then
   pass "parallel cold first-calls yielded a single daemon (TOCTOU not hit)"
 elif [ "$ndup" -gt 1 ]; then
-  warn "REGRESSION: daemon-spawn TOCTOU reproduced: $ndup daemons for one BU_NAME (the _ipc singleton lock should prevent this)"
+  fail "single daemon per BU_NAME (TOCTOU)" "daemon-spawn TOCTOU reproduced: $ndup daemons for one BU_NAME (the _ipc singleton lock should prevent this)"
 else
   fail "TOCTOU probe" "no daemon appeared for BU_NAME hb-$TSESS"
 fi
@@ -196,11 +196,11 @@ nb="$(pgrep -fl "remote-debugging-port=$PORT" | grep -cv "/Frameworks/" || true)
 
 dups="$(daemon_names | sort | uniq -d)"
 [ -z "$dups" ] && pass "no duplicate daemons per BU_NAME after chaos" \
-  || warn "duplicate daemons after chaos (singleton-lock regression?): $(tr '\n' ' ' <<<"$dups")"
+  || fail "no duplicate daemons per BU_NAME after chaos" "singleton-lock regression?: $(tr '\n' ' ' <<<"$dups")"
 
 leaked="$(curl -s --max-time 3 "http://127.0.0.1:$PORT/json" | python3 -c '
 import json, sys
-print(sum(1 for t in json.load(sys.stdin) if "hbchaos$$-" in (t.get("title") or "")))' 2>/dev/null)"
+print(sum(1 for t in json.load(sys.stdin) if sys.argv[1] in (t.get("title") or "")))' "hbchaos$$-" 2>/dev/null)"
 [ "${leaked:-0}" = 0 ] && pass "no leaked chaos tabs" || fail "no leaked chaos tabs" "$leaked left open"
 
 [ -d "$LOCK" ] && fail "lock free after chaos" "lock dir present" || pass "lock free after chaos"

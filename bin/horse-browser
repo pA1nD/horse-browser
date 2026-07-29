@@ -15,7 +15,8 @@
 #   horse-browser update   fetch the latest Chrome for Testing and restart onto it
 #
 # Idempotent. Config is written by install.sh to ~/.config/horse-browser/config.
-# Env vars override it: HORSE_BROWSER_BIN, HORSE_BROWSER_PORT, HORSE_BROWSER_PROFILE.
+# Env vars override it: HORSE_BROWSER_BIN, HORSE_BROWSER_PORT, HORSE_BROWSER_PROFILE,
+# HORSE_BROWSER_EXTENSION.
 set -euo pipefail
 
 CONFIG="$HOME/.config/horse-browser/config"
@@ -25,7 +26,7 @@ CONFIG="$HOME/.config/horse-browser/config"
 PORT="${HORSE_BROWSER_PORT:-${PORT:-9223}}"
 PROFILE="${HORSE_BROWSER_PROFILE:-${PROFILE:-$HOME/.config/horse-browser/profile}}"
 BIN="${HORSE_BROWSER_BIN:-${BROWSER_BIN:-}}"
-EXT="${EXTENSION_DIR:-}"
+EXT="${HORSE_BROWSER_EXTENSION:-${EXTENSION_DIR:-}}"
 CACHE="${HORSE_BROWSER_CACHE:-$HOME/.cache/horse-browser}"
 
 # Repo/package root (resolves the launcher symlink) — integrations/ lives here.

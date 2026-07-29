@@ -58,8 +58,15 @@ hb_isolate() {
   # the operator's CLAUDE_CODE_SESSION_ID, the suite reuses their LIVE daemon — pinned to :9223 —
   # and the port override is silently defeated (the suite then drives the live browser). Give the
   # isolated instance its own session so it spawns its own daemon on our port.
-  unset CLAUDE_CODE_SESSION_ID
+  # Same trap, wider: ANY inherited daemon-identity/endpoint var silently reroutes the
+  # suite to the live daemon (an explicit BU_NAME beats the derivation; BU_CDP_WS beats
+  # BU_CDP_URL in the daemon). Shed them all before setting our own identity.
+  unset CLAUDE_CODE_SESSION_ID BU_NAME BU_CDP_WS BU_CDP_URL HORSE_LANE BH_ANCHOR_PID BH_ANCHOR_START
   export HORSE_SESSION="hbtest-$$-$port"
+  # Always test THIS checkout's extension. Without this, a valid user config wins and the
+  # suite silently drives (and version-syncs!) the operator's installed npm extension.
+  local _repo; _repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  [ -d "$_repo/extension" ] && export HORSE_BROWSER_EXTENSION="$_repo/extension"
   export HB_ISOLATED=1   # suites gate non-hermetic checks (external network) on this
   HB_LOCK_PATH="$HB_ISO_ROOT/profile.browser-lock"   # matches the launcher's ${PROFILE%/}.browser-lock
   echo "isolate: dedicated horse-browser on :$port  (profile $HORSE_BROWSER_PROFILE)"
