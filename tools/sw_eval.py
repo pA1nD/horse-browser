@@ -26,9 +26,9 @@ def http_json(port, path):
     return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=4))
 
 
-def ws_connect(port, ws_url):
+def ws_connect(port, ws_url, timeout=5):
     path = "/" + ws_url.split("://", 1)[1].split("/", 1)[1]
-    s = socket.create_connection(("127.0.0.1", int(port)), timeout=5)
+    s = socket.create_connection(("127.0.0.1", int(port)), timeout=timeout)
     key = base64.b64encode(os.urandom(16)).decode()
     s.sendall((f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
@@ -90,7 +90,7 @@ _NOT_MINE = "__not_horse_sw__"
 
 def _eval_on(port, ws_url, expr, timeout):
     try:
-        s = ws_connect(port, ws_url)
+        s = ws_connect(port, ws_url, timeout=min(5, timeout))
         ws_send(s, json.dumps({"id": 1, "method": "Runtime.evaluate",
                                "params": {"expression": f"({_MINE}) ? ({expr}) : '{_NOT_MINE}'",
                                           "awaitPromise": True, "returnByValue": True}}))
@@ -111,11 +111,18 @@ def evaluate(port, expr, wait_s=0, timeout=8):
 
     `wait_s` waits for OUR worker, not for any worker: an MV3 worker can still be
     registering right after launch, and a profile with other extensions would otherwise
-    satisfy the wait with a stranger's worker on the first poll and give up."""
+    satisfy the wait with a stranger's worker on the first poll and give up. The whole call
+    is bounded by wait_s + timeout even so — the launcher holds the single-flight lock while
+    this runs, and a stranger's worker that accepts a socket then never answers must not be
+    able to stretch that by one timeout per worker per round."""
     deadline = time.monotonic() + max(0, wait_s)
+    hard = deadline + timeout
     while True:
         for sw in service_workers(port):
-            val = _eval_on(port, sw["webSocketDebuggerUrl"], expr, timeout)
+            left = hard - time.monotonic()
+            if left <= 0:
+                return None
+            val = _eval_on(port, sw["webSocketDebuggerUrl"], expr, min(timeout, left))
             if val is None or val == _NOT_MINE:
                 continue                    # unreachable, or somebody else's extension
             return val

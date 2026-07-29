@@ -161,12 +161,7 @@ cdp_up() { curl -sf "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
 # Adopt the pre-0.9.7 global stamp once, so an upgrade landing inside the backoff window
 # still sees the kill that just happened instead of stacking a second one.
 HEAL_STAMP="${PROFILE%/}.last-heal"
-# Only the default profile inherits it: the global stamp can only ever have belonged to the
-# one browser that existed before, and a disposable test profile must not swallow it.
-if [ "$PROFILE" = "$HOME/.config/horse-browser/profile" ] \
-   && [ ! -f "$HEAL_STAMP" ] && [ -f "$HOME/.config/horse-browser/.last-heal" ]; then
-  mv "$HOME/.config/horse-browser/.last-heal" "$HEAL_STAMP" 2>/dev/null || true
-fi
+HEAL_STAMP_LEGACY="$HOME/.config/horse-browser/.last-heal"   # pre-0.9.7, global; read-only now
 
 # heal_log <event> [k=v …]: one tab-separated line per incident, with enough context
 # (time since wake, process ages, trigger details) to understand over time WHY the
@@ -373,9 +368,15 @@ heal_gpu() {
 # recently_healed: a GPU-process kill happened within the backoff window (sets
 # HEAL_AGO). A second kill that soon risks tripping Chrome's crash-count fallback
 # (see gpu_fallback), so the caller escalates to relaunch_browser instead.
+# Reads the pre-0.9.7 GLOBAL stamp as a floor, so an upgrade landing inside the backoff
+# window still sees the kill that just happened. Never written and never removed: moving it
+# would steal the backoff from a v0.9.6 launcher still running (or a rollback), and it stops
+# mattering by itself once it ages past the window.
 recently_healed() {
-  local last now
+  local last now legacy
   last=$(cat "$HEAL_STAMP" 2>/dev/null || echo 0); now=$(date +%s)
+  legacy=$(cat "$HEAL_STAMP_LEGACY" 2>/dev/null || echo 0)
+  [ "$legacy" -gt "$last" ] 2>/dev/null && last="$legacy"
   HEAL_AGO=$(( now - last ))
   [ "$HEAL_AGO" -lt "${HORSE_BROWSER_HEAL_BACKOFF:-600}" ]
 }

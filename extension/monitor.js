@@ -590,6 +590,7 @@ setInterval(() => {
   // the listener above reloads us the moment the launcher seeds this browser's port.
   if (!ok) {
     statTabs.textContent = "—";
+    document.querySelector(".live").hidden = true;   // nothing is live; don't pulse as if it were
     emptyEl.querySelector(".empty-title").textContent = "Waiting for this browser's port";
     emptyEl.querySelector(".empty-sub").textContent =
       "Run `horse-browser` against this browser — the launcher tells the extension which debug port it lives on.";
