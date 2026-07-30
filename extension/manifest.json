@@ -48,7 +48,6 @@
     "debugger",
     "alarms",
     "storage",
-    "webRequest",
     "declarativeNetRequest"
   ],
   "host_permissions": [
