@@ -7,7 +7,14 @@
 # BH_ANCHOR_START to the process the session's daemon should die with. Must be
 # side-effect-free when your system isn't present. Sourced under `set -euo pipefail`.
 
-if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+# GROK_AGENT guard: CLAUDE_CODE_SESSION_ID is an ordinary exported variable, so it is
+# INHERITED by anything launched from a Claude Code session — including another agent.
+# Verified: `env` inside a grok tool call started from this session prints
+# CLAUDE_CODE_SESSION_ID=<the claude session>. Without the guard that grok session would
+# be handed the Claude session's identity, and two different agents would drive one tab
+# group and one daemon. An agent that marks its own tool processes owns them; see
+# integrations/grok/detect.sh.
+if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -z "${GROK_AGENT:-}" ]; then
   HORSE_SESSION="$CLAUDE_CODE_SESSION_ID"
 
   # Anchor the daemon to this Claude session's process: a self-reaping browser-harness
