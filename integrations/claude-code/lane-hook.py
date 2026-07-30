@@ -62,98 +62,33 @@ def _port():
     return "9223"
 
 
-# ── minimal CDP-over-websocket client (stdlib only; same scheme as bin's gpu probe) ──
-def _ws_connect(port, path):
-    import base64
-    import socket
-    s = socket.create_connection(("127.0.0.1", int(port)), timeout=5)
-    s.settimeout(5)
-    key = base64.b64encode(os.urandom(16)).decode()
-    s.sendall((f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
-               "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
-    buf = b""
-    while b"\r\n\r\n" not in buf:
-        c = s.recv(1024)
-        if not c:
-            raise ConnectionError("handshake closed")
-        buf += c
-    if b" 101 " not in buf.split(b"\r\n", 1)[0]:
-        raise ConnectionError("no upgrade")
-    return s
+def close_lane_tabs(bu):
+    """Close every tab the lane claimed — its registry, over the DevTools HTTP endpoint.
 
-
-def _ws_send(s, obj):
-    import struct
-    d = json.dumps(obj).encode()
-    n = len(d)
-    m = os.urandom(4)
-    h = bytearray([0x81])
-    if n < 126:
-        h.append(0x80 | n)
-    elif n < 65536:
-        h.append(0x80 | 126); h += struct.pack(">H", n)
-    else:
-        h.append(0x80 | 127); h += struct.pack(">Q", n)
-    h += m
-    s.sendall(bytes(h) + bytes(b ^ m[i % 4] for i, b in enumerate(d)))
-
-
-def _ws_recv(s):
-    import struct
-
-    def rd(n):
-        b = b""
-        while len(b) < n:
-            c = s.recv(n - len(b))
-            if not c:
-                raise ConnectionError("closed")
-            b += c
-        return b
-    ln = rd(2)[1] & 0x7F
-    if ln == 126:
-        ln = struct.unpack(">H", rd(2))[0]
-    elif ln == 127:
-        ln = struct.unpack(">Q", rd(8))[0]
-    return json.loads(rd(ln))
-
-
-def close_lane_tabs(label):
-    """Close every tab in the lane's group via the grouper extension — direct CDP,
-    no daemon, and a no-op unless the browser is already up."""
+    No websocket and no extension. A lane's tabs are whatever
+    ~/.config/horse-browser/tabs/<BU_NAME> says they are, so this works on a browser we
+    did not launch and does not need a service worker to be awake — which matters here
+    more than anywhere, because this runs while a subagent is being torn down. Replaced
+    ~50 lines of hand-rolled CDP-over-websocket that existed only to ask the extension
+    which tabs carried the lane's group title. A no-op unless the browser is already up.
+    """
     import urllib.request
-    port = _port()
-    info = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=3))
-    path = "/" + info["webSocketDebuggerUrl"].split("/", 3)[3]
-    s = _ws_connect(port, path)
-    mid = [0]
-
-    def call(method, params=None, session=None):
-        mid[0] += 1
-        m = {"id": mid[0], "method": method, "params": params or {}}
-        if session:
-            m["sessionId"] = session
-        _ws_send(s, m)
-        while True:
-            r = _ws_recv(s)
-            if r.get("id") == mid[0]:
-                return r.get("result") or {}
+    f = os.path.expanduser("~/.config/horse-browser/tabs/" + bu)
     try:
-        sw = next((t["targetId"] for t in call("Target.getTargets")["targetInfos"]
-                   if t.get("type") == "service_worker"
-                   and t.get("url", "").startswith("chrome-extension://")), None)
-        if not sw:
-            return          # no extension (a browser we didn't launch) — lanes have no
-                            # tab group to enumerate, so there is nothing to close here.
-                            # The daemon's own watchdog reaps that case; see _tracked_tabs.
-        sess = call("Target.attachToTarget", {"targetId": sw, "flatten": True})["sessionId"]
-        r = call("Runtime.evaluate", {"expression": f"self.listTabs({json.dumps(label)})",
-                                      "awaitPromise": True, "returnByValue": True}, session=sess)
-        for t in (r.get("result") or {}).get("value") or []:
-            if t.get("targetId"):
-                call("Target.closeTarget", {"targetId": t["targetId"]})
-    finally:
-        s.close()
+        ids = [t for t in json.load(open(f)) if isinstance(t, str)]
+    except Exception:
+        return
+    port = _port()
+    for tid in ids:
+        try:
+            urllib.request.urlopen("http://127.0.0.1:%s/json/close/%s" % (port, tid),
+                                   timeout=3).read()
+        except Exception:
+            pass
+    try:
+        os.unlink(f)                        # the registry dies with the lane
+    except OSError:
+        pass
 
 
 def subagentstop(d):
@@ -170,7 +105,7 @@ def subagentstop(d):
     if not (os.path.exists(pidf) or os.path.exists(sockf)):
         return  # this subagent never browsed — the common case, exit cheap
     try:
-        close_lane_tabs(f"{sid}#{aid}")
+        close_lane_tabs(bu)
     except Exception:
         pass
     try:

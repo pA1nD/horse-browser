@@ -72,8 +72,12 @@ calls it makes, so when you outgrow it you already know the idiom to compose you
 **Tabs**
 - `open_tab(url)` → reuse a blank tab in your group or `Target.createTarget(background=True)`,
   group it via the extension, switch to it, navigate, `wait_for_load()`. Returns targetId.
-- `list_tabs()` → the extension's `listTabs(yourGroup)`: your group's tabs with url/title/
-  lastAccessed/targetId.
+- `list_tabs()` → your session's registry (`~/.config/horse-browser/tabs/$BU_NAME`), filtered
+  to targets still open: `targetId`/`url`/`title`/`lastAccessed`. The registry is the truth
+  about which tabs are yours — the coloured tab group renders it, never sources it, so this
+  answers identically on a browser with no extension. `tabId`/`discarded`/`audible`/`active`
+  come back `None`: only `chrome.tabs` knows them, and nothing may depend on the extension
+  being there. See `docs/attached-mode.md`.
 - `switch_tab(tid)` → attach the target (`Target.attachToTarget flatten`), tell the daemon
   to bind this session to it, `Emulation.setFocusEmulationEnabled` so it drives live in the
   background. No `activateTarget`.
@@ -177,10 +181,15 @@ exists. The service worker exposes three async functions on `self`, reachable by
 its service_worker target and `Runtime.evaluate` (this is what `ext_call` / `bh_*` do):
 
 ```js
-self.groupTab(targetId, label) -> tabId        // group the tab under `label`, create group if missing
-self.activateTab(targetId)     -> tabId        // make it the visible tab WITHOUT raising the window
-self.listTabs(label)           -> Tab[]        // {targetId,tabId,url,title,lastAccessed,discarded,audible,active}
+self.groupTab(targetId, label)  -> tabId       // paint the tab into `label`'s group (best-effort)
+self.activateTab(targetId)      -> tabId       // make it the visible tab WITHOUT raising the window
+self.activeTabTargets()         -> targetId[]  // the visible tab of each window (no CDP equivalent)
+self.sweepStrayTabs(claimed)    -> {closed}    // close ungrouped about:blank no registry claims
 ```
+
+None of these is a source of truth. Which tabs belong to a session is answered by that
+session's registry over plain CDP — `groupTab` only paints, and its result is ignored.
+Asking the browser instead would give a second answer that can disagree with the first.
 
 Focus-safety mechanics: (1) `Target.createTarget(background=True)` + `chrome.tabs.update({active:true})`
 instead of `Target.activateTarget` — the latter calls `[NSApp activate]`; `chrome.tabs.update`

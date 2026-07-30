@@ -469,21 +469,25 @@ def test_anchor_alive_unverifiable_defaults_to_alive(monkeypatch):
     assert daemon._anchor_alive() is True
 
 
-def test_reap_own_tabs_closes_every_group_tab(monkeypatch):
+def test_reap_own_tabs_never_asks_the_extension(tmp_path, monkeypatch):
+    # Self-reap runs when things have already gone wrong (the anchor died). Routing it
+    # through the extension made the cleanup you most need depend on a service worker
+    # being awake and an earlier groupTab having worked. It reads the registry now, and
+    # a live, answering extension must not change the outcome by one tab.
     monkeypatch.setattr(daemon, "_session_label", lambda: "sess-1")
+    _registry(tmp_path, monkeypatch, ["T1", "T2"])
     d = daemon.Daemon()
     d.cdp = _ScriptedCDP({
         "Target.getTargets": _SW_TARGETS,
         "Target.attachToTarget": {"sessionId": "sw-session"},
-        "Runtime.evaluate": {"result": {"value": [
-            {"targetId": "T1"}, {"targetId": "T2"}, {"targetId": None},
-        ]}},
+        "Runtime.evaluate": {"result": {"value": [{"targetId": "FROM-EXT"}]}},
     })
 
     asyncio.run(d._reap_own_tabs())
 
     closed = [p for (m, p, _s) in d.cdp.calls if m == "Target.closeTarget"]
     assert closed == [{"targetId": "T1"}, {"targetId": "T2"}]
+    assert not [m for (m, _p, _s) in d.cdp.calls if m == "Runtime.evaluate"]
 
 
 # ── the tab registry ── the daemon mints tabs of its own, so it records them too ────

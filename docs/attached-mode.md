@@ -81,24 +81,35 @@ untouched, and there is no other way to observe that: CDP targets carry no "visi
 It's a test-only observability hook, and the invariant it guards is one of the load-bearing
 ones. In attached mode the test skips, as it already does when the extension isn't live.
 
-### 2. Invert ownership — one source of truth, two renderings
+### 2. Invert ownership — one source of truth, never two — **DONE**
 
-The session→tab map should live in **the daemon** in both modes, with the extension demoted to
-a renderer of state it no longer owns:
+The session→tab map lives in a per-session registry on disk
+(`~/.config/horse-browser/tabs/<BU_NAME>`, sibling of the existing bound-tab file) and is
+authoritative in **both** modes. The extension renders it and never sources it:
 
-- `listTabs` **goes away** — the daemon already knows which targets are its own.
-- `reapDeadTabs` shrinks to daemon-side `Target.closeTarget`, calling the extension only to
-  tidy the now-empty group chrome.
-- `groupTab` **stays**, demoted to "paint this tab with this session's colour".
+- `listTabs` **deleted**. `list_tabs()` reads the registry, always — it does not consult the
+  extension even when one is answering, which is asserted directly in the unit tests.
+- `reapDeadTabs` **deleted**. The launcher closes a dead session's tabs by id over the
+  DevTools HTTP endpoint, so reaping now works on a browser we didn't launch too. The
+  daemon's self-reap likewise dropped its extension path entirely.
+- `groupTab` **stays**, demoted to best-effort painting: callers ignore what it returns.
+- `sweepStrayTabs` **replaces** the old reaper's second rule — see below.
 
-Durability caveat, and the reason not to do this naively: a group title survives the daemon
-dying; a daemon-memory map does not. So the registry must be
+An earlier draft of this note argued the extension had to stay the backup store, because
+"a group title survives the daemon dying and a daemon-memory map does not." That was an
+argument against an in-memory registry. A **file** survives daemon death, process death and
+reboot, so there was never a reason to keep two answers.
 
-- persisted per-profile on disk (same convention as `${PROFILE%/}.relaunch-tabs.json`),
-- keyed on the **tab-type** targetId — `Target.getTargets({filter:[{type:"tab"}]})` — which is
-  stable across cross-origin navigation, unlike a page target,
-- rebuildable from group titles in owned mode, which makes the extension the desktop's backup
-  store rather than its primary one.
+The one rule that genuinely needs `chrome.tabs` is the janitorial sweep for ungrouped stray
+`about:blank` — leaks from outside our paths. A stray appears in no registry by definition,
+so it can't be ownership. It's now `sweepStrayTabs(claimed)`, and it may never close a tab any
+registry claims: `groupTab` is best-effort, so one of a *live* session's tabs can end up
+ungrouped and look exactly like a stray. That guard is what keeps the two rules from
+colliding, and it's tested in both directions.
+
+Ordering invariant, worth keeping: **record, then paint, then navigate.** A tab is ours the
+moment the registry says so, so an open that dies mid-flight still leaves a tab the reaper can
+see rather than an untracked `about:blank` nobody will ever close.
 
 ### 3. Stays — no CDP equivalent exists
 
@@ -142,8 +153,9 @@ so. Mitigation: assert on each navigation that `navigator.userAgentData.brands` 
 1. **Capability probe + graceful absence** (~1h) — the four call sites tolerate `None` from
    `sw_eval`. Shippable alone: horse-browser can drive a bare endpoint, minus groups.
 2. **Delete netlog + `activeTabTargets`** (~15 min) — dead code, independent of everything else.
-3. **Daemon-owned registry** (~2h) — persisted, tab-targetId-keyed; `listTabs` deleted,
-   `reapDeadTabs` inverted.
+3. ~~**Daemon-owned registry**~~ — **done**. `listTabs` and `reapDeadTabs` deleted; the lane
+   hook lost ~50 lines of hand-rolled CDP-over-websocket it only needed to ask the extension
+   which tabs carried a group title.
 4. **Realness over `Emulation`** (~half a day) — the auto-attach supervisor and its
    `waitForDebuggerOnStart` handshake, which is where the bugs live. Then delete
    `realchrome.js`, `rules.json`, and `sync_realness_version`.

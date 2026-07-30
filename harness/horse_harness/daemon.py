@@ -80,11 +80,10 @@ def _tabs_file():
 
 
 def _tracked_tabs():
-    """Every tab the helpers recorded this session driving (helpers._hb_track).
+    """Every tab this session claimed (helpers._hb_track / _track_target below).
 
-    The stand-in for listTabs on a browser we didn't launch: no extension means no tab
-    groups, and the tab group is what listTabs reads to answer "which tabs are this
-    session's". Same file, same convention as _bound_file.
+    THE answer to "which tabs are mine" — not a fallback for one. The tab group renders
+    this list; it never sources it. Same file and convention as _bound_file.
     """
     try:
         v = json.loads(_tabs_file().read_text())
@@ -202,6 +201,7 @@ class Daemon:
                 "Target.createTarget", {"url": "about:blank", "background": True}
             ))["targetId"]
             log(f"no {'bound' if label else 'real'} tab, created about:blank ({tid})")
+            _track_target(tid)      # claim before painting: the registry is the truth
             if label:
                 status, err = await self._ext_eval(f"self.groupTab({json.dumps(tid)}, {json.dumps(label)})")
                 if status != "ok":
@@ -352,27 +352,25 @@ class Daemon:
             return
 
     async def _reap_own_tabs(self):
+        """Close this session's tabs — from the registry, over plain CDP.
+
+        No extension in this path at all. It used to ask listTabs which tabs carried our
+        group title, which meant the one cleanup you most need when things have gone
+        wrong depended on a service worker being awake, an extension being installed,
+        and a groupTab call having succeeded earlier. The registry needs none of that,
+        and works identically on a browser we didn't launch.
+        """
         label = _session_label()
         if not label:
             return
-        status, tabs = await self._ext_eval(f"self.listTabs({json.dumps(label)})")
-        if status != "ok" or not isinstance(tabs, list):
-            # No extension to ask (attached mode) — fall back to the registry the helpers
-            # keep, plus the tab we're bound to. Returning here instead would leak every
-            # tab this session opened, which is the exact leak the watchdog exists to stop.
-            ids = _tracked_tabs()
-            if self.target_id and self.target_id not in ids:
-                ids.append(self.target_id)
-            if not ids:
-                log(f"self-reap: listTabs -> {status} ({tabs}); nothing tracked either")
-                return
-            log(f"self-reap: no extension ({status}) — closing {len(ids)} tracked tab(s)")
-            tabs = [{"targetId": t} for t in ids]
-        for t in tabs:
-            tid = (t or {}).get("targetId")
-            if tid:
-                await _silent(self.cdp.send_raw("Target.closeTarget", {"targetId": tid}))
-        log(f"self-reap: closed {len(tabs)} tab(s) in group {label[-8:]}")
+        ids = _tracked_tabs()
+        if self.target_id and self.target_id not in ids:
+            ids.append(self.target_id)      # bound tab, if it predates the registry
+        if not ids:
+            return                          # nothing claimed ⇒ nothing of ours to close
+        for tid in ids:
+            await _silent(self.cdp.send_raw("Target.closeTarget", {"targetId": tid}))
+        log(f"self-reap: closed {len(ids)} tab(s) for {label[-8:]}")
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise

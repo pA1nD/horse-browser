@@ -294,10 +294,24 @@ def _page_targets(*ids):
                              "url": f"https://example.test/{i}", "title": i} for i in ids]}
 
 
-def test_list_tabs_prefers_the_extension_when_it_answers(tmp_path, monkeypatch):
-    _tabs_env(tmp_path, monkeypatch, ["stale"])
-    with patch("horse_harness.helpers.ext_call", return_value=[{"targetId": "from-ext"}]):
-        assert helpers.list_tabs() == [{"targetId": "from-ext"}]
+def test_list_tabs_ignores_the_extension_even_when_it_would_answer(tmp_path, monkeypatch):
+    # THE invariant. An extension that answers is still not consulted: two sources would
+    # be two answers, and every way they can disagree is a bug — a groupTab that quietly
+    # failed, a tab the operator dragged out of the group, a browser with no extension.
+    _tabs_env(tmp_path, monkeypatch, ["a"])
+    ext = patch("horse_harness.helpers.ext_call", return_value=[{"targetId": "from-ext"}])
+    with ext as ext_call, patch("horse_harness.helpers.cdp", return_value=_page_targets("a")):
+        got = helpers.list_tabs()
+    assert [t["targetId"] for t in got] == ["a"]
+    assert ext_call.call_count == 0, "list_tabs must not ask the extension at all"
+
+
+def test_list_tabs_is_empty_when_the_registry_is(tmp_path, monkeypatch):
+    # …and the converse: an empty registry means no tabs, even if the extension would
+    # have named some. Nothing resurrects ids the session already dropped.
+    _tabs_env(tmp_path, monkeypatch, [])
+    with patch("horse_harness.helpers.ext_call", return_value=[{"targetId": "ghost"}]):
+        assert helpers.list_tabs() == []
 
 
 def test_list_tabs_falls_back_to_the_registry_with_no_extension(tmp_path, monkeypatch):
@@ -316,21 +330,6 @@ def test_list_tabs_fallback_forgets_tabs_that_have_closed(tmp_path, monkeypatch)
         got = helpers.list_tabs()
     assert [t["targetId"] for t in got] == ["a", "b"]
     assert json.loads(f.read_text()) == ["a", "b"]      # pruned, not left to grow
-
-
-def test_list_tabs_empty_extension_answer_is_not_absence(tmp_path, monkeypatch):
-    # [] from the extension is a real answer ("this session owns no tabs"). Only None —
-    # no service worker at all — may fall through to the registry, or an owned-mode
-    # session that legitimately has no tabs would resurrect ids it already reaped.
-    _tabs_env(tmp_path, monkeypatch, ["a"])
-    with patch("horse_harness.helpers.ext_call", return_value=[]):
-        assert helpers.list_tabs() == []
-
-
-def test_list_tabs_fallback_is_empty_when_nothing_was_tracked(tmp_path, monkeypatch):
-    _tabs_env(tmp_path, monkeypatch, [])
-    with patch("horse_harness.helpers.ext_call", return_value=None):
-        assert helpers.list_tabs() == []               # and no CDP call needed to say so
 
 
 def test_hb_track_moves_a_retouched_tab_to_the_end(tmp_path, monkeypatch):

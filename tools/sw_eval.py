@@ -84,7 +84,10 @@ def service_workers(port):
 # Evaluating in the wrong one would seed the port into a stranger's storage and leave the
 # Monitor unseeded. Ours is the one that defines the verbs the launcher drives it through;
 # ask before trusting, in the same round trip.
-_MINE = "typeof self.groupTab==='function'&&typeof self.reapDeadTabs==='function'"
+# groupTab + activateTab: the two verbs that stay for good, because neither has a CDP
+# equivalent. Probing on anything the registry rewrite might delete would make this
+# identity check drift with the refactor.
+_MINE = "typeof self.groupTab==='function'&&typeof self.activateTab==='function'"
 _NOT_MINE = "__not_horse_sw__"
 
 

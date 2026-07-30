@@ -1,12 +1,23 @@
 // Agent Tab Grouper — CDP-driven.
 //
 // A CDP client attaches to this service worker and calls self.groupTab /
-// self.activateTab / self.listTabs with Runtime.evaluate (awaitPromise: true).
+// self.activateTab with Runtime.evaluate (awaitPromise: true).
 // chrome.debugger.getTargets() bridges CDP targetIds to chrome.tabs.Tab ids.
 // Nothing here is specific to any one driver — it's a plain tab grouper.
+//
+// THIS FILE IS NEVER A SOURCE OF TRUTH. Which tabs belong to which session is
+// answered by the registry each session keeps on disk (~/.config/horse-browser/tabs/
+// <BU_NAME>, written by helpers._hb_track and daemon._track_target), never by reading
+// tab-group titles back out of the browser. The tab group RENDERS that registry: it is
+// what the operator sees, not what the code decides on. Two consequences:
+//   • groupTab is best-effort — its return value is ignored and a failure is not an
+//     error. An unpainted tab is still fully owned by its session.
+//   • nothing here answers "which tabs are mine" or "which are dead". Those have to work
+//     on a browser with no extension at all, so they are answered from the registry over
+//     plain CDP instead. See docs/attached-mode.md.
 
 // MV3 service workers sleep when idle and then vanish from Target.getTargets
-// until something wakes them — so a dormant SW would make groupTab/listTabs
+// until something wakes them — so a dormant SW would make groupTab
 // (and the install smoke test) silently miss us. Two keepalives:
 //   • a 30s no-op alarm resets the idle timer so we stay warm once running;
 //   • waking on tab creation covers the gap before the first alarm tick — a
@@ -64,6 +75,8 @@ async function tabIdForTargetId(targetId) {
 
 // `session` is the FULL session id (the caller passes CLAUDE_CODE_SESSION_ID); the
 // codename (emoji + colour + last-4) is derived here so the browser owns its render.
+// Best-effort by contract — see the header. Callers ignore what this returns; the tab
+// is theirs because their registry says so, not because this succeeded.
 self.groupTab = async (targetId, session) => {
   const tabId = await tabIdForTargetId(targetId);
   const tab = await chrome.tabs.get(tabId);
@@ -101,48 +114,28 @@ self.activeTabTargets = async () => {
   return tabs.map(t => idByTab.get(t.id)).filter(Boolean);
 };
 
-// Close tabs that belong to ENDED agent sessions — the leak the operator sees as a pile of
-// stray about:blank (and abandoned work) tabs. Each session's tabs live in a group titled by
-// codename(session); `liveSessions` is the raw session ids still running (the launcher gathers
-// them from live daemons). Any GROUPED tab whose group title isn't a live session's codename
-// is an orphan and gets closed. Ungrouped tabs are left alone (not session-owned). Refuses to
-// act on an empty live set (would look like everything is dead) — a hard safety stop.
-self.reapDeadTabs = async (liveSessions) => {
-  if (!Array.isArray(liveSessions) || liveSessions.length === 0) return { closed: 0, skipped: "no-live-sessions" };
-  const liveTitles = new Set(liveSessions.map(s => codename(s).title));
-  const tabs = await chrome.tabs.query({});
-  const groups = await chrome.tabGroups.query({});
-  const titleByGid = new Map(groups.map(g => [g.id, g.title]));
-  const orphan = (t) => {
-    if (t.pinned) return false;                                   // never the pinned monitor
-    if (t.groupId >= 0) return !liveTitles.has(titleByGid.get(t.groupId));  // dead session's group
-    return (t.url || "") === "" || t.url === "about:blank";       // ungrouped stray blank (daemon leak)
-  };
-  const dead = tabs.filter(orphan);
-  for (const t of dead) { try { await chrome.tabs.remove(t.id); } catch {} }
-  return { closed: dead.length };
-};
-
-self.listTabs = async (session) => {
-  const { title } = codename(session);
-  const groups = await chrome.tabGroups.query({ title });
-  if (!groups.length) return [];
-  const groupIds = new Set(groups.map(g => g.id));
+// Close STRAY tabs — ungrouped about:blank left by something outside the normal paths.
+// This is janitorial, NOT ownership: a session's dead tabs are closed from its registry
+// over plain CDP (bin/horse-browser reap_orphan_tabs), which works with or without this
+// extension. A stray by definition appears in no registry, and finding one needs
+// chrome.tabs, so this sweep is the one piece of cleanup that stays here.
+//
+// `claimed` is every targetId any registry claims — live sessions and dead alike. This
+// function may never touch one. That guard is what keeps the two rules from colliding:
+// groupTab is best-effort, so a session's tab CAN end up ungrouped, and without the
+// guard this would read that tab as a stray and close a live session's work.
+self.sweepStrayTabs = async (claimed) => {
+  const known = new Set(Array.isArray(claimed) ? claimed : []);
   const tabs = await chrome.tabs.query({});
   const targets = await chrome.debugger.getTargets();
-  const targetByTabId = new Map(targets.filter(t => t.tabId).map(t => [t.tabId, t.id]));
-  return tabs
-    .filter(t => groupIds.has(t.groupId))
-    .map(t => ({
-      targetId: targetByTabId.get(t.id) ?? null,
-      tabId: t.id,
-      url: t.url,
-      title: t.title,
-      lastAccessed: t.lastAccessed ?? null,
-      discarded: !!t.discarded,
-      audible: !!t.audible,
-      active: !!t.active,
-    }));
+  const idByTab = new Map(targets.filter(t => t.tabId).map(t => [t.tabId, t.id]));
+  const stray = tabs.filter(t =>
+    !t.pinned &&                                                  // never the pinned Monitor
+    t.groupId < 0 &&                                              // grouped ⇒ a session painted it
+    ((t.url || "") === "" || t.url === "about:blank") &&
+    !known.has(idByTab.get(t.id)));                               // claimed ⇒ not ours to judge
+  for (const t of stray) { try { await chrome.tabs.remove(t.id); } catch {} }
+  return { closed: stray.length };
 };
 
 // The Agent Monitor — a CCTV grid of every session's live tabs. It's a normal extension

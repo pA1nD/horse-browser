@@ -487,7 +487,7 @@ def _hb_home():
         # the one attach_first_page mints when it finds no bound tab — ADOPT it into
         # my group rather than leaking it and creating a second blank. Else make one.
         if cur and (ct.get("url") or "") in ("", "about:blank"):
-            ext_call("groupTab", cur, _session_id())
+            ext_call("groupTab", cur, _session_id())      # paint only; _hb_remember owns it
             _hb_remember(cur)
         else:
             open_tab("about:blank")         # no adoptable blank → create + home one in my group
@@ -598,10 +598,12 @@ def open_tab(url):
     created = tid is None
     if created:
         tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+        _hb_track(tid)      # claim it in the SAME breath as creating it — see below
     try:
-        # group BEFORE navigating: an open that fails (or a session killed
-        # mid-navigation) still lands in the session group, so list_tabs()-based
-        # cleanup can see it instead of leaking an ungrouped about:blank tab.
+        # Record, then paint, then navigate. The order is the invariant: a tab is ours
+        # the moment the registry says so, so an open that dies mid-flight (navigation
+        # error, session killed) still leaves a tab list_tabs() and the reaper can see,
+        # instead of an untracked about:blank nobody will ever close.
         if _session_id() and created:
             ext_call("groupTab", tid, _session_id())
         switch_tab(tid)
@@ -618,21 +620,13 @@ def open_tab(url):
 
 
 def list_tabs():
-    """Tabs in this session's group (targetId, url, title, lastAccessed, …)."""
-    if not _session_id():
-        return []
-    tabs = ext_call("listTabs", _session_id())
-    return tabs if tabs is not None else _hb_tabs_tracked()
+    """This session's tabs (targetId, url, title, lastAccessed, …).
 
-
-def _hb_tabs_tracked():
-    """list_tabs() for a browser with no extension: the tabs we recorded driving, minus
-    any that have since closed. Same shape as the extension's listTabs — the fields only
-    chrome.tabs can know (tabId, discarded, audible, active) are None rather than guessed,
-    and lastAccessed is the tracking order, which is what callers actually use it for.
-
-    Returning [] here instead would be quietly destructive: _hb_home() reads it as "this
-    session owns no tabs" and opens a fresh about:blank on every single call.
+    Answered from the registry — always, extension or not. The tab group is a rendering
+    of this list, never its source: asking the browser which tabs are grouped under our
+    codename would give a second answer that can disagree with the first, and every way
+    it disagrees is a bug (a groupTab that quietly failed, a tab an operator dragged out
+    of the group, a browser with no extension at all). One truth, one place.
     """
     tracked = _hb_tracked()
     if not tracked:
