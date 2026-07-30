@@ -143,7 +143,9 @@ def close_lane_tabs(label):
                    if t.get("type") == "service_worker"
                    and t.get("url", "").startswith("chrome-extension://")), None)
         if not sw:
-            return
+            return          # no extension (a browser we didn't launch) — lanes have no
+                            # tab group to enumerate, so there is nothing to close here.
+                            # The daemon's own watchdog reaps that case; see _tracked_tabs.
         sess = call("Target.attachToTarget", {"targetId": sw, "flatten": True})["sessionId"]
         r = call("Runtime.evaluate", {"expression": f"self.listTabs({json.dumps(label)})",
                                       "awaitPromise": True, "returnByValue": True}, session=sess)

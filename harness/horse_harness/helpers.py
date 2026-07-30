@@ -404,6 +404,38 @@ def _hb_current_file():
                         os.environ.get("BU_NAME", "default"))
 
 
+def _hb_tabs_file():
+    return os.path.join(os.path.expanduser("~/.config/horse-browser/tabs"),
+                        os.environ.get("BU_NAME", "default"))
+
+
+def _hb_tracked():
+    try:
+        v = json.loads(open(_hb_tabs_file()).read())
+        return [t for t in v if isinstance(t, str)] if isinstance(v, list) else []
+    except Exception:
+        return []
+
+
+def _hb_track(target_id):
+    # The attached-mode tab registry. Driving a browser we didn't launch means no
+    # extension, and without the extension there are no tab groups — so the browser
+    # cannot tell us which tabs are this session's and we have to remember it ourselves.
+    # Ordered oldest→newest (re-touching a tab moves it to the end) so list_tabs() can
+    # synthesise the recency that lastAccessed carries in owned mode. Written in owned
+    # mode too and simply ignored on read there: the tab group is still the truth.
+    if not target_id:
+        return
+    try:
+        ids = [t for t in _hb_tracked() if t != target_id]
+        ids.append(target_id)
+        f = _hb_tabs_file()
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        open(f, "w").write(json.dumps(ids[-64:]))
+    except Exception:
+        pass
+
+
 def _hb_remember(target_id):
     # Persist the tab this session is currently driving, so _hb_home (and the daemon's
     # own bound-tab attach) can put us back on the SAME tab after any drift.
@@ -413,6 +445,7 @@ def _hb_remember(target_id):
         open(f, "w").write(target_id or "")
     except Exception:
         pass
+    _hb_track(target_id)   # every tab we drive is one of ours — see _hb_track
 
 
 def _hb_recall():
@@ -586,7 +619,36 @@ def open_tab(url):
 
 def list_tabs():
     """Tabs in this session's group (targetId, url, title, lastAccessed, …)."""
-    return ext_call("listTabs", _session_id()) or [] if _session_id() else []
+    if not _session_id():
+        return []
+    tabs = ext_call("listTabs", _session_id())
+    return tabs if tabs is not None else _hb_tabs_tracked()
+
+
+def _hb_tabs_tracked():
+    """list_tabs() for a browser with no extension: the tabs we recorded driving, minus
+    any that have since closed. Same shape as the extension's listTabs — the fields only
+    chrome.tabs can know (tabId, discarded, audible, active) are None rather than guessed,
+    and lastAccessed is the tracking order, which is what callers actually use it for.
+
+    Returning [] here instead would be quietly destructive: _hb_home() reads it as "this
+    session owns no tabs" and opens a fresh about:blank on every single call.
+    """
+    tracked = _hb_tracked()
+    if not tracked:
+        return []
+    live = {t["targetId"]: t for t in cdp("Target.getTargets")["targetInfos"]
+            if t.get("type") == "page"}
+    out = [{"targetId": tid, "tabId": None, "url": live[tid].get("url"),
+            "title": live[tid].get("title"), "lastAccessed": i + 1,
+            "discarded": None, "audible": None, "active": None}
+           for i, tid in enumerate(tracked) if tid in live]
+    if len(out) != len(tracked):            # forget the ids whose tabs are gone
+        try:
+            open(_hb_tabs_file(), "w").write(json.dumps([t["targetId"] for t in out]))
+        except Exception:
+            pass
+    return out
 
 
 # ── screenshots: a unique file per call, captured on a fresh per-target session ──

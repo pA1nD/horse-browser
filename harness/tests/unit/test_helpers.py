@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import time
@@ -273,3 +274,66 @@ def test_wait_for_network_idle_filters_events_to_active_session():
         "session filter, the background rWS/lF pair would have updated "
         "last_activity and prevented the idle window from elapsing."
     )
+
+
+# ── attached mode: list_tabs() on a browser with no extension ───────────────────────
+# Driving a CDP endpoint we didn't launch means no extension, so no tab groups, so
+# listTabs has nothing to read. The fallback is the registry helpers._hb_track keeps.
+
+
+def _tabs_env(tmp_path, monkeypatch, tracked):
+    f = tmp_path / "tabs"
+    f.write_text(json.dumps(tracked))
+    monkeypatch.setattr(helpers, "_hb_tabs_file", lambda: str(f))
+    monkeypatch.setenv("HORSE_SESSION", "hb-test-session-0001")
+    return f
+
+
+def _page_targets(*ids):
+    return {"targetInfos": [{"targetId": i, "type": "page",
+                             "url": f"https://example.test/{i}", "title": i} for i in ids]}
+
+
+def test_list_tabs_prefers_the_extension_when_it_answers(tmp_path, monkeypatch):
+    _tabs_env(tmp_path, monkeypatch, ["stale"])
+    with patch("horse_harness.helpers.ext_call", return_value=[{"targetId": "from-ext"}]):
+        assert helpers.list_tabs() == [{"targetId": "from-ext"}]
+
+
+def test_list_tabs_falls_back_to_the_registry_with_no_extension(tmp_path, monkeypatch):
+    _tabs_env(tmp_path, monkeypatch, ["a", "b"])
+    with patch("horse_harness.helpers.ext_call", return_value=None), \
+         patch("horse_harness.helpers.cdp", return_value=_page_targets("a", "b")):
+        got = helpers.list_tabs()
+    assert [t["targetId"] for t in got] == ["a", "b"]
+    assert [t["lastAccessed"] for t in got] == [1, 2]   # tracking order stands in for recency
+
+
+def test_list_tabs_fallback_forgets_tabs_that_have_closed(tmp_path, monkeypatch):
+    f = _tabs_env(tmp_path, monkeypatch, ["a", "gone", "b"])
+    with patch("horse_harness.helpers.ext_call", return_value=None), \
+         patch("horse_harness.helpers.cdp", return_value=_page_targets("a", "b")):
+        got = helpers.list_tabs()
+    assert [t["targetId"] for t in got] == ["a", "b"]
+    assert json.loads(f.read_text()) == ["a", "b"]      # pruned, not left to grow
+
+
+def test_list_tabs_empty_extension_answer_is_not_absence(tmp_path, monkeypatch):
+    # [] from the extension is a real answer ("this session owns no tabs"). Only None —
+    # no service worker at all — may fall through to the registry, or an owned-mode
+    # session that legitimately has no tabs would resurrect ids it already reaped.
+    _tabs_env(tmp_path, monkeypatch, ["a"])
+    with patch("horse_harness.helpers.ext_call", return_value=[]):
+        assert helpers.list_tabs() == []
+
+
+def test_list_tabs_fallback_is_empty_when_nothing_was_tracked(tmp_path, monkeypatch):
+    _tabs_env(tmp_path, monkeypatch, [])
+    with patch("horse_harness.helpers.ext_call", return_value=None):
+        assert helpers.list_tabs() == []               # and no CDP call needed to say so
+
+
+def test_hb_track_moves_a_retouched_tab_to_the_end(tmp_path, monkeypatch):
+    f = _tabs_env(tmp_path, monkeypatch, ["a", "b", "c"])
+    helpers._hb_track("a")
+    assert json.loads(f.read_text()) == ["b", "c", "a"]

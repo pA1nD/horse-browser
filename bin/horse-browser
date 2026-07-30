@@ -630,6 +630,9 @@ if dry:
             "const byid=new Map(gs.map(g=>[g.id,g.title]));"
             "return JSON.stringify({closed:tabs.filter(t=>t.groupId>=0&&!live.has(byid.get(t.groupId))).length});})()"
             % json.dumps(sorted(live)))
+# None = no extension in this browser (one we didn't launch). Cross-session orphan
+# reaping reads tab-group titles, so it is owned-mode only by nature — degrade to a
+# silent no-op rather than guessing which of a foreign browser's tabs are disposable.
 val = evaluate(port, expr)
 try: closed = json.loads(val).get("closed", 0) if isinstance(val, str) else (val or {}).get("closed", 0)
 except Exception: closed = 0

@@ -74,6 +74,24 @@ def _remember_target(tid):
         pass
 
 
+def _tabs_file():
+    return Path(os.path.expanduser("~/.config/horse-browser/tabs")) / NAME
+
+
+def _tracked_tabs():
+    """Every tab the helpers recorded this session driving (helpers._hb_track).
+
+    The stand-in for listTabs on a browser we didn't launch: no extension means no tab
+    groups, and the tab group is what listTabs reads to answer "which tabs are this
+    session's". Same file, same convention as _bound_file.
+    """
+    try:
+        v = json.loads(_tabs_file().read_text())
+        return [t for t in v if isinstance(t, str)] if isinstance(v, list) else []
+    except (OSError, ValueError):
+        return []
+
+
 def _anchor_alive():
     """False only when the anchor process is verifiably gone (or its PID was reused)."""
     try:
@@ -307,6 +325,7 @@ class Daemon:
                 log(f"self-reap failed: {e}")
             try:
                 _bound_file().unlink(missing_ok=True)   # the binding dies with the session
+                _tabs_file().unlink(missing_ok=True)    # …and so does its tab registry
             except OSError:
                 pass
             self.stop.set()
@@ -318,8 +337,17 @@ class Daemon:
             return
         status, tabs = await self._ext_eval(f"self.listTabs({json.dumps(label)})")
         if status != "ok" or not isinstance(tabs, list):
-            log(f"self-reap: listTabs -> {status} ({tabs})")
-            return
+            # No extension to ask (attached mode) — fall back to the registry the helpers
+            # keep, plus the tab we're bound to. Returning here instead would leak every
+            # tab this session opened, which is the exact leak the watchdog exists to stop.
+            ids = _tracked_tabs()
+            if self.target_id and self.target_id not in ids:
+                ids.append(self.target_id)
+            if not ids:
+                log(f"self-reap: listTabs -> {status} ({tabs}); nothing tracked either")
+                return
+            log(f"self-reap: no extension ({status}) — closing {len(ids)} tracked tab(s)")
+            tabs = [{"targetId": t} for t in ids]
         for t in tabs:
             tid = (t or {}).get("targetId")
             if tid:
