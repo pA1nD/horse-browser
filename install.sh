@@ -133,33 +133,15 @@ echo "✓ helpers: folded into the vendored harness (workspace agent_helpers.py 
 # subagents stop clobbering each other); SubagentStop cleans that lane up. Pure harness
 # plumbing — agents never see it. Idempotent: skipped if the hook is already wired.
 # Same npm policy as above: never touch ~/.claude from a silent postinstall.
-if [ -z "${HORSE_FROM_NPM:-}" ]; then
-  python3 - "$HERE/integrations/claude-code/lane-hook.sh" "$HOME/.claude/settings.json" <<'PY' || \
-    echo "  (couldn't wire the lane hook into ~/.claude/settings.json — subagents will share the session's browser lane)" >&2
-import json, os, sys
-hook, path = sys.argv[1], sys.argv[2]
-d = {}
-if os.path.exists(path):
-    d = json.load(open(path))
-hooks = d.setdefault("hooks", {})
-def wired(event):
-    return any(h.get("command") == hook
-               for e in hooks.get(event, []) for h in e.get("hooks", []))
-changed = False
-if not wired("PreToolUse"):
-    hooks.setdefault("PreToolUse", []).append(
-        {"matcher": "Bash", "hooks": [{"type": "command", "command": hook, "timeout": 10}]})
-    changed = True
-if not wired("SubagentStop"):
-    hooks.setdefault("SubagentStop", []).append(
-        {"hooks": [{"type": "command", "command": hook, "timeout": 30, "async": True}]})
-    changed = True
-if changed:
-    json.dump(d, open(path, "w"), indent=2)
-    print("✓ wired the subagent lane hook into ~/.claude/settings.json (new sessions pick it up)")
-else:
-    print("✓ subagent lane hook already wired into ~/.claude/settings.json")
-PY
+#
+# ONE implementation, in tools/lane_hook_wire.py — the launcher self-heals with the same
+# script on every run (ensure_lane_hook), which is what catches the npm case this branch
+# deliberately skips, plus a path gone stale after a reinstall. This inlined its own copy
+# once; two copies is how the launcher ended up with none.
+if [ -z "${HORSE_FROM_NPM:-}" ] && [ -d "$HOME/.claude" ]; then
+  python3 "$HERE/tools/lane_hook_wire.py" \
+    "$HERE/integrations/claude-code/lane-hook.sh" "$HOME/.claude/settings.json" || true
+  echo "✓ subagent lane hook checked in ~/.claude/settings.json"
 fi
 
 # 4. first launch + smoke test ─────────────────────────────────────────────────

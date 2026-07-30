@@ -765,6 +765,37 @@ maybe_reap() {
   seed_instance_env   # re-assert the port for a browser that was already up (e.g. across an upgrade)
 }
 
+# ensure_lane_hook: keep the Claude Code subagent lane hook wired in ~/.claude/settings.json.
+#
+# Why the LAUNCHER and not install.sh alone. install.sh wires it once and skips the wiring
+# entirely under HORSE_FROM_NPM (a silent postinstall must not edit ~/.claude), so `npm i -g`
+# — the documented install — never wired it at all. Nothing re-checked afterwards, so any
+# removal was permanent and silent. And the entry stores an ABSOLUTE path, so moving the
+# install (npm → a dev symlink, a relocated checkout) leaves every Claude session running a
+# Bash hook that no longer exists. Checking here catches all three; install.sh can't.
+#
+# The silent-postinstall policy is intact: this runs from a command the operator typed, and
+# it prints a line when — and only when — it changes something.
+#   HORSE_BROWSER_NO_LANE_HOOK=1       skip entirely
+#   HORSE_BROWSER_CLAUDE_SETTINGS=<f>  target another file (tests)
+ensure_lane_hook() {
+  [ -n "${HORSE_BROWSER_NO_LANE_HOOK:-}" ] && return 0
+  [ -n "$ROOT" ] && [ -f "$ROOT/tools/lane_hook_wire.py" ] || return 0
+  local hook="$ROOT/integrations/claude-code/lane-hook.sh"
+  [ -f "$hook" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  local settings="${HORSE_BROWSER_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+  # Only on a machine that already runs Claude Code — never create ~/.claude ourselves.
+  [ -d "$(dirname "$settings")" ] || return 0
+  local stamp="${HORSE_BROWSER_LANE_HOOK_STAMP:-$HOME/.config/horse-browser/.last-lane-hook}"
+  local interval="${HORSE_BROWSER_LANE_HOOK_INTERVAL:-3600}" now last
+  now=$(date +%s); last=$(cat "$stamp" 2>/dev/null || echo 0)
+  [ $(( now - last )) -lt "$interval" ] && return 0
+  mkdir -p "$(dirname "$stamp")" 2>/dev/null || true
+  echo "$now" > "$stamp" 2>/dev/null || true
+  python3 "$ROOT/tools/lane_hook_wire.py" "$hook" "$settings" || true
+}
+
 # recycle_daemons: after a browser (re)launch, every harness daemon pinned to our
 # CDP endpoint still holds a websocket into the DEAD browser — browser-harness
 # caches the connection for the daemon's whole life and only self-heals when that
@@ -1171,6 +1202,10 @@ PY
   echo "horse-browser: timed out waiting for CDP :$PORT — check the browser window." >&2
   return 1
 }
+
+# Before the subcommand switch, so `status` / `update` / `relaunch` self-heal it too — the
+# operator running any of those is exactly who needs the hook wired. Throttled and silent.
+ensure_lane_hook
 
 # horse-browser's own subcommands — handled here, never forwarded to browser-harness.
 case "${1:-}" in
