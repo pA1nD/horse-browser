@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from horse_harness import daemon
 
@@ -483,3 +484,60 @@ def test_reap_own_tabs_closes_every_group_tab(monkeypatch):
 
     closed = [p for (m, p, _s) in d.cdp.calls if m == "Target.closeTarget"]
     assert closed == [{"targetId": "T1"}, {"targetId": "T2"}]
+
+
+# ── the tab registry ── the daemon mints tabs of its own, so it records them too ────
+
+
+def _registry(tmp_path, monkeypatch, tracked=None):
+    f = tmp_path / "tabs"
+    if tracked is not None:
+        f.write_text(json.dumps(tracked))
+    monkeypatch.setattr(daemon, "_tabs_file", lambda: f)
+    monkeypatch.setattr(daemon, "_bound_file", lambda: tmp_path / "current")
+    return f
+
+
+def test_remember_target_also_records_the_tab_in_the_registry(tmp_path, monkeypatch):
+    # attach_first_page mints an about:blank and used to call only _remember_target, so
+    # that tab existed ONLY in the extension's tab group — invisible, and leaked, the
+    # moment there is no extension to ask.
+    f = _registry(tmp_path, monkeypatch)
+    daemon._remember_target("T-minted")
+    assert json.loads(f.read_text()) == ["T-minted"]
+    assert (tmp_path / "current").read_text() == "T-minted"     # binding still written
+
+
+def test_track_target_moves_a_retouched_tab_to_the_end(tmp_path, monkeypatch):
+    f = _registry(tmp_path, monkeypatch, ["a", "b", "c"])
+    daemon._track_target("a")
+    assert json.loads(f.read_text()) == ["b", "c", "a"]         # order stands in for recency
+
+
+def test_reap_own_tabs_falls_back_to_the_registry_with_no_extension(tmp_path, monkeypatch):
+    monkeypatch.setattr(daemon, "_session_label", lambda: "sess-1")
+    _registry(tmp_path, monkeypatch, ["T1", "T2"])
+    d = daemon.Daemon()
+    d.target_id = "T3"                                          # bound tab, not yet tracked
+    d.cdp = _ScriptedCDP({"Target.getTargets": {"targetInfos": []}})   # no SW → unreachable
+
+    asyncio.run(d._reap_own_tabs())
+
+    closed = [p for (m, p, _s) in d.cdp.calls if m == "Target.closeTarget"]
+    assert closed == [{"targetId": "T1"}, {"targetId": "T2"}, {"targetId": "T3"}]
+
+
+def test_reap_own_tabs_closes_nothing_when_nothing_is_known(tmp_path, monkeypatch):
+    # The safety stop: no extension AND an empty registry must not fall through to
+    # something broader (every page target, say) — an attached browser's other tabs
+    # are not ours to close.
+    monkeypatch.setattr(daemon, "_session_label", lambda: "sess-1")
+    _registry(tmp_path, monkeypatch, [])
+    d = daemon.Daemon()
+    d.cdp = _ScriptedCDP({"Target.getTargets": {"targetInfos": [
+        {"targetId": "SOMEONE-ELSE", "type": "page", "url": "https://example.com"},
+    ]}})
+
+    asyncio.run(d._reap_own_tabs())
+
+    assert [p for (m, p, _s) in d.cdp.calls if m == "Target.closeTarget"] == []

@@ -72,6 +72,7 @@ def _remember_target(tid):
         f.write_text(tid or "")
     except OSError:
         pass
+    _track_target(tid)   # …and into the registry: the daemon mints tabs too
 
 
 def _tabs_file():
@@ -90,6 +91,25 @@ def _tracked_tabs():
         return [t for t in v if isinstance(t, str)] if isinstance(v, list) else []
     except (OSError, ValueError):
         return []
+
+
+def _track_target(tid):
+    """Record a tab as this session's — the mirror of helpers._hb_track, same file.
+
+    attach_first_page mints an about:blank of its own, so the daemon has to record one
+    too. Without this that tab exists ONLY in the extension's tab group, which makes it
+    invisible the moment there is no extension — grouped, undiscoverable, and leaked.
+    """
+    if not tid:
+        return
+    try:
+        ids = [t for t in _tracked_tabs() if t != tid]
+        ids.append(tid)
+        f = _tabs_file()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(ids[-64:]))
+    except OSError:
+        pass
 
 
 def _anchor_alive():
