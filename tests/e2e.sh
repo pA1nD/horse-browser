@@ -547,17 +547,42 @@ fi
 # ═════ 7. real websites ══════════════════════════════════════════════════════
 say "[7] real websites"
 
-out="$(hb '
+# These three hit the real internet, so a DNS hiccup or a slow edge node fails a run that has
+# nothing to do with our code — and since shipmate runs `npm test`, that reads as a regression
+# and the board goes red for a network blip. Retry with a short backoff.
+#
+# Bounded at 3, so a genuine break still fails; it just takes three attempts to say so. And
+# the attempt count is reported on success: a check that needs a retry every single run is
+# information, not noise.
+#   HB_NET_TRIES=1   disable (useful when you WANT the flake to surface)
+NET_TRIES="${HB_NET_TRIES:-3}"
+NET_ATTEMPTS=1
+net_try() {   # net_try <grep-marker> <hb-script> — sets $out; 0 if the marker showed up
+  local marker="$1" script="$2" i=1
+  while :; do
+    out="$(hb "$script")"
+    NET_ATTEMPTS=$i
+    grep -q "$marker" <<<"$out" && return 0
+    [ "$i" -ge "$NET_TRIES" ] && return 1
+    sleep $(( i * 2 ))                 # 2s, then 4s — enough for a transient, short enough to run
+    i=$(( i + 1 ))
+  done
+}
+net_note() { [ "${NET_ATTEMPTS:-1}" -gt 1 ] && printf ', took %s attempts' "$NET_ATTEMPTS"; return 0; }
+
+if net_try "HN True" '
 tid = open_tab("https://news.ycombinator.com")
 wait_for_load()
 print("HN", "Hacker News" in page_info().get("title",""),
       js("document.querySelectorAll(\".athing\").length"))
 cdp("Target.closeTarget", targetId=tid)
-')"
-grep -q "HN True" <<<"$out" && pass "HN loads with a story list ($(sed -n 's/^HN True //p' <<<"$out" | head -1) stories)" \
-  || fail "HN loads" "$out"
+'; then
+  pass "HN loads with a story list ($(sed -n 's/^HN True //p' <<<"$out" | head -1) stories$(net_note))"
+else
+  fail "HN loads (after $NET_ATTEMPTS attempt(s))" "$out"
+fi
 
-out="$(hb '
+net_try "DDG-URL-OK True" '
 import time
 tid = open_tab("https://duckduckgo.com")
 wait_for_load()
@@ -572,18 +597,18 @@ for _ in range(20):
 print("DDG-URL-OK", "q=horse+browser+e2e" in page_info().get("url",""))
 print("DDG-RESULTS", js("document.querySelectorAll(\"article\").length"))
 cdp("Target.closeTarget", targetId=tid)
-')"
-if [ "${HB_ISOLATED:-0}" = 1 ]; then
+' && ddg_ok=1 || ddg_ok=0
+if [ "$ddg_ok" = 1 ]; then
+  pass "DDG: hydrated SPA typed+submitted (trusted input$(net_note))"
+elif [ "${HB_ISOLATED:-0}" = 1 ]; then
   # A fresh isolated profile can land on DDG's consent/region interstitial, which eats the typed
   # query — non-hermetic. Validate trusted-input-on-a-real-SPA interactively (HB_ISOLATE=0).
-  grep -q "DDG-URL-OK True" <<<"$out" && pass "DDG: hydrated SPA typed+submitted (trusted input)" \
-    || skip "DDG: hydrated SPA typed+submitted" "external SPA on a fresh profile — run HB_ISOLATE=0"
+  skip "DDG: hydrated SPA typed+submitted" "external SPA on a fresh profile — run HB_ISOLATE=0"
 else
-  grep -q "DDG-URL-OK True" <<<"$out" && pass "DDG: hydrated SPA typed+submitted (trusted input)" \
-    || fail "DDG: hydrated SPA typed+submitted" "$out"
+  fail "DDG: hydrated SPA typed+submitted (after $NET_ATTEMPTS attempt(s))" "$out"
 fi
 
-out="$(hb '
+if net_try "WIKI True" '
 import time
 tid = open_tab("https://en.wikipedia.org/wiki/Chrome_DevTools_Protocol")
 wait_for_load()
@@ -591,9 +616,11 @@ time.sleep(1)
 h1 = js("(document.querySelector(\"#firstHeading, h1\") || {}).textContent || \"\"") or ""
 print("WIKI", len(h1.strip()) > 0, repr(h1.strip()[:40]))
 cdp("Target.closeTarget", targetId=tid)
-')"
-grep -q "WIKI True" <<<"$out" && pass "Wikipedia article loads + parses" \
-  || fail "Wikipedia article loads" "$out"
+'; then
+  pass "Wikipedia article loads + parses$(net_note)"
+else
+  fail "Wikipedia article loads (after $NET_ATTEMPTS attempt(s))" "$out"
+fi
 
 # ═════ 8. realness (from the hb-stealth module: fingerprint + input forensics) ═
 say "[8] realness / anti-bot fingerprint"
