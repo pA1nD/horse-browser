@@ -504,22 +504,34 @@ def _hb_home():
     switch_tab(want)
 
 
+_EXT_IS_MINE = "typeof self.groupTab==='function'&&typeof self.activateTab==='function'"
+_EXT_NOT_MINE = "__not_horse_sw__"
+
+
 def ext_call(fn, *args):
-    """Call an extension SW function. Returns the deserialised JS value,
-    or None if the extension's service worker isn't registered."""
-    sw = next((t["targetId"] for t in cdp("Target.getTargets")["targetInfos"]
-               if t.get("type") == "service_worker"
-               and t.get("url", "").startswith("chrome-extension://")), None)
-    if sw is None:
-        return None
-    s = cdp("Target.attachToTarget", targetId=sw, flatten=True)["sessionId"]
+    """Call one of OUR extension's SW functions. Returns the deserialised JS value, or None
+    when our extension isn't on this browser.
+
+    Not "the first chrome-extension:// worker": every Chrome carries component extensions of
+    its own, and a bare profile already has Google's running before anyone installs anything.
+    Each candidate is asked whether it is ours in the same round trip — the guard
+    tools/sw_eval.py has always used — so `fn` never runs in a stranger's worker.
+    """
+    cands = [t["targetId"] for t in cdp("Target.getTargets")["targetInfos"]
+             if t.get("type") == "service_worker"
+             and t.get("url", "").startswith("chrome-extension://")]
     a = ", ".join(json.dumps(x) for x in args)
-    try:
-        return cdp("Runtime.evaluate", session_id=s,
-                   expression=f"self.{fn}({a})",
-                   awaitPromise=True, returnByValue=True)["result"].get("value")
-    finally:
-        cdp("Target.detachFromTarget", sessionId=s)
+    guarded = f"({_EXT_IS_MINE}) ? (self.{fn}({a})) : '{_EXT_NOT_MINE}'"
+    for sw in cands:
+        s = cdp("Target.attachToTarget", targetId=sw, flatten=True)["sessionId"]
+        try:
+            v = cdp("Runtime.evaluate", session_id=s, expression=guarded,
+                    awaitPromise=True, returnByValue=True)["result"].get("value")
+        finally:
+            cdp("Target.detachFromTarget", sessionId=s)
+        if v != _EXT_NOT_MINE:
+            return v
+    return None
 
 
 def _session_id():
@@ -661,9 +673,17 @@ def realness_ok():
     r = js("(()=>{const u=navigator.userAgentData;"
            "const m=navigator.userAgent.match(/Chrome\\/(\\d+)/);"
            "return {brands: u ? u.brands.map(b=>b.brand+' '+b.version) : null,"
-           " ua_major: m ? m[1] : null, webdriver: navigator.webdriver === true};})()") or {}
+           " ua_major: m ? m[1] : null, webdriver: navigator.webdriver === true,"
+           " secure: window.isSecureContext === true};})()") or {}
     brands, major = r.get("brands"), r.get("ua_major")
     why = []
+    if brands is None and not r.get("secure"):
+        # navigator.userAgentData only exists in a secure context, so on a data:/file:/plain
+        # http: page its absence says nothing about the mask. Report unknown, not broken —
+        # "the mask is missing" would send you chasing a bug that isn't there.
+        return {"ok": None, "why": "insecure context — navigator.userAgentData is not exposed "
+                                   "here, so realness cannot be read; check on an https: page",
+                "brands": None, "ua_major": major}
     if brands is None:
         why.append("no navigator.userAgentData (pre-Chromium-90 or a non-Chromium engine)")
     else:

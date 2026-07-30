@@ -592,3 +592,70 @@ def test_realness_injects_the_same_source_the_extension_uses():
     src = next(p for (m, p, _s) in d.cdp.calls if m == "Page.addScriptToEvaluateOnNewDocument")
     assert "userAgentData" in src["source"] and "Google Chrome" in src["source"]
     assert src["runImmediately"] is True      # also cover an already-loaded tab
+
+
+# ── the extension we talk to must be OURS ───────────────────────────────────────────
+# Every Chrome runs component extensions of its own: a freshly created, empty profile
+# already has Google's (nkeimhogjdpnpccoofpliimaahmaaome) with a live service worker.
+# "The first chrome-extension:// worker" therefore finds a stranger's at least as often
+# as ours — which read as "the extension refused", and, once the realness probe existed,
+# as "an extension is present" on browsers carrying none of ours. Found by pointing the
+# harness at a bare Chrome for the first time (tests/attached-mode.sh).
+
+_STRANGER = {"targetId": "SW-GOOGLE", "type": "service_worker",
+             "url": "chrome-extension://nkeimhogjdpnpccoofpliimaahmaaome/thunk.js"}
+_OURS = {"targetId": "SW-OURS", "type": "service_worker",
+         "url": "chrome-extension://ourgrouper/background.js"}
+
+
+def _sw_cdp(targets, ours_session="sess-SW-OURS", seen=None):
+    def attach(params, _sid):
+        return {"sessionId": "sess-" + params["targetId"]}
+
+    def evaluate(params, sid):
+        if seen is not None:
+            seen.append((sid, params["expression"]))
+        if sid == ours_session:
+            return {"result": {"value": "REAL-ANSWER"}}
+        return {"result": {"value": daemon._EXT_NOT_MINE}}
+
+    return _ScriptedCDP({"Target.getTargets": {"targetInfos": targets},
+                         "Target.attachToTarget": attach,
+                         "Runtime.evaluate": evaluate})
+
+
+def test_ext_eval_walks_past_a_stranger_extension_to_ours():
+    seen = []
+    d = daemon.Daemon()
+    d.cdp = _sw_cdp([_STRANGER, _OURS], seen=seen)
+
+    assert asyncio.run(d._ext_eval("self.groupTab('t','s')")) == ("ok", "REAL-ANSWER")
+    assert [s for (s, _e) in seen] == ["sess-SW-GOOGLE", "sess-SW-OURS"]
+
+
+def test_ext_eval_never_runs_the_expression_in_a_stranger():
+    # The guard has to be in the SAME evaluate as the call, not a probe beforehand:
+    # a two-step check would still run groupTab in whichever worker answered first.
+    seen = []
+    d = daemon.Daemon()
+    d.cdp = _sw_cdp([_STRANGER, _OURS], seen=seen)
+    asyncio.run(d._ext_eval("self.groupTab('t','s')"))
+
+    for _sid, expr in seen:
+        assert expr.startswith("(typeof self.groupTab==="), expr
+        assert daemon._EXT_NOT_MINE in expr, "no sentinel branch — expression runs unguarded"
+
+
+def test_ext_eval_is_unreachable_when_only_strangers_are_present():
+    # THE attached-mode case. Returning "ok" here is what made the daemon believe an
+    # extension was present on a bare browser and skip the realness mask entirely.
+    d = daemon.Daemon()
+    d.cdp = _sw_cdp([_STRANGER])
+    status, _why = asyncio.run(d._ext_eval("self.groupTab('t','s')"))
+    assert status == "unreachable"
+
+
+def test_ext_eval_is_unreachable_with_no_workers_at_all():
+    d = daemon.Daemon()
+    d.cdp = _sw_cdp([])
+    assert asyncio.run(d._ext_eval("1"))[0] == "unreachable"

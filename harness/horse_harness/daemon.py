@@ -138,6 +138,11 @@ def log(msg):
     open(LOG, "a", encoding="utf-8", errors="replace").write(f"{msg}\n")
 
 
+# Identity guard for the extension's service worker — the verbs only OUR extension defines.
+# Kept in step with tools/sw_eval.py's _MINE, which learned this lesson first.
+_EXT_IS_MINE = "typeof self.groupTab==='function'&&typeof self.activateTab==='function'"
+_EXT_NOT_MINE = "__not_horse_sw__"
+
 _REALCHROME = None
 
 
@@ -237,35 +242,57 @@ class Daemon:
         return pick
 
     async def _ext_eval(self, expression):
-        """Evaluate JS in the tab-grouper extension's service worker.
-        Returns ("ok", value) | ("refused", why) — the extension answered with an
-        exception | ("unreachable", why) — no SW / transport failure."""
-        sw_session = None
+        """Evaluate JS in OUR tab-grouper extension's service worker.
+
+        Returns ("ok", value) | ("refused", why) — ours answered with an exception |
+        ("unreachable", why) — ours isn't here / transport failure.
+
+        "The first chrome-extension:// worker" is NOT ours. Every Chrome ships component
+        extensions of its own: a bare, freshly-created profile already has Google's
+        (nkeimhogjdpnpccoofpliimaahmaaome) with a live service worker, before any operator
+        installs anything. Picking blind meant evaluating our verbs in a stranger's worker —
+        which reads as "the extension refused" and, since the realness probe was added, as
+        "an extension is present" on browsers that have none of ours at all.
+
+        So ask each candidate whether it is ours in the SAME round trip, the way
+        tools/sw_eval.py has always done, and never run `expression` anywhere that says no.
+        """
         try:
             targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
-            sw = next((t["targetId"] for t in targets
-                       if t.get("type") == "service_worker"
-                       and t.get("url", "").startswith("chrome-extension://")), None)
-            if not sw:
-                return ("unreachable", "extension service worker not found")
-            sw_session = (await self.cdp.send_raw(
-                "Target.attachToTarget", {"targetId": sw, "flatten": True}
-            ))["sessionId"]
-            r = await self.cdp.send_raw(
-                "Runtime.evaluate",
-                {"expression": expression, "awaitPromise": True, "returnByValue": True},
-                session_id=sw_session,
-            )
-            exc = (r or {}).get("exceptionDetails")
-            if exc:
-                return ("refused", ((exc.get("exception") or {}).get("description")
-                                    or exc.get("text") or "extension call failed"))
-            return ("ok", ((r or {}).get("result") or {}).get("value"))
         except Exception as e:
             return ("unreachable", str(e))
-        finally:
-            if sw_session:
-                await _silent(self.cdp.send_raw("Target.detachFromTarget", {"sessionId": sw_session}))
+        cands = [t["targetId"] for t in targets
+                 if t.get("type") == "service_worker"
+                 and t.get("url", "").startswith("chrome-extension://")]
+        if not cands:
+            return ("unreachable", "no extension service worker at all")
+        guarded = f"({_EXT_IS_MINE}) ? ({expression}) : '{_EXT_NOT_MINE}'"
+        for sw in cands:
+            sw_session = None
+            try:
+                sw_session = (await self.cdp.send_raw(
+                    "Target.attachToTarget", {"targetId": sw, "flatten": True}
+                ))["sessionId"]
+                r = await self.cdp.send_raw(
+                    "Runtime.evaluate",
+                    {"expression": guarded, "awaitPromise": True, "returnByValue": True},
+                    session_id=sw_session,
+                )
+                exc = (r or {}).get("exceptionDetails")
+                if exc:                       # ours, and `expression` itself threw
+                    return ("refused", ((exc.get("exception") or {}).get("description")
+                                        or exc.get("text") or "extension call failed"))
+                value = ((r or {}).get("result") or {}).get("value")
+                if value == _EXT_NOT_MINE:
+                    continue                  # somebody else's worker — keep looking
+                return ("ok", value)
+            except Exception as e:
+                last = str(e)
+            finally:
+                if sw_session:
+                    await _silent(self.cdp.send_raw("Target.detachFromTarget",
+                                                    {"sessionId": sw_session}))
+        return ("unreachable", f"none of {len(cands)} extension worker(s) is ours")
 
     async def _enable_default_domains(self, session_id):
         """Enable Page/DOM/Runtime/Network on a CDP session.
