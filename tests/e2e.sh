@@ -634,6 +634,50 @@ grep -q "BRAND_JS True" <<<"$out" && grep -q "BRAND_HE True" <<<"$out" \
 grep -q "NONDEGEN True" <<<"$out" && pass "fingerprint non-degenerate (plugins/languages/cores)" \
   || fail "fingerprint non-degenerate" "$out"
 
+# The WIRE half. The sec-ch-ua request header must carry the same major as the UA string —
+# a mismatch is what Cloudflare Turnstile flags. It used to come from a static rules.json the
+# launcher rewrote on update, which went stale whenever Chrome for Testing self-updated
+# without us; the extension now derives it from its own UA at every service-worker start.
+# Nothing in a page can read back its own request headers, so this needs a reflector: a
+# throwaway local server, no network, no third-party uptime in the assertion.
+REFL_PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+python3 - "$REFL_PORT" >/dev/null 2>&1 <<'PY' &
+import http.server, json, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        b = json.dumps({"sec_ch_ua": self.headers.get("sec-ch-ua"),
+                        "ua": self.headers.get("user-agent")}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+REFL_PID=$!
+for _ in $(seq 1 20); do curl -sf "http://127.0.0.1:$REFL_PORT/" >/dev/null 2>&1 && break; sleep 0.2; done
+out="$(REFL_PORT="$REFL_PORT" hb '
+import json, os, re
+tid = open_tab("http://127.0.0.1:" + os.environ["REFL_PORT"] + "/")
+wait_for_load()
+seen = json.loads(js("document.body.textContent") or "{}")
+ua_major = (re.search(r"Chrome/(\d+)", seen.get("ua") or "") or [None, None])[1]
+sc = seen.get("sec_ch_ua") or ""
+brands = dict(re.findall(r"\"([^\"]+)\";v=\"([^\"]+)\"", sc))
+print("SC_RAW", sc)
+print("SC_HAS_CHROME", "Google Chrome" in brands)
+print("SC_MATCHES_UA", bool(ua_major) and brands.get("Google Chrome") == ua_major
+                                      and brands.get("Chromium") == ua_major)
+cdp("Target.closeTarget", targetId=tid)
+')"
+{ kill "$REFL_PID"; wait "$REFL_PID"; } 2>/dev/null    # wait: no "Terminated" job notice
+grep -q "SC_HAS_CHROME True" <<<"$out" \
+  && pass 'sec-ch-ua request header claims Google Chrome (wire half of the mask)' \
+  || fail 'sec-ch-ua header claims Google Chrome' "$out"
+grep -q "SC_MATCHES_UA True" <<<"$out" \
+  && pass 'sec-ch-ua major matches the UA string (no drift — derived, not stored)' \
+  || fail 'sec-ch-ua major matches the UA string' "$out"
+
 # Input forensics (the hb-stealth Input Probe): a real keyboard sends shifted characters
 # with shiftKey=true. Synthetic input that fires the char without a Shift modifier is a
 # tell a real keyboard can never produce — and this guards horse_input.py's Shift-aware

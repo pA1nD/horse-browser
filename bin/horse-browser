@@ -835,40 +835,11 @@ PY
   printf '  %-18s %s\n' "config"   "$CONFIG"
 }
 
-# sync_realness_version <full-version>: keep the realness mask's sec-ch-ua request header
-# (extension/rules.json) in lockstep with the browser's major version. A UA-vs-sec-ch-ua
-# major-version mismatch is a bot tell — Cloudflare Turnstile flags it — and it silently
-# drifts whenever Chrome for Testing self-updates past the version the header was written for.
-# (realchrome.js derives the JS half from the live UA itself; only the static header needs this.)
-# Writes only when the major actually differs, so a matching launch is a no-op.
-sync_realness_version() {
-  local ver="$1"; [ -n "$ver" ] && [ -n "$EXT" ] && [ -f "$EXT/rules.json" ] || return 0
-  command -v python3 >/dev/null 2>&1 || return 0
-  python3 - "$EXT/rules.json" "$ver" <<'PY' || true
-import json, re, sys
-p, major = sys.argv[1], sys.argv[2].split(".")[0]
-try: data = json.load(open(p))
-except Exception: sys.exit(0)
-changed = False
-for rule in data if isinstance(data, list) else []:
-    for h in (rule.get("action") or {}).get("requestHeaders") or []:
-        if h.get("header") == "sec-ch-ua" and h.get("operation") == "set" and isinstance(h.get("value"), str):
-            nv = re.sub(r'("Chromium";v=")\d+(")', r'\g<1>%s\g<2>' % major, h["value"])
-            nv = re.sub(r'("Google Chrome";v=")\d+(")', r'\g<1>%s\g<2>' % major, nv)
-            if nv != h["value"]:
-                h["value"] = nv; changed = True
-if changed:
-    json.dump(data, open(p, "w"), indent=2)
-    open(p, "a").write("\n")
-    print(f"horse-browser: synced sec-ch-ua realness header → Chrome {major}", file=sys.stderr)
-PY
-}
-
 # sync_manifest_version: keep the extension manifest's "version" equal to the package
 # version. They ship together in the npm package, so package.json is the source of truth;
 # the manifest is metadata Chrome reads and that a release bump can silently leave behind.
 # Self-heals at launch (write-only-if-changed) so a forgotten manual bump can't drift it —
-# same pattern as sync_realness_version. Strips any prerelease/build suffix, since an
+# written before the browser loads it. Strips any prerelease/build suffix, since an
 # extension version must be 1-4 dot-separated integers.
 sync_manifest_version() {
   [ -n "$EXT" ] && [ -f "$EXT/manifest.json" ] && [ -n "$ROOT" ] && [ -f "$ROOT/package.json" ] || return 0
@@ -936,7 +907,6 @@ hb_update() {
   newbin="$(printf '%s\n' "$out" | grep '^chrome@' | tail -1 | sed 's/^[^ ]* //')"
   [ -n "$newbin" ] && [ -x "$newbin" ] || { echo "horse-browser: couldn't resolve the new binary." >&2; return 1; }
   newver="$(_chrome_ver "$newbin")"
-  sync_realness_version "$newver"   # keep the sec-ch-ua realness header matched to the new browser
   if [ "$newbin" != "$BIN" ]; then
     python3 - "$CONFIG" "$newbin" <<'PY'
 import os, sys

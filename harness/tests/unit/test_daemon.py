@@ -545,3 +545,50 @@ def test_reap_own_tabs_closes_nothing_when_nothing_is_known(tmp_path, monkeypatc
     asyncio.run(d._reap_own_tabs())
 
     assert [p for (m, p, _s) in d.cdp.calls if m == "Target.closeTarget"] == []
+
+
+# ── realness: applied over CDP only where there is no extension to do it ────────────
+
+
+def _realness_daemon(has_extension):
+    d = daemon.Daemon()
+    d.has_extension = has_extension
+    d.cdp = _ScriptedCDP({"Browser.getVersion": {"userAgent": "Mozilla/5.0 Chrome/151.0.0.0"}})
+    asyncio.run(d._apply_realness("sess-x"))
+    return [m for (m, _p, _s) in d.cdp.calls]
+
+
+def test_realness_is_not_applied_when_the_extension_is_there():
+    # The extension masks browser-wide, with zero clients attached, including the operator's
+    # own tabs. Layering a per-session override on top would add a second applier for one
+    # effect and buy nothing.
+    assert _realness_daemon(True) == []
+
+
+def test_realness_is_applied_over_cdp_when_there_is_no_extension():
+    calls = _realness_daemon(False)
+    assert "Page.addScriptToEvaluateOnNewDocument" in calls   # JS half
+    assert "Network.setExtraHTTPHeaders" in calls             # wire half
+
+
+def test_realness_wire_half_derives_the_version_from_the_live_browser():
+    d = daemon.Daemon()
+    d.has_extension = False
+    d.cdp = _ScriptedCDP({"Browser.getVersion": {"userAgent": "Mozilla/5.0 Chrome/168.0.7.9"}})
+    asyncio.run(d._apply_realness("sess-x"))
+    hdr = next(p for (m, p, _s) in d.cdp.calls if m == "Network.setExtraHTTPHeaders")
+    v = hdr["headers"]["sec-ch-ua"]
+    assert '"Google Chrome";v="168"' in v and '"Chromium";v="168"' in v, v
+    assert "151" not in v, "version must come from the browser, never a stored constant"
+
+
+def test_realness_injects_the_same_source_the_extension_uses():
+    # One implementation of the masking logic, two delivery mechanisms. If this ever reads a
+    # Python-side copy instead, the two will drift and only one of them gets fixed.
+    d = daemon.Daemon()
+    d.has_extension = False
+    d.cdp = _ScriptedCDP({"Browser.getVersion": {"userAgent": "Chrome/151.0.0.0"}})
+    asyncio.run(d._apply_realness("sess-x"))
+    src = next(p for (m, p, _s) in d.cdp.calls if m == "Page.addScriptToEvaluateOnNewDocument")
+    assert "userAgentData" in src["source"] and "Google Chrome" in src["source"]
+    assert src["runImmediately"] is True      # also cover an already-loaded tab

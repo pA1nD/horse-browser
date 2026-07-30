@@ -25,15 +25,6 @@
       "all_frames": true
     }
   ],
-  "declarative_net_request": {
-    "rule_resources": [
-      {
-        "id": "realness_headers",
-        "enabled": true,
-        "path": "rules.json"
-      }
-    ]
-  },
   "action": {
     "default_title": "Open Agent Monitor",
     "default_icon": {

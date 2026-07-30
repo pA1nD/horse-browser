@@ -3,7 +3,7 @@
 horse-browser always supplies the CDP endpoint (BU_CDP_URL / BU_CDP_WS), so the
 local-Chrome profile discovery and permission-popup flows from browser-harness are gone.
 """
-import asyncio, json, os, sys, time, urllib.request
+import asyncio, json, os, re, sys, time, urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -138,6 +138,25 @@ def log(msg):
     open(LOG, "a", encoding="utf-8", errors="replace").write(f"{msg}\n")
 
 
+_REALCHROME = None
+
+
+def _realchrome_js():
+    """Source of the Tier-1 realness mask — the SAME file the extension injects as a MAIN-world
+    content script. One implementation of the masking logic, two ways to deliver it: the
+    content script when our extension is loaded, this when it isn't. Writing a second mask in
+    Python is how the two would drift apart.
+    """
+    global _REALCHROME
+    if _REALCHROME is None:
+        try:
+            _REALCHROME = (Path(__file__).resolve().parents[2]
+                           / "extension" / "realchrome.js").read_text()
+        except OSError:
+            _REALCHROME = ""
+    return _REALCHROME
+
+
 async def _silent(coro):
     try:
         await coro
@@ -175,6 +194,7 @@ class Daemon:
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
+        self.has_extension = None  # probed once in start(); drives _apply_realness
 
     async def attach_first_page(self):
         """Attach to THIS session's tab. Sets self.session. Returns attached target or None.
@@ -270,6 +290,41 @@ class Daemon:
             except Exception as e:
                 log(f"enable {d} on {session_id}: {e}")
         await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
+        await self._apply_realness(session_id)   # after Page+Network: both are prerequisites
+
+    async def _apply_realness(self, session_id):
+        """Mask Chrome-for-Testing's branding on a browser that has no extension to do it.
+
+        Owned mode needs none of this and doesn't use it: the extension applies the mask
+        browser-wide, with zero clients attached, to the operator's own tabs as well as ours.
+        A per-session CDP override matches none of those three properties, so it is strictly
+        the attached-mode stand-in — where the alternative is no mask at all.
+
+        Consistency is the reason this is not simply used everywhere. The operator signs in by
+        hand and agents inherit that session; if their tab were unmasked and ours masked, the
+        sec-ch-ua would CHANGE mid-session on the same cookies, which reads worse to a
+        fingerprinter than either state alone. Only a browser-wide applier avoids that, and
+        browser-wide means the extension.
+
+        Fails OPEN by nature: if this daemon dies, new tabs are unmasked and nothing says so.
+        helpers.realness_ok() is the loud check.
+        """
+        if self.has_extension:
+            return
+        js = _realchrome_js()
+        if js:
+            # Main world, before the page's first script — the same moment the content script
+            # gets in owned mode. runImmediately also covers a tab that is already loaded.
+            await _silent(self.cdp.send_raw(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": js, "runImmediately": True}, session_id=session_id))
+        ua = (await self.cdp.send_raw("Browser.getVersion") or {}).get("userAgent") or ""
+        m = re.search(r"Chrome/(\d+)", ua)
+        if m:                                   # wire half, derived from the live UA
+            v = m.group(1)
+            await _silent(self.cdp.send_raw("Network.setExtraHTTPHeaders", {"headers": {
+                "sec-ch-ua": f'"Not;A=Brand";v="8", "Chromium";v="{v}", "Google Chrome";v="{v}"',
+            }}, session_id=session_id))
 
     async def start(self):
         self.stop = asyncio.Event()
@@ -280,6 +335,13 @@ class Daemon:
             await self.cdp.start()
         except Exception as e:
             raise RuntimeError(f"CDP WS handshake failed: {e} -- is the horse browser running?")
+        # Probe ONCE, here, not lazily per attach: _ext_eval is four round trips, and
+        # _enable_default_domains runs on the set_session path, which the helper's IPC socket
+        # only gives 5s. Cheap flag from then on.
+        status, _ = await self._ext_eval("1")
+        self.has_extension = (status == "ok")
+        if not self.has_extension:
+            log("no tab-grouper extension on this browser — realness applied per session over CDP")
         await self.attach_first_page()
         if ANCHOR_PID and _session_label():
             asyncio.create_task(self._watchdog())

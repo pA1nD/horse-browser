@@ -645,6 +645,37 @@ def list_tabs():
     return out
 
 
+def realness_ok():
+    """Is the current tab presenting as real Chrome? -> {"ok", "why", "brands", "ua_major"}.
+
+    Worth calling the moment a site starts behaving as though it can tell. The mask fails
+    SILENTLY and it fails OPEN: with our extension loaded it is applied browser-wide by a
+    content script and is effectively always on, but on a browser we did not launch the daemon
+    applies it per session — so a daemon that died, or a tab opened outside the harness, is
+    bare, and nothing announces that. This is the check that makes it loud.
+
+    Covers the JS half (navigator.userAgentData, navigator.webdriver). The WIRE half — the
+    sec-ch-ua request header — cannot be read back from inside the page; nothing exposes a
+    document's own request headers. To verify it, hit a reflector and read the body.
+    """
+    r = js("(()=>{const u=navigator.userAgentData;"
+           "const m=navigator.userAgent.match(/Chrome\\/(\\d+)/);"
+           "return {brands: u ? u.brands.map(b=>b.brand+' '+b.version) : null,"
+           " ua_major: m ? m[1] : null, webdriver: navigator.webdriver === true};})()") or {}
+    brands, major = r.get("brands"), r.get("ua_major")
+    why = []
+    if brands is None:
+        why.append("no navigator.userAgentData (pre-Chromium-90 or a non-Chromium engine)")
+    else:
+        if not any(b.startswith("Google Chrome") for b in brands):
+            why.append("brands do not claim Google Chrome — the mask is not applied here")
+        if major and not any(b == f"Google Chrome {major}" for b in brands):
+            why.append(f"brand version disagrees with UA major {major} — a mismatch sites flag")
+    if r.get("webdriver"):
+        why.append("navigator.webdriver is true")
+    return {"ok": not why, "why": "; ".join(why), "brands": brands, "ua_major": major}
+
+
 # ── screenshots: a unique file per call, captured on a fresh per-target session ──
 _hb_shots_swept = False
 

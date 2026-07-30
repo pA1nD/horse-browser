@@ -27,11 +27,38 @@ chrome.runtime.onStartup.addListener(() => chrome.alarms.create("keepalive", { p
 chrome.alarms.onAlarm.addListener(() => {});
 chrome.tabs.onCreated.addListener(() => {});
 
-// One-time cleanup: an earlier build installed a dynamic declarativeNetRequest rule (id 1001)
-// for the sec-ch-ua header. The wire half now lives in the static rules.json (kept in sync
-// with the browser version by the launcher), so remove any leftover dynamic rule — a stale
-// one would supersede the correct static rule. Safe no-op once it's gone.
-try { chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [1001] }); } catch (e) {}
+// ── realness, wire half ── the sec-ch-ua request header must carry the same major version
+// as the UA string. A mismatch is a bot tell (Cloudflare Turnstile flags it and hard-loops),
+// and it appears on its own: Chrome for Testing SELF-UPDATES, so any version we write down
+// somewhere goes stale without anyone touching it.
+//
+// So don't write it down. Derive it from this browser's own userAgent at every service-worker
+// start. The number and the browser are then the same fact, and cannot drift.
+//
+// This used to live in a static rules.json that bin/horse-browser rewrote on update
+// (sync_realness_version) — which only held while OUR update path was the one that moved
+// Chrome. A self-update left the file behind, silently.
+const REALNESS_RULE_ID = 1001;
+const REALNESS_RESOURCES = ["main_frame", "sub_frame", "stylesheet", "script", "image",
+  "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "other"];
+async function syncRealnessHeader() {
+  const m = navigator.userAgent.match(/Chrome\/(\d+)/);
+  if (!m) return;
+  const v = m[1];
+  await chrome.declarativeNetRequest.updateDynamicRules({
+    removeRuleIds: [REALNESS_RULE_ID],           // replace, never accumulate
+    addRules: [{
+      id: REALNESS_RULE_ID,
+      priority: 1,
+      action: { type: "modifyHeaders", requestHeaders: [{
+        header: "sec-ch-ua", operation: "set",
+        value: `"Not;A=Brand";v="8", "Chromium";v="${v}", "Google Chrome";v="${v}"`,
+      }] },
+      condition: { urlFilter: "*", resourceTypes: REALNESS_RESOURCES },
+    }],
+  });
+}
+syncRealnessHeader();
 
 const COLORS = ["blue", "cyan", "green", "yellow", "orange", "red", "pink", "purple"];
 

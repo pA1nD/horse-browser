@@ -332,6 +332,41 @@ def test_list_tabs_fallback_forgets_tabs_that_have_closed(tmp_path, monkeypatch)
     assert json.loads(f.read_text()) == ["a", "b"]      # pruned, not left to grow
 
 
+# ── realness_ok: the loud check on a mask that fails open ──────────────────────────
+
+
+def _realness(brands, ua_major="151", webdriver=False):
+    return patch("horse_harness.helpers.js",
+                 return_value={"brands": brands, "ua_major": ua_major, "webdriver": webdriver})
+
+
+def test_realness_ok_accepts_a_masked_tab():
+    with _realness(["Not;A=Brand 8", "Chromium 151", "Google Chrome 151"]):
+        assert helpers.realness_ok()["ok"] is True
+
+
+def test_realness_ok_catches_an_unmasked_chrome_for_testing_tab():
+    # Plain CfT: Chromium + a grease brand, no Google Chrome. This is what a tab looks like
+    # when the mask never got applied — the fail-open case the whole check exists for.
+    with _realness(["Not;A=Brand 8", "Chromium 151"]):
+        r = helpers.realness_ok()
+    assert r["ok"] is False and "not applied" in r["why"]
+
+
+def test_realness_ok_catches_a_version_that_drifted_from_the_ua():
+    # The exact shape of the bug that made this derived instead of stored: brands say one
+    # major, the UA string says another. Sites flag the mismatch, not either value.
+    with _realness(["Chromium 150", "Google Chrome 150"], ua_major="151"):
+        r = helpers.realness_ok()
+    assert r["ok"] is False and "disagrees with UA major 151" in r["why"]
+
+
+def test_realness_ok_reports_webdriver():
+    with _realness(["Google Chrome 151", "Chromium 151"], webdriver=True):
+        r = helpers.realness_ok()
+    assert r["ok"] is False and "webdriver" in r["why"]
+
+
 def test_hb_track_moves_a_retouched_tab_to_the_end(tmp_path, monkeypatch):
     f = _tabs_env(tmp_path, monkeypatch, ["a", "b", "c"])
     helpers._hb_track("a")
