@@ -29,7 +29,9 @@ if [ -z "${HORSE_SESSION:-}" ] && [ -n "${GROK_AGENT:-}" ]; then
     _gsid="$GROK_SESSION_ID"
   fi
 
-  # 2. Otherwise: nearest grok ancestor -> active_sessions.json.
+  # 2. Otherwise: nearest grok ancestor, then two lookups keyed on that pid —
+  #    our own SessionStart hook's file first (it has the real id even for headless
+  #    `grok -p`, which does not register anywhere else), then active_sessions.json.
   if [ -z "$_gsid" ] || [ -z "${BH_ANCHOR_PID:-}" ]; then
     _ap=$$
     for _ in $(seq 1 12); do
@@ -37,6 +39,10 @@ if [ -z "${HORSE_SESSION:-}" ] && [ -n "${GROK_AGENT:-}" ]; then
       case "${_comm##*/}" in
         grok|grok-*)
           _gpid="$_ap"
+          if [ -z "$_gsid" ]; then
+            _gsf="${HORSE_BROWSER_GROK_SESSIONS:-$HOME/.config/horse-browser/grok-sessions}/$_ap"
+            [ -r "$_gsf" ] && _gsid=$(tr -d '\n' < "$_gsf" 2>/dev/null || true)
+          fi
           [ -n "$_gsid" ] || _gsid=$(python3 - "$HOME/.grok/active_sessions.json" "$_ap" <<'PY' 2>/dev/null || true
 import json, sys
 try:

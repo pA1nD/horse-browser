@@ -1,6 +1,7 @@
 # grok integration
 
-Status: identity landed 2026-07-30 and verified against grok 0.2.114. Lanes not yet wired.
+Status: identity + session hook landed 2026-07-30, verified against grok 0.2.114.
+Per-subagent lanes are blocked by grok — see below.
 
 ## What a grok tool process actually gets
 
@@ -28,47 +29,94 @@ Two things follow, and the second is a bug we already had:
 `integrations/grok/detect.sh`, in order:
 
 1. `GROK_SESSION_ID` when present (a hook process, or anything that exported it).
-2. Walk up to the nearest `grok` ancestor, then look that pid up in
-   `~/.grok/active_sessions.json`:
-   ```json
-   [{"session_id": "019fb004-…", "pid": 9573, "cwd": "…", "opened_at": "…"}]
-   ```
-   One walk yields the session id *and* `BH_ANCHOR_PID`, exactly like the claude-code detector.
+2. Walk up to the nearest `grok` ancestor, then two lookups keyed on that pid:
+   - `~/.config/horse-browser/grok-sessions/<pid>` — written by our own session hook (below).
+     This is the path that normally hits.
+   - `~/.grok/active_sessions.json` — grok's own registry, as a backstop:
+     ```json
+     [{"session_id": "019fb004-…", "pid": 9573, "cwd": "…", "opened_at": "…"}]
+     ```
+   Either way the same walk yields `BH_ANCHOR_PID`, exactly like the claude-code detector.
 3. Otherwise the workspace root, hashed: `grok-ws<cksum>`.
 
-Step 3 is not a formality — **headless `grok -p` does not register in `active_sessions.json`**,
-so it is the path a one-shot run actually takes. Verified end to end: horse-browser driven
-from inside a real grok session resolved to `HORSE_SESSION=grok-ws1245865848`,
-`BU_NAME=hb-ws1245865848`.
+Step 3 was the path every headless run took before the session hook existed, because
+**`grok -p` does not register in `active_sessions.json`**. It is now the last resort it should
+be — reached only when grok is running without our hook installed. Its cost, when reached: two
+grok sessions in one directory share a tab group. Coarser than per-session, and still strictly
+better than inheriting a neighbour's id.
 
-Its cost is honest: two grok sessions in one directory share a tab group. That is coarser than
-Claude Code's per-session grouping, and still strictly better than inheriting a neighbour's id.
+## Lanes: blocked by grok, not by us
 
-## Lanes: the mechanism is there, the payload differs
+Per-subagent lanes are **not implementable on grok 0.2.114**. Established by capturing real
+hook payloads (a probe hook in `~/.grok/hooks/`, removed afterwards) and by comparing a
+parent's tool process against a subagent's.
 
-grok's hooks are close to Claude Code's — same two events, and the docs cite Claude
-compatibility throughout:
+The good news first — grok is *better* than Claude Code here at the session level. Every
+subagent gets its own `sessionId`, right down to its tool calls:
 
-| | Claude Code | grok |
-| --- | --- | --- |
-| events | `PreToolUse`, `SubagentStop` | same (`SubagentEnd` aliases `SubagentStop`) |
-| transport | JSON on stdin | JSON on stdin |
-| **key case** | `hook_event_name`, `session_id`, `tool_input` | **`hookEventName`, `sessionId`, `toolInput`** |
-| session id in env | — | `GROK_SESSION_ID` (hook processes) |
-| config | `~/.claude/settings.json` | `~/.grok/config.toml` `[[hooks.PreToolUse]]`, or hook JSON files |
+```
+pre_tool_use  toolName=spawn_subagent        sessionId=019fb18d-db59-…   ← parent
+pre_tool_use  toolName=run_terminal_command  sessionId=019fb18d-e9a7-…   ← the SUBAGENT's own
+subagent_stop                                sessionId=019fb18d-e9a7-…   == subagentId
+```
 
-So `lane-hook.py` will not work under grok as written: it reads `hook_event_name` /
-`agent_id` / `session_id`, and grok sends camelCase. The fix is small — normalise the envelope
-on entry and read `agent_id` from grok's subagent field — but it is unwritten and untested, so
-lanes are Claude-Code-only today. A grok session still gets its own tab group and daemon via
-identity above; only its *subagents* would share the parent's lane.
+Claude Code shares one `CLAUDE_CODE_SESSION_ID` across all subagents, which is *why* lanes
+exist there. grok has real per-subagent identity already.
 
-Worth knowing before wiring it: grok also has a Claude-compat importer
-(`claude_import.rs`) that can pull hooks out of `~/.claude/settings.json` into
-`config.toml`. If that ever runs on a machine where our lane hook is wired, grok would invoke
-`lane-hook.sh` with a camelCase payload — which today's script silently ignores rather than
-mishandles (its `case` gate matches on literal substrings), so the failure mode is "no lanes",
-not corruption.
+The blocker is that none of it reaches the tool process:
+
+- **No command rewriting.** grok's `PreToolUse` output vocabulary is `{"decision":
+  "allow"|"deny"}` only. Claude Code's hook can rewrite the Bash command to inject the lane;
+  grok's cannot.
+- **The tool process cannot tell what it is.** A parent's and a subagent's tool call are
+  indistinguishable — same 3 `GROK_*` variables, and the same grok process as ancestor:
+
+  ```
+  PARENT     54165 54129 sh  ←  54129 52904 /bin/zsh
+  SUBAGENT   54680 54677 sh  ←  54677 52904 /bin/zsh
+  ```
+
+So there is no point at which a subagent's `horse-browser` call can be recognised as one.
+A marker file written by `PreToolUse` would race, because grok runs subagents concurrently —
+and mis-assigning a tab to the wrong subagent is worse than sharing one group.
+
+Consequence: a grok session gets its own tab group and daemon; its **subagents share it** —
+Claude Code's behaviour before lanes. Nothing is broken, tabs just aren't split per subagent.
+
+This becomes implementable the moment grok's `PreToolUse` can modify `toolInput`, or exports
+`GROK_SESSION_ID` to tool processes. Either one is enough, and the detector already prefers
+`GROK_SESSION_ID` when present.
+
+## What IS wired: the session hook
+
+`integrations/grok/session-hook.sh`, registered by `ensure_lane_hook()` into
+`~/.grok/hooks/horse-browser.json` (a global, always-trusted hook source — a file we own
+outright, never merged into anyone's `config.toml`).
+
+On `SessionStart` it writes the real `GROK_SESSION_ID` to
+`~/.config/horse-browser/grok-sessions/<grok-pid>`; on `SessionEnd` it removes it. The pid is
+the one key a hook process and a tool process can both compute and agree on — each walks up
+its own ancestry to the nearest `grok`.
+
+Measured effect, same command in the same workspace:
+
+```
+before   HORSE_SESSION=grok-ws1245865848              (workspace hash — collides)
+after    HORSE_SESSION=grok-019fb191-120b-7193-…      (the real session id)
+```
+
+Confirmed live mid-session: `grok-sessions/3727` → `019fb191-8817-7b52-9739-bad34bbf93cf`,
+while `active_sessions.json` held only a stale unrelated entry — so the hook is the source,
+not the fallback. This also closes the headless gap: `grok -p` never registers in
+`active_sessions.json`, and now it does not need to.
+
+## A note on `~/.claude/settings.json`
+
+grok scans it as an **always-trusted global hook source**, so the Claude lane hook we wire is
+already being loaded by grok. It is harmless: `lane-hook.sh` gates on the literal substrings
+`SubagentStop` and `agent_id`, and grok sends `subagent_stop` and `sessionId`, so the script
+exits 0 without acting. The failure mode is "no lanes", never corruption — but it is worth
+knowing that the file is shared, if its gating is ever loosened.
 
 ## Rules
 
@@ -77,12 +125,11 @@ confirm `.claude/rules/` and `.cursor/rules/` scanning), so `horse-browser.md` a
 broker's `horse-browser-auth.md` already reach a grok session with no work on our side. It has
 its own `~/.grok/rules/` too, currently empty.
 
-## Next, if lanes matter under grok
+## If grok adds what lanes need
 
-1. Normalise the hook envelope in `lane-hook.py` (accept camelCase and snake_case).
-2. Find grok's subagent identifier in a `SubagentStop` payload — `agent_id` has no documented
-   grok equivalent, and the lane name needs it.
-3. Wire via `~/.grok/config.toml` `[[hooks.PreToolUse]]` rather than relying on the Claude
-   importer, so the wiring is explicit and greppable.
-4. Extend `ensure_lane_hook()` to keep that TOML block current, the same way it does
-   `settings.json`.
+1. `PreToolUse` able to modify `toolInput`, **or** `GROK_SESSION_ID` exported to tool
+   processes — either alone unblocks it.
+2. Then normalise the envelope in `lane-hook.py`: grok sends camelCase
+   (`hookEventName` / `sessionId` / `toolInput`) where Claude sends snake_case.
+3. Use `subagentId` from the payload as the lane name; it is already present on
+   `SubagentStart` and `SubagentStop`.

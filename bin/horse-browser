@@ -794,6 +794,42 @@ ensure_lane_hook() {
   mkdir -p "$(dirname "$stamp")" 2>/dev/null || true
   echo "$now" > "$stamp" 2>/dev/null || true
   python3 "$ROOT/tools/lane_hook_wire.py" "$hook" "$settings" || true
+  ensure_grok_hook
+}
+
+# ensure_grok_hook: publish grok's session id where a tool process can read it.
+#
+# grok gives a TOOL process exactly one variable, GROK_AGENT=1 — GROK_SESSION_ID reaches HOOK
+# processes only. Without this, integrations/grok/detect.sh can do no better than hashing the
+# workspace root, so two grok sessions in one directory land in one tab group. The hook writes
+# the real id keyed by the grok pid, which the detector recomputes the same way.
+#
+# Its own file in ~/.grok/hooks/ (a global, always-trusted source), never merged into
+# config.toml: a file we own outright can be rewritten wholesale and deleted cleanly.
+# Nothing here does subagent lanes — grok's subagents share the parent's process and tool
+# environment, and its PreToolUse can only allow/deny, so there is no point at which a
+# subagent's call can be told apart. See docs/grok-integration.md.
+ensure_grok_hook() {
+  local dir="${HORSE_BROWSER_GROK_HOOKS:-$HOME/.grok/hooks}"
+  local script="$ROOT/integrations/grok/session-hook.sh"
+  [ -f "$script" ] || return 0
+  [ -d "$(dirname "$dir")" ] || return 0     # no ~/.grok ⇒ grok isn't installed; never create it
+  mkdir -p "$dir" 2>/dev/null || return 0
+  local want
+  want=$(python3 - "$script" <<'PY' 2>/dev/null || true
+import json, sys
+print(json.dumps({"hooks": {ev: [{"hooks": [
+    {"type": "command", "command": sys.argv[1], "timeout": 10}]}]
+    for ev in ("SessionStart", "SessionEnd")}}, indent=2))
+PY
+)
+  [ -n "$want" ] || return 0
+  local target="$dir/horse-browser.json"
+  # Rewrite only on drift, so an unchanged install stays silent and touch-free.
+  if [ ! -f "$target" ] || [ "$(cat "$target" 2>/dev/null)" != "$want" ]; then
+    printf '%s\n' "$want" > "$target" 2>/dev/null \
+      && echo "horse-browser: registered the grok session hook ($target)" >&2
+  fi
 }
 
 # recycle_daemons: after a browser (re)launch, every harness daemon pinned to our
