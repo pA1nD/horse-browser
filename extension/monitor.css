@@ -210,9 +210,30 @@ body.sb-hidden .reveal { display: grid; animation: revealIn .22s ease both; }
   justify-content: center; gap: 8px; color: var(--dim); padding: 24px; text-align: center;
   pointer-events: none; }
 .empty[hidden] { display: none; }
-.empty-glyph { font-size: 34px; color: var(--faint); }
-.empty-title { color: var(--text); letter-spacing: 0; font-size: 14px; font-weight: 500; }
-.empty-sub { color: var(--faint); max-width: 320px; font-size: 12px; line-height: 1.6; }
+.empty-title { color: var(--text); letter-spacing: -.01em; font-size: 25px; font-weight: 600; }
+.empty-sub { color: var(--dim); max-width: 44ch; font-size: 13.5px; line-height: 1.6; }
+
+/* ── welcome ── the empty wall explains itself rather than sitting blank ──── */
+.welcome { display: flex; flex-direction: column; align-items: center; gap: 10px;
+  max-width: 620px; animation: cardIn .34s ease both; }
+.w-mark { font-size: 46px; line-height: 1;
+  filter: drop-shadow(0 8px 20px color-mix(in srgb, var(--brand) 42%, transparent)); }
+/* padding:0 matters — a ul's default 40px inline-start padding would leave the grid's
+   own background showing as a pale band down the left of the card. */
+.w-beats { list-style: none; display: grid; gap: 1px; margin: 26px 0 0; padding: 0; width: 100%;
+  background: var(--line-soft); border: 1px solid var(--line-soft); border-radius: 10px;
+  overflow: hidden; text-align: left; }
+.w-beats li { background: var(--panel); padding: 13px 16px; color: var(--dim);
+  font-size: 12.5px; line-height: 1.65; }
+.w-beats b { color: var(--text); font-weight: 600; }
+
+/* "?" in the sidebar → the same welcome, over the grid, click anywhere to dismiss.
+   Only this mode is interactive; the idle empty state stays pointer-transparent. */
+body.show-welcome #empty,
+body.show-welcome #empty[hidden] { display: flex; pointer-events: auto; cursor: pointer;
+  background: color-mix(in srgb, var(--bg) 92%, transparent); z-index: 5; }
+/* No wall to explain yet (port not seeded) — show the status line, drop the pitch. */
+.empty.is-status .w-beats, .empty.is-status .w-mark { display: none; }
 
 /* ── motion ───────────────────────────────────────────────────────────── */
 @keyframes pulse {

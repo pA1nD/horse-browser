@@ -196,6 +196,35 @@ def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
+# Chrome's own startup tab, under every Chromium's spelling of it.
+NEW_TAB_URLS = ("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab")
+
+
+def is_reusable_new_tab_page(t):
+    """The browser's New Tab Page — nobody's work, safe to take over."""
+    return t.get("type") == "page" and t.get("url", "").startswith(NEW_TAB_URLS)
+
+
+def _all_tracked():
+    """Every tab claimed by ANY session — the union of the registry directory.
+
+    Adoption must never take a tab another session is driving, and the registry is the
+    only thing that knows. Cheap: the same directory the reaper already walks.
+    """
+    out = set()
+    try:
+        for f in _tabs_file().parent.iterdir():
+            try:
+                v = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if isinstance(v, list):
+                out.update(t for t in v if isinstance(t, str))
+    except OSError:
+        pass
+    return out
+
+
 class Daemon:
     def __init__(self):
         self.cdp = None
@@ -238,16 +267,27 @@ class Daemon:
             if pages:
                 pick = pages[0]
         if pick is None:
-            tid = (await self.cdp.send_raw(
-                "Target.createTarget", {"url": "about:blank", "background": True}
-            ))["targetId"]
-            log(f"no {'bound' if label else 'real'} tab, created about:blank ({tid})")
+            # Before minting: Chrome opens a New Tab Page of its own at launch, and it is
+            # nobody's work. Leaving it there means the browser sits at a dead tab beside
+            # the blank we just made. The first session that needs a tab takes it over —
+            # unless some session has already claimed it.
+            claimed = _all_tracked()
+            ntp = next((t for t in targets
+                        if is_reusable_new_tab_page(t) and t["targetId"] not in claimed), None)
+            if ntp:
+                tid = ntp["targetId"]
+                log(f"adopted the browser's New Tab Page ({tid}) instead of minting")
+            else:
+                tid = (await self.cdp.send_raw(
+                    "Target.createTarget", {"url": "about:blank", "background": True}
+                ))["targetId"]
+                log(f"no {'bound' if label else 'real'} tab, created about:blank ({tid})")
             _track_target(tid)      # claim before painting: the registry is the truth
             if label:
                 status, err = await self._ext_eval(f"self.groupTab({json.dumps(tid)}, {json.dumps(label)})")
                 if status != "ok":
                     log(f"groupTab({tid}) failed: {err}")
-            pick = {"targetId": tid, "url": "about:blank", "type": "page"}
+            pick = {"targetId": tid, "url": ntp["url"] if ntp else "about:blank", "type": "page"}
         self.session = (await self.cdp.send_raw(
             "Target.attachToTarget", {"targetId": pick["targetId"], "flatten": True}
         ))["sessionId"]

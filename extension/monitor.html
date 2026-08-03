@@ -40,10 +40,21 @@
 
   <main id="stage">
     <div id="grid"></div>
+    <!-- Empty state AND welcome, deliberately the same thing: with no agent tabs there is
+         nothing to watch, so the wall explains itself instead of sitting blank. It yields to
+         the grid the moment a tab appears (monitor.js: emptyEl.hidden = panes.size > 0), so
+         the browser opens on ONE tab rather than a welcome page beside an empty wall. -->
     <div id="empty" class="empty" hidden>
-      <span class="empty-glyph">⌁</span>
-      <span class="empty-title">No agent tabs</span>
-      <span class="empty-sub">When an agent opens tabs they stream in here live.</span>
+      <div class="welcome">
+        <span class="w-mark">🐴</span>
+        <h1 class="empty-title">Horse Browser</h1>
+        <p class="empty-sub">A dedicated Chrome your agents drive. Their tabs stream in here the moment one opens.</p>
+        <ul class="w-beats">
+          <li><b>Their own lane.</b> Every session lands in its own coloured tab group, so a glance says which agent opened what. Tabs open in the background — they never steal your focus.</li>
+          <li><b>It's just Chrome.</b> Sign into your accounts once and every agent inherits them. Add extensions, change settings; it's a normal profile, yours to set up.</li>
+          <li><b>This wall.</b> Each agent's tabs on stable tiles, live and side by side. Click 🐴 in the toolbar to come back here any time.</li>
+        </ul>
+      </div>
     </div>
   </main>
 

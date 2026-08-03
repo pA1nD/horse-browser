@@ -555,12 +555,13 @@ collapseBtn.addEventListener("click", () => setCollapsed(!document.body.classLis
 logoEl.addEventListener("click", () => setCollapsed(!document.body.classList.contains("collapsed")));
 hideBtn.addEventListener("click", () => setHidden(true));
 revealBtn.addEventListener("click", () => setHidden(false));
-// "?" → open the welcome page (same one shown on first install)
-document.getElementById("help").addEventListener("click", () => {
-  const url = chrome.runtime.getURL("hello.html");
-  if (chrome.tabs && chrome.tabs.create) chrome.tabs.create({ url, active: true });
-  else window.open(url, "_blank");
+// "?" → the welcome, over the grid. It IS the empty state (see monitor.html), so there is
+// no second page and no second tab to open — click anywhere on it to go back to the wall.
+document.getElementById("help").addEventListener("click", (e) => {
+  e.stopPropagation();
+  document.body.classList.toggle("show-welcome");
 });
+emptyEl.addEventListener("click", () => document.body.classList.remove("show-welcome"));
 // ⌘B / Ctrl+B fully hides / reveals the panel (VS Code / Chrome side-panel feel)
 window.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "b" || e.key === "B")) {
@@ -594,6 +595,7 @@ setInterval(() => {
   if (!ok) {
     statTabs.textContent = "—";
     document.querySelector(".live").hidden = true;   // nothing is live; don't pulse as if it were
+    emptyEl.classList.add("is-status");              // a diagnosis, not a welcome
     emptyEl.querySelector(".empty-title").textContent = "Waiting for this browser's port";
     emptyEl.querySelector(".empty-sub").textContent =
       "Run `horse-browser` against this browser — the launcher tells the extension which debug port it lives on.";

@@ -477,6 +477,36 @@ def test_attach_never_reuses_a_registry_tab_that_is_not_a_page(monkeypatch):
     assert created["n"] == 1
 
 
+def test_attach_adopts_the_new_tab_page_instead_of_minting(tmp_path, monkeypatch):
+    """Chrome opens its own New Tab Page at launch. Minting beside it means the browser
+    sits at TWO idle tabs — the dead one and ours. Take it over instead."""
+    ntp = {"targetId": "NTP", "type": "page", "url": "chrome://newtab/"}
+    _registry(tmp_path, monkeypatch, [])
+    d, created = _scripted_for_attach([ntp, _SW_TARGETS["targetInfos"][1]],
+                                      monkeypatch, bound=None, label="sess-1")
+
+    pick = asyncio.run(d.attach_first_page())
+
+    assert pick["targetId"] == "NTP"
+    assert created["n"] == 0
+    evals = [p["expression"] for (m, p, _s) in d.cdp.calls if m == "Runtime.evaluate"]
+    assert any("groupTab" in e and "NTP" in e for e in evals), evals   # painted into our group
+
+
+def test_attach_never_adopts_a_new_tab_page_another_session_claimed(tmp_path, monkeypatch):
+    """Adoption must not take a tab someone else is driving — the registry is the check."""
+    ntp = {"targetId": "NTP", "type": "page", "url": "chrome://new-tab-page/"}
+    _registry(tmp_path, monkeypatch, [])
+    (tmp_path / "neighbour").write_text(json.dumps(["NTP"]))     # another session owns it
+    d, created = _scripted_for_attach([ntp, _SW_TARGETS["targetInfos"][1]],
+                                      monkeypatch, bound=None, label="sess-1")
+
+    pick = asyncio.run(d.attach_first_page())
+
+    assert pick["targetId"] == "NEW-BLANK"
+    assert created["n"] == 1
+
+
 def test_attach_without_identity_keeps_legacy_first_page(monkeypatch):
     d, created = _scripted_for_attach([_FOREIGN_PAGE], monkeypatch, bound=None, label="")
 

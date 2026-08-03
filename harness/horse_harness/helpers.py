@@ -490,7 +490,9 @@ def _hb_home():
         # No own tab yet. If the daemon is sitting on a fresh, ungrouped about:blank —
         # the one attach_first_page mints when it finds no bound tab — ADOPT it into
         # my group rather than leaking it and creating a second blank. Else make one.
-        if cur and (ct.get("url") or "") in ("", "about:blank"):
+        if cur and ((ct.get("url") or "") in ("", "about:blank")
+                    or (ct.get("url") or "").startswith(
+                        ("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))):
             ext_call("groupTab", cur, _session_id())      # paint only; _hb_remember owns it
             _hb_remember(cur)
         else:

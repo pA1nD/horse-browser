@@ -217,14 +217,7 @@ chrome.runtime.onStartup.addListener(() => showMonitor(false));   // profile sta
 // Closed any other way (explicit close, etc.) → reopen, unless the window itself is going away.
 // Called directly (no setTimeout): chrome.tabs.* keeps the MV3 worker alive to finish; a timer wouldn't.
 chrome.tabs.onRemoved.addListener((_id, info) => { if (!info.isWindowClosing) showMonitor(false); });
-chrome.runtime.onInstalled.addListener(async (details) => {
-  showMonitor(false);                                             // install/update → ensure pinned
-  // First run on a fresh profile only: open the welcome page (not on updates/restarts).
-  // Dedupe: an unpacked extension can re-fire "install" (e.g. after a Service Worker cache
-  // wipe), so open hello.html only if one isn't already open — never pile up welcome tabs.
-  if (details.reason === "install") {
-    const url = chrome.runtime.getURL("hello.html");
-    const existing = await chrome.tabs.query({ url });
-    if (existing.length === 0) chrome.tabs.create({ url, active: true });
-  }
-});
+// install/update → ensure the Monitor is pinned. No welcome tab: the Monitor's own empty
+// state IS the welcome (monitor.html), so a fresh profile opens ONE tab that explains
+// itself and becomes the wall as soon as an agent opens something.
+chrome.runtime.onInstalled.addListener(() => showMonitor(false));
