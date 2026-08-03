@@ -43,8 +43,15 @@ got="$(printf 'SURVIVED\n' | { "$HB" install-chrome --help >/dev/null 2>&1; cat;
 [ "$got" = "SURVIVED" ] \
   && pass "install-chrome leaves stdin for the next reader" \
   || fail "install-chrome leaves stdin alone" "downstream read [$got]"
-for sub in status verbs; do
-  got="$(printf 'SURVIVED\n' | { "$HB" "$sub" >/dev/null 2>&1; cat; })"
+# Enumerated from the launcher's own dispatch, not hand-listed. The hand-listed version
+# checked three of nine and missed `harness-setup` and `rule`, which were consuming stdin —
+# a list that has to be kept in step with another list will drift.
+subs="$(sed -n '/^case "\${1:-}" in/,/^esac/p' "$HB" | grep -oE '^  [a-z-]+\)' | tr -d ' )')"
+[ -n "$subs" ] && pass "enumerated the dispatch cases from the launcher ($(wc -w <<<"$subs" | tr -d ' ') found)" \
+  || fail "enumerate the dispatch cases" "the case block did not parse"
+for sub in $subs; do
+  case "$sub" in focus-watch|update|relaunch) continue ;; esac   # these do real work / need a browser
+  got="$(printf 'SURVIVED\n' | { "$HB" "$sub" --help >/dev/null 2>&1; cat; })"
   [ "$got" = "SURVIVED" ] \
     && pass "$sub leaves stdin for the next reader" \
     || fail "$sub leaves stdin alone" "downstream read [$got]"

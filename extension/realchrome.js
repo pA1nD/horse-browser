@@ -23,17 +23,39 @@
     var m = navigator.userAgent.match(/Chrome\/(\d+)/);
     if(u && m){
       var MAJOR = m[1];
-      var low = function(){ return [{brand:'Not;A=Brand',version:'8'},{brand:'Chromium',version:MAJOR},{brand:'Google Chrome',version:MAJOR}]; };
-      // CfT's high-entropy fullVersionList is [Chromium(full), <grease>] — it has NO "…for Testing"
-      // entry to rename and NO Google Chrome, so a rename-only pass leaves Google Chrome missing and
-      // the grease brand inconsistent with the sync list (a tell). Rebuild it real-Chrome-shaped from
-      // the Chromium FULL version — same brands as low(), but with full versions.
+      // ADD "Google Chrome"; invent nothing else.
+      //
+      // The GREASE entry — the deliberately odd brand Chromium injects — is not a constant.
+      // Its name, its version and its POSITION are all derived from the browser's major
+      // version by Chromium's own generator, and this file used to hardcode
+      // `Not;A=Brand`/`8` at the front. Measured on the browser we actually ship, Chrome 151
+      // reports `Not=A?Brand`/`99` — so the mask was claiming a tuple that no Chrome 151
+      // produces. A page that knows the generator could compare and see it immediately.
+      //
+      // So: keep every native entry exactly as it is, in the order the browser chose, and
+      // insert Google Chrome beside Chromium — the one difference between Chrome for Testing
+      // and stable Chrome. Nothing here can drift when Chromium changes the algorithm,
+      // because nothing here reimplements it.
+      var withChrome = function(list, fallbackVersion){
+        var out = [], added = false;
+        (list || []).forEach(function(e){
+          out.push(e);
+          if(!added && e && e.brand === 'Chromium'){
+            out.push({brand: 'Google Chrome', version: e.version});
+            added = true;
+          }
+        });
+        if(!added) out.push({brand: 'Google Chrome', version: fallbackVersion});
+        return out;
+      };
+      // Captured BEFORE the getter is replaced, so it is the browser's real answer.
+      var NATIVE_BRANDS = (function(){ try { return u.brands.map(function(b){
+        return {brand: b.brand, version: b.version}; }); } catch(e){ return []; } })();
+      var low = function(){ return withChrome(NATIVE_BRANDS, MAJOR); };
       var maskFull = function(list){
         var full = MAJOR + '.0.0.0';
         (list||[]).forEach(function(e){ if(e.brand==='Chromium' && e.version) full = e.version; });
-        return [{brand:'Not;A=Brand', version:'8.0.0.0'},
-                {brand:'Chromium', version:full},
-                {brand:'Google Chrome', version:full}];
+        return withChrome(list, full);
       };
       var proto = Object.getPrototypeOf(u);
       var bd = Object.getOwnPropertyDescriptor(proto,'brands');
@@ -73,12 +95,26 @@
   // on its own; claiming more would be a lie about what this file does.
   try{
     var SOFTWARE = /swiftshader|llvmpipe|softpipe|basic render|microsoft basic|lavapipe/i;
-    // Named rather than read from a live context: getting one at document_start would force a
-    // GL init on every page load, and any string we substitute has to be internally
-    // consistent anyway. x86_64 + Intel integrated is the commonest desktop pairing there is,
-    // and on the hardware this targets it is the truth the browser simply cannot reach.
-    var GL_VENDOR = 'Google Inc. (Intel)';
-    var GL_RENDERER = 'ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6 (Core Profile) Mesa 22.3.6)';
+    // Chosen from the PLATFORM, because a GPU that cannot exist on the machine claimed by
+    // navigator.platform is a contradiction, not a disguise. A fixed Intel-on-Mesa string
+    // means an ARM Mac reporting an x86 Intel chip through a Linux graphics stack — and the
+    // same fingerprinting code reads platform and renderer together. Mesa belongs to Linux,
+    // D3D11 to Windows, Metal to macOS; each pairing below is one a real machine produces.
+    var plat = (function(){
+      try { var p = (navigator.userAgentData && navigator.userAgentData.platform) || ''; if(p) return p; } catch(e){}
+      return navigator.platform || '';
+    })();
+    var GL_VENDOR, GL_RENDERER;
+    if(/mac|darwin/i.test(plat)){
+      GL_VENDOR   = 'Google Inc. (Apple)';
+      GL_RENDERER = 'ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)';
+    } else if(/win/i.test(plat)){
+      GL_VENDOR   = 'Google Inc. (Intel)';
+      GL_RENDERER = 'ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E9B) Direct3D11 vs_5_0 ps_5_0, D3D11)';
+    } else {
+      GL_VENDOR   = 'Google Inc. (Intel)';
+      GL_RENDERER = 'ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6 (Core Profile) Mesa 22.3.6)';
+    }
     var UNMASKED_VENDOR = 0x9245, UNMASKED_RENDERER = 0x9246;
     // Both strings are decided by ONE question — is the RENDERER software — because they are
     // read together and compared. Testing each against the pattern on its own masks the

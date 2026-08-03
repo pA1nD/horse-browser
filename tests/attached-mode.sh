@@ -42,7 +42,20 @@ cleanup() {
   for p in $(pgrep -f "(browser|horse)_harness.daemon" 2>/dev/null); do
     ps eww -o command= -p "$p" 2>/dev/null | tr ' ' '\n' | grep -qx "HORSE_SESSION=$SESS" && kill "$p" 2>/dev/null
   done
+  # By profile, not only by pid: `open -g -n` returns before the browser exists, so there is
+  # no pid to keep. --user-data-dir is unique to this run, which makes it the reliable handle.
   [ -n "${CHROME_PID:-}" ] && kill "$CHROME_PID" 2>/dev/null
+  _pids="$(ps -ww -o pid= -o command= -ax 2>/dev/null \
+             | grep -F -- "--user-data-dir=$WORK/profile" | grep -v grep | awk '{print $1}')"
+  for _p in $_pids; do kill "$_p" 2>/dev/null; done
+  # Give Chrome a moment to actually go. Without it the rm below races a live process still
+  # writing its profile, and leaves the directory behind with a confusing "not empty".
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    _left=""; for _p in $_pids; do kill -0 "$_p" 2>/dev/null && _left=1; done
+    [ -z "$_left" ] && break
+    sleep 0.5
+  done
+  for _p in $_pids; do kill -9 "$_p" 2>/dev/null; done
   [ -n "${REFL_PID:-}"  ] && { kill "$REFL_PID"; wait "$REFL_PID"; } 2>/dev/null
   rm -f "$REG"
   rm -rf "$WORK"
@@ -55,10 +68,24 @@ trap cleanup EXIT
 # most-checked bot signals there is. Forcing it here is the only way a Mac, which always has
 # real GL, can test the mask that hides it. --enable-unsafe-swiftshader is required as well:
 # Chrome 151 gates software WebGL behind it, and having NO WebGL is the louder tell.
-"$BIN" --remote-debugging-port="$PORT" --user-data-dir="$WORK/profile" \
-       --no-first-run --no-default-browser-check \
-       --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader about:blank >/dev/null 2>&1 &
-CHROME_PID=$!
+#
+# Launched focus-free on macOS. This suite's point is that the LAUNCHER did not set this
+# browser up — no extension, none of our flags, the harness attaching over BU_CDP_URL to
+# something it has never seen. `open -g -n` changes none of that; it only stops the window
+# taking the operator's keyboard. Running this bare `"$BIN" &` stole focus every time the
+# suite ran, which on a developer's machine is the one thing horse-browser exists to prevent —
+# and a test suite has no business doing what the product refuses to do.
+CHROME_ARGS=( --remote-debugging-port="$PORT" --user-data-dir="$WORK/profile"
+              --no-first-run --no-default-browser-check
+              --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader about:blank )
+APP="${BIN%/Contents/MacOS/*}"
+if [ "$(uname -s)" = "Darwin" ] && [ "$APP" != "$BIN" ] && [ -d "$APP" ]; then
+  open -g -n -a "$APP" --args "${CHROME_ARGS[@]}"
+  CHROME_PID=""            # `open` returns immediately; cleanup finds it by --user-data-dir
+else
+  "$BIN" "${CHROME_ARGS[@]}" >/dev/null 2>&1 &
+  CHROME_PID=$!
+fi
 for _ in $(seq 1 60); do
   curl -sf --max-time 1 "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1 && break
   sleep 0.5
@@ -175,8 +202,21 @@ case "$rr" in
   *)
     pass "WebGL renderer no longer names a software rasteriser" ;;
 esac
+# Not just "both say Intel": the substitute has to agree with the PLATFORM beside it. A fixed
+# Intel-on-Mesa tuple made an ARM Mac claim an x86 Intel chip through a Linux graphics stack,
+# and this assertion approved it — the same fingerprinting code reads both.
+plat="$(hb 'print("PLAT", js("(navigator.userAgentData||{}).platform || navigator.platform"))' | sed -n 's/^PLAT //p')"
+case "$plat:$rr" in
+  *mac*:*Metal*|*Mac*:*Metal*)   ok=1 ;;
+  *Win*:*Direct3D*|*win*:*D3D*)  ok=1 ;;
+  *Linux*:*Mesa*|*linux*:*Mesa*) ok=1 ;;
+  *) ok= ;;
+esac
+[ -n "$ok" ] \
+  && pass "WebGL renderer matches the platform ($plat / $(grep -oE 'Metal|Direct3D11|Mesa' <<<"$rr" | head -1))" \
+  || fail "WebGL renderer matches the platform" "platform=$plat renderer=$rr — no real machine pairs those"
 case "$v:$rr" in
-  *Intel*:*Intel*) pass "WebGL vendor and renderer agree (masked as one pair)" ;;
+  *Intel*:*Intel*|*Apple*:*Apple*) pass "WebGL vendor and renderer agree (masked as one pair)" ;;
   *) fail "WebGL vendor and renderer agree" "vendor=$v renderer=$rr" ;;
 esac
 [ "$same" = "True" ] \

@@ -101,19 +101,42 @@ def _track_target(tid):
     """
     if not tid:
         return
+    f = _tabs_file()
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    # Locked read-modify-write, mirroring helpers._hb_registry_update. os.replace() alone stops
+    # a torn READ; it does not stop two writers from both reading [X] and one replacement
+    # silently winning. The daemon and its own clients are exactly such a pair.
+    fd = None
+    try:
+        import fcntl
+        # Dotfiles: the launcher's reaper globs TABS/* and glob("*") skips them. A lock or temp
+        # file it could see would be read as a dead session's registry and its tabs closed.
+        fd = os.open(str(f.with_name("." + f.name + ".lock")), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except (ImportError, OSError):
+        fd = None                    # unlockable — writing unlocked beats losing the tab
     try:
         ids = [t for t in _tracked_tabs() if t != tid]
         ids.append(tid)
-        f = _tabs_file()
-        f.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic: the daemon and every client process write this same file. A reader
-        # that catches a half-written one parses nothing, treats the registry as empty,
-        # and the next write collapses it — orphaning every tab it had listed.
-        tmp = f.with_name(f.name + f".{os.getpid()}.tmp")
+        tmp = f.with_name(f".{f.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(ids[-64:]))
         os.replace(tmp, f)
     except OSError:
         pass
+    finally:
+        if fd is not None:
+            try:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _anchor_alive():
@@ -129,13 +152,25 @@ def _anchor_alive():
     except OSError:
         pass                              # e.g. EPERM — process exists
     if ANCHOR_START:
-        # BH_ANCHOR_START is `ps -o lstart=` output — the same fingerprint
-        # lifecycle._process_start_time returns on macOS. A mismatch means the
-        # PID was reused by an unrelated process: the session is gone.
+        # The fingerprint is only evidence when both sides speak the same dialect.
+        # _process_start_time returns `ps -o lstart=` on macOS but /proc start-ticks on Linux,
+        # while every detect.sh wrote the ps form on BOTH — so on Linux the comparison could
+        # never match, every live session looked PID-reused, and the watchdog closed its tabs
+        # and shut the daemon down about 32 seconds in. detect.sh now tags the value with the
+        # dialect it used ("linux:…" / "darwin:…").
+        #
+        # An UNTAGGED or foreign-tagged value is treated as no evidence rather than as proof
+        # of death. That matters twice: an older install's exported env survives an upgrade,
+        # and "I cannot compare these" must never be the reason a live agent loses its tabs.
+        # This check exists to catch PID reuse — a rare, recoverable event — so the safe
+        # failure is to assume alive.
         from .lifecycle import _process_start_time
-        st = _process_start_time(pid)
-        if st is not None and str(st).strip() != ANCHOR_START:
-            return False
+        want = ANCHOR_START.split(":", 1)
+        if len(want) == 2 and want[0] == ("linux" if sys.platform.startswith("linux")
+                                          else "darwin" if sys.platform == "darwin" else "?"):
+            st = _process_start_time(pid)
+            if st is not None and str(st).strip() != want[1].strip():
+                return False
     return True
 
 
@@ -539,8 +574,21 @@ class Daemon:
             ids.append(self.target_id)      # bound tab, if it predates the registry
         if not ids:
             return                          # nothing claimed ⇒ nothing of ours to close
+        # Count what actually closed. _silent() swallowing every failure meant that when the
+        # anchor died with CDP already disconnected — the ordinary way a session ends badly —
+        # every closeTarget raised, this returned normally, the caller believed it, and the
+        # watchdog deleted the registry. The tabs were still open and now unattributable: the
+        # exact orphan the registry exists to prevent.
+        failed = []
         for tid in ids:
-            await _silent(self.cdp.send_raw("Target.closeTarget", {"targetId": tid}))
+            try:
+                await self.cdp.send_raw("Target.closeTarget", {"targetId": tid})
+            except Exception as e:
+                failed.append((tid, e))
+        if failed:
+            log(f"self-reap: {len(ids) - len(failed)}/{len(ids)} closed for {label[-8:]}; "
+                f"{len(failed)} failed (first: {failed[0][1]})")
+            raise RuntimeError(f"{len(failed)} of {len(ids)} tabs could not be closed")
         log(f"self-reap: closed {len(ids)} tab(s) for {label[-8:]}")
 
     async def handle(self, req):

@@ -591,6 +591,47 @@ def test_anchor_alive_true_for_live_pid_and_false_for_dead(monkeypatch):
     assert daemon._anchor_alive() is False
 
 
+def _tagged_start(pid):
+    """BH_ANCHOR_START exactly as detect.sh writes it on this platform."""
+    import sys as _s
+    from horse_harness.lifecycle import _process_start_time
+    return ("linux:" if _s.platform.startswith("linux") else "darwin:") + str(_process_start_time(pid))
+
+
+def test_anchor_alive_accepts_its_own_platform_fingerprint(monkeypatch):
+    """THE Linux data-loss bug: detect.sh wrote `ps -o lstart=` on every platform, while
+    _process_start_time returns /proc start-ticks on Linux. The two could never be equal, so
+    every live Linux session looked PID-reused and the watchdog closed its tabs ~32s in."""
+    import os
+    monkeypatch.setattr(daemon, "ANCHOR_PID", str(os.getpid()))
+    monkeypatch.setattr(daemon, "ANCHOR_START", _tagged_start(os.getpid()))
+    assert daemon._anchor_alive() is True
+
+
+def test_anchor_alive_treats_an_incomparable_fingerprint_as_no_evidence(monkeypatch):
+    """An untagged value (an older install's exported env surviving an upgrade) or one from
+    the other platform must mean "cannot tell", never "dead". This check exists to catch PID
+    reuse — rare and recoverable — so "I cannot compare these" must not cost a live agent
+    its tabs."""
+    import os
+    monkeypatch.setattr(daemon, "ANCHOR_PID", str(os.getpid()))
+    for stale in ("Sun Aug  3 04:11:22 2026",          # legacy, untagged
+                  "linux:14454660" if not __import__("sys").platform.startswith("linux")
+                  else "darwin:Sun Aug  3 04:11:22 2026"):   # the other platform's dialect
+        monkeypatch.setattr(daemon, "ANCHOR_START", stale)
+        assert daemon._anchor_alive() is True, stale
+
+
+def test_anchor_alive_still_detects_pid_reuse_within_one_dialect(monkeypatch):
+    """The fix must not blunt the check it guards: same platform tag, genuinely different
+    value, still means the PID was recycled."""
+    import os, sys as _s
+    monkeypatch.setattr(daemon, "ANCHOR_PID", str(os.getpid()))
+    tag = "linux:" if _s.platform.startswith("linux") else "darwin:"
+    monkeypatch.setattr(daemon, "ANCHOR_START", tag + "definitely-not-this-process")
+    assert daemon._anchor_alive() is False
+
+
 def test_anchor_alive_unverifiable_defaults_to_alive(monkeypatch):
     monkeypatch.setattr(daemon, "ANCHOR_PID", None)
     assert daemon._anchor_alive() is True
@@ -838,3 +879,29 @@ def test_ext_eval_is_unreachable_with_no_workers_at_all():
     d = daemon.Daemon()
     d.cdp = _sw_cdp([])
     assert asyncio.run(d._ext_eval("1"))[0] == "unreachable"
+
+
+def test_self_reap_reports_failure_when_closes_fail(tmp_path, monkeypatch):
+    """The real orphan path: the anchor dies while CDP is already disconnected, so every
+    closeTarget raises. _silent() used to swallow them all, _reap_own_tabs returned normally,
+    and the watchdog then DELETED the registry — leaving those tabs open and unattributable,
+    which is the one thing the registry exists to prevent. The existing watchdog test patches
+    _reap_own_tabs itself to raise, so it never exercised this."""
+    _registry(tmp_path, monkeypatch, ["T1", "T2"])
+    monkeypatch.setattr(daemon, "_session_label", lambda: "sess-1")
+
+    class _DeadCDP:
+        calls = []
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append(method)
+            raise RuntimeError("CDP socket closed")
+
+    d = daemon.Daemon(); d.cdp = _DeadCDP(); d.target_id = None
+    try:
+        asyncio.run(d._reap_own_tabs())
+    except RuntimeError as e:
+        assert "could not be closed" in str(e)
+    else:
+        raise AssertionError("a total close failure was reported as success")
+    assert json.loads((tmp_path / "tabs").read_text()) == ["T1", "T2"], \
+        "the registry must survive so the launcher's sweep can still find these tabs"

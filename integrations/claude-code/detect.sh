@@ -31,7 +31,7 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -z "${GROK_AGENT:-}" ]; then
       case "$_comm" in
         *bg-pty-host*|*bg-spare*) ;;
         *claude*) export BH_ANCHOR_PID="$_ap"
-                  export BH_ANCHOR_START="$(ps -o lstart= -p "$_ap" 2>/dev/null)"; break ;;
+                  export BH_ANCHOR_START="$(if [ "$(uname -s)" = "Linux" ]; then echo "linux:$(awk '{print $22}' /proc/"$_ap"/stat 2>/dev/null)"; else echo "darwin:$(ps -o lstart= -p "$_ap" 2>/dev/null)"; fi)"; break ;;
       esac
       _pp=$(ps -o ppid= -p "$_ap" 2>/dev/null | tr -d ' ')
       if [ -z "$_pp" ] || [ "$_pp" -le 1 ]; then break; fi

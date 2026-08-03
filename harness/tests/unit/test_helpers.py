@@ -1,3 +1,4 @@
+import pathlib
 import json
 import os
 import tempfile
@@ -371,3 +372,39 @@ def test_hb_track_moves_a_retouched_tab_to_the_end(tmp_path, monkeypatch):
     f = _tabs_env(tmp_path, monkeypatch, ["a", "b", "c"])
     helpers._hb_track("a")
     assert json.loads(f.read_text()) == ["b", "c", "a"]
+
+
+def test_registry_survives_concurrent_writers(tmp_path):
+    """Two processes on the same lane both claim a tab. Without a lock around the whole
+    read-modify-write, both read [X], both append, and one replacement silently wins — the
+    loser's tab stays open, invisible to list_tabs() and to every registry-based reaper.
+    os.replace() does not help: it prevents a torn READ, not a lost update.
+
+    Genuinely cross-process (subprocesses, not threads) because that is the real shape: the
+    daemon claims a tab it minted while a client claims one it opened.
+    """
+    import subprocess, sys, json as _json, os as _os
+    tabs = tmp_path / "tabs"; tabs.mkdir()
+    (tabs / "hb-lane").write_text(_json.dumps(["SEED"]))
+    n = 12
+    prog = (
+        "import os,sys;"
+        "sys.path.insert(0, %r);"
+        "os.environ['BU_NAME']='hb-lane';"
+        "os.environ['HOME']=%r;"
+        "import horse_harness.helpers as h;"
+        "h._hb_tabs_file=lambda: %r;"
+        "h._hb_track('T'+sys.argv[1])"
+    ) % (str(pathlib.Path(__file__).resolve().parents[2]), str(tmp_path), str(tabs / "hb-lane"))
+    procs = [subprocess.Popen([sys.executable, "-c", prog, str(i)]) for i in range(n)]
+    for p in procs:
+        p.wait(timeout=30)
+
+    got = _json.loads((tabs / "hb-lane").read_text())
+    missing = [f"T{i}" for i in range(n) if f"T{i}" not in got]
+    assert not missing, f"lost {len(missing)} of {n} concurrent claims: {missing}"
+    assert "SEED" in got, "the pre-existing entry was dropped"
+    # the lock and temp files must be dotfiles — the launcher's reaper globs TABS/* and would
+    # read anything else there as a dead session's registry, then close those live tabs.
+    stray = [p.name for p in tabs.iterdir() if not p.name.startswith(".") and p.name != "hb-lane"]
+    assert not stray, f"non-dotfiles left in the registry dir: {stray}"

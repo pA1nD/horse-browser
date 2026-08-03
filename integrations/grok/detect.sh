@@ -73,6 +73,6 @@ PY
   HORSE_SESSION="grok-$_gsid"
   if [ -z "${BH_ANCHOR_PID:-}" ] && [ -n "$_gpid" ]; then
     export BH_ANCHOR_PID="$_gpid"
-    export BH_ANCHOR_START="$(ps -o lstart= -p "$_gpid" 2>/dev/null)"
+    export BH_ANCHOR_START="$(if [ "$(uname -s)" = "Linux" ]; then echo "linux:$(awk '{print $22}' /proc/"$_gpid"/stat 2>/dev/null)"; else echo "darwin:$(ps -o lstart= -p "$_gpid" 2>/dev/null)"; fi)"
   fi
 fi

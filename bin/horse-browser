@@ -146,7 +146,7 @@ case "$LANE" in *[!A-Za-z0-9_-]*|"") LANE="" ;; esac   # sane token or nothing
 # script and the session just stopped, silently.
 script=""
 case "${1:-}" in
-  status|update|install-chrome|relaunch|verbs|focus-watch|skill) _SUBCOMMAND=1 ;;
+  status|update|install-chrome|relaunch|harness-setup|rule|verbs|focus-watch|skill) _SUBCOMMAND=1 ;;
   *) _SUBCOMMAND= ;;
 esac
 if [ -n "$_SUBCOMMAND" ]; then
@@ -296,17 +296,36 @@ ensure_display() {
   local want="${HORSE_BROWSER_DISPLAY:-:99}"
   # A display someone else already serves (a real desktop, or an Xvfb the image started) is
   # left strictly alone — we only fill the gap.
-  if [ -n "${DISPLAY:-}" ] && command -v xdpyinfo >/dev/null 2>&1 \
-     && xdpyinfo >/dev/null 2>&1; then return 0; fi
+  # An explicit DISPLAY is the caller's decision and outranks ours. Confirm it if we can —
+  # but a minimal image often has no xdpyinfo, and treating "cannot verify" as "not there"
+  # meant hijacking a perfectly good :0 and starting a second X server beside it, which is the
+  # opposite of the promise above. The X socket is proof enough when xdpyinfo is missing.
+  if [ -n "${DISPLAY:-}" ]; then
+    if command -v xdpyinfo >/dev/null 2>&1; then
+      xdpyinfo >/dev/null 2>&1 && return 0
+    elif [ -e "/tmp/.X11-unix/X${DISPLAY#*:}" ] || [ -e "/tmp/.X11-unix/X${DISPLAY%%.*}" ]; then
+      return 0
+    fi
+  fi
   export DISPLAY="$want"
   command -v xdpyinfo >/dev/null 2>&1 && xdpyinfo >/dev/null 2>&1 && return 0
+  [ -e "/tmp/.X11-unix/X${DISPLAY#*:}" ] && return 0
   command -v Xvfb >/dev/null 2>&1 || {
     echo "horse-browser: no display and no Xvfb — install it (apt-get install -y xvfb) or point DISPLAY at one." >&2
     return 1; }
   local geom="${HORSE_BROWSER_SCREEN:-1920x1080x24}"
   say "horse-browser: no display — starting Xvfb on $DISPLAY ($geom)…"
   _hb_mkparent "$CACHE/xvfb.log"   # $CACHE is install.sh's, and a first run has none
-  Xvfb "$DISPLAY" -screen 0 "$geom" -nolisten tcp >"$CACHE/xvfb.log" 2>&1 &
+  # setsid, for the same reason the browser gets it — and MORE so. An agent invocation is a
+  # short-lived shell: it launches, drives, exits. Chrome was already detached; leaving Xvfb in
+  # the launching shell's process group meant a group-wide SIGHUP could take the display down
+  # and Chrome with it, since a headed browser cannot outlive its X server. The two have to be
+  # detached together or the pairing is only accidentally stable.
+  if command -v setsid >/dev/null 2>&1; then
+    setsid Xvfb "$DISPLAY" -screen 0 "$geom" -nolisten tcp >"$CACHE/xvfb.log" 2>&1 &
+  else
+    Xvfb "$DISPLAY" -screen 0 "$geom" -nolisten tcp >"$CACHE/xvfb.log" 2>&1 &
+  fi
   local _ ; for _ in $(seq 1 20); do
     { command -v xdpyinfo >/dev/null 2>&1 && xdpyinfo >/dev/null 2>&1; } && return 0
     sleep 0.25
@@ -419,9 +438,13 @@ hb_lock() {
   local holder lts lnow age
   holder=$(cat "$HB_LOCK/pid" 2>/dev/null || echo "")
   lts=$(_hb_stat_mtime "$HB_LOCK"); lnow=$(date +%s); age=$(( lnow - lts ))
+  # Age alone is NOT staleness when the holder is provably alive. A slow-but-legitimate hold
+  # (a GPU heal that probes and relaunches, a relaunch reopening many tabs) can exceed 120s,
+  # and evicting it puts two launchers inside one browser — the exact thing this lock exists
+  # to prevent. Age only decides for a holder we cannot verify.
   if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } \
      || { [ -z "$holder" ] && [ "$age" -gt 10 ]; } \
-     || [ "$age" -gt 120 ]; then
+     || { [ -z "$holder" ] && [ "$age" -gt 120 ]; }; then
     rm -rf "$HB_LOCK" 2>/dev/null || true
     if mkdir "$HB_LOCK" 2>/dev/null; then
       echo $$ > "$HB_LOCK/pid" 2>/dev/null || true
@@ -817,6 +840,11 @@ except Exception:
 # is what pass 2 is forbidden to touch.
 claimed, dead_files, closed = set(), [], 0
 for path in sorted(glob.glob(os.path.join(TABS, "*"))):
+    # glob("*") already skips the dotfiles the registry writers use for their lock and
+    # temp files. Belt and braces: a non-registry name here would be read as a dead
+    # session and its "tabs" closed, so never guess at a file we do not recognise.
+    if os.path.basename(path).startswith(".") or path.endswith(".tmp"):
+        continue
     try:
         v = json.loads(open(path).read())
         ids = [t for t in v if isinstance(t, str)] if isinstance(v, list) else []
@@ -1217,6 +1245,7 @@ hb_update() {
   [ -n "$newbin" ] && [ -x "$newbin" ] || { echo "horse-browser: couldn't resolve the new binary." >&2; return 1; }
   newver="$(_chrome_ver "$newbin")"
   if [ "$newbin" != "$BIN" ]; then
+    _hb_mkparent "$CONFIG"        # first run: ~/.config/horse-browser is install.sh's, not ours
     python3 - "$CONFIG" "$newbin" <<'PY'
 import os, sys
 cfg, newbin = sys.argv[1], sys.argv[2]

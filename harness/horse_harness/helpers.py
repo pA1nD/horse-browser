@@ -44,8 +44,18 @@ SOCK = ipc.sock_addr(NAME)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
+# How long a verb waits on the daemon. 5s is right for a laptop, where the renderer answers a
+# Runtime.evaluate in milliseconds and a longer wait would only delay noticing a wedged daemon.
+# It is NOT right everywhere: on a headless host the browser runs on a software rasteriser
+# (Xvfb is a software X server, so there is no GPU to reach), and a CPU-heavy page can peg the
+# renderer long enough that even `document.readyState` misses the window. Measured on a
+# fingerprinting page — every verb failed, and nothing in the message said "you may wait longer".
+# So: same default, and a way to raise it where the hardware makes it wrong.
+IPC_TIMEOUT = float(os.environ.get("HORSE_BROWSER_IPC_TIMEOUT") or 5.0)
+
+
 def _send(req):
-    c, token = ipc.connect(NAME, timeout=5.0)
+    c, token = ipc.connect(NAME, timeout=IPC_TIMEOUT)
     try:
         r = ipc.request(c, token, req)
     finally:
@@ -426,18 +436,66 @@ def _hb_track(target_id):
     # mode too and simply ignored on read there: the tab group is still the truth.
     if not target_id:
         return
+    _hb_registry_update(lambda ids: [t for t in ids if t != target_id] + [target_id])
+
+
+def _hb_registry_lock(path):
+    """Exclusive hold on one registry, across processes. Returns an fd to close, or None.
+
+    os.replace() stops a reader seeing a torn file; it does NOT stop two writers from both
+    reading [X], appending different tabs, and one replacement silently winning. Same lane,
+    two processes — the daemon claims a tab it minted while a client claims one it opened —
+    and the loser's tab stays open, invisible to list_tabs() and to every registry-based
+    reaper. Lock the whole read-modify-write, not just the write.
+    """
     try:
-        ids = [t for t in _hb_tracked() if t != target_id]
-        ids.append(target_id)
-        f = _hb_tabs_file()
+        import fcntl
+    except ImportError:
+        return None                       # no flock (Windows): fall through, single writer
+    try:
+        # Leading dot: the launcher's reaper globs TABS/* to find registries, and glob("*")
+        # skips dotfiles. A lock or temp file it COULD see would be read as a dead session's
+        # registry and its tabs closed.
+        d, n = os.path.dirname(path), os.path.basename(path)
+        fd = os.open(os.path.join(d, "." + n + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+    except OSError:
+        return None                       # unlockable — writing unlocked beats losing the tab
+
+
+def _hb_registry_unlock(fd):
+    if fd is None:
+        return
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _hb_registry_update(mutate):
+    """Read → mutate → replace, under the lock. THE only way this file is written."""
+    f = _hb_tabs_file()
+    try:
         os.makedirs(os.path.dirname(f), exist_ok=True)
-        # Atomic — see daemon._track_target: a torn read collapses the registry and
-        # orphans every tab it listed. Same file, same hazard, both writers.
-        tmp = "%s.%d.tmp" % (f, os.getpid())
-        open(tmp, "w").write(json.dumps(ids[-64:]))
+    except Exception:
+        return
+    fd = _hb_registry_lock(f)
+    try:
+        ids = mutate(_hb_tracked())[-64:]
+        tmp = os.path.join(os.path.dirname(f), ".%s.%d.tmp" % (os.path.basename(f), os.getpid()))
+        with open(tmp, "w") as h:
+            h.write(json.dumps(ids))
         os.replace(tmp, f)
     except Exception:
         pass
+    finally:
+        _hb_registry_unlock(fd)
 
 
 def _hb_remember(target_id):
@@ -662,10 +720,13 @@ def list_tabs():
             "discarded": None, "audible": None, "active": None}
            for i, tid in enumerate(tracked) if tid in live]
     if len(out) != len(tracked):            # forget the ids whose tabs are gone
-        try:
-            open(_hb_tabs_file(), "w").write(json.dumps([t["targetId"] for t in out]))
-        except Exception:
-            pass
+        # Through the same locked updater as every other write, and re-filtered against the
+        # registry as it is INSIDE the lock — not against `tracked`, which was read before the
+        # live-target round trip. A tab claimed during that window is not in `out`, and a plain
+        # overwrite would drop it: a live tab, open and unreachable. The prune only ever
+        # removes ids this call proved dead.
+        gone = {t for t in tracked} - {t["targetId"] for t in out}
+        _hb_registry_update(lambda ids: [t for t in ids if t not in gone])
     return out
 
 
