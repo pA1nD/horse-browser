@@ -50,25 +50,34 @@ PARENT = """<!doctype html><meta charset=utf-8><title>fixture parent</title>
 CONTROLS = {
     "checkbox":   '<div role="checkbox" aria-label="I am human" class="recaptcha-checkbox"',
     "press-hold": '<div id="px-captcha" ',
-    "slider":     '<div class="slider" data-dd-captcha-slider ',
+    "slider":     '<div class="sl-h" ',
     "button":     '<button class="verify-btn" ',
     # a hard block: text, an IP, and support — no solvable control anywhere
     "blocked":    '<button class="captcha__contact_support__submit" ',
 }
 LABEL = {"checkbox": "", "press-hold": "Press &amp; Hold", "slider": "", "button": "Verify",
          "blocked": "Contact customer service"}
+# A handle INSIDE a track that shares its class prefix — the real DataDome shape. The scorer
+# used to return the wrapper here (its tie-break preferred the LARGER element), which starts the
+# drag in the middle of the track instead of on the handle. Rendered separately so the control
+# template keeps a fixed argument order.
+WRAPPER = ('<div class="captcha__human__slider sliderTrack" style="position:absolute;'
+           'left:%dpx;top:%dpx;width:280px;height:100px;background:#eee">'
+           'slide right to secure your access</div>' % (max(0, CX - 40), max(0, CY - 30))
+           if KIND == "slider" else "")
 BODY_ATTR = ('class="dd-response-page--hard-block" data-dd-response="hard-block"'
              if KIND == "blocked" else "")
 BLOCK_TEXT = ("<p>Se ha detectado un uso indebido</p><p>IP: 203.0.113.9</p>"
               if KIND == "blocked" else "")
 
 FRAME = """<!doctype html><meta charset=utf-8><title>challenge</title>
-<body %s style="margin:0;font:14px sans-serif">%s
+<body %s style="margin:0;font:14px sans-serif">%s%s
   <div style="position:absolute;left:5px;top:5px;width:390px;height:60px;background:#eee">decoy banner, bigger than the control</div>
   <div style="position:absolute;left:20px;top:240px;width:360px;height:40px;background:#f6f6f6">decoy footer</div>
   <span style="position:absolute;left:10px;top:80px;cursor:pointer">decoy pointer text</span>
-  %s style="position:absolute;left:%dpx;top:%dpx;width:%dpx;height:%dpx;background:#4a90d9;cursor:pointer">%s</%s>
-</body>""" % (BODY_ATTR, BLOCK_TEXT, CONTROLS[KIND], CX, CY, CW, CH, LABEL[KIND],
+  %s style="position:absolute;left:%dpx;top:%dpx;width:%dpx;height:%dpx;background:#4a90d9;cursor:%s">%s</%s>
+</body>""" % (BODY_ATTR, BLOCK_TEXT, WRAPPER, CONTROLS[KIND], CX, CY, CW, CH,
+              "grab" if KIND == "slider" else "pointer", LABEL[KIND],
               "button" if KIND in ("button", "blocked") else "div")
 
 

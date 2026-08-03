@@ -261,12 +261,55 @@ def ensure_real_tab():
         return own[-1]
     return None
 
+def _frame_is_mine(frame_id):
+    """Is this frame a child of the tab THIS session drives?
+
+    Asks the parent, not the frame. For an out-of-process iframe the CDP targetId IS the
+    frameId, and DOM.getFrameOwner resolves a frameId to its owning <iframe> element — but only
+    on the session of the page that actually contains it. Anything else raises. That makes it a
+    straight ownership test, and unlike Page.getFrameTree it does not depend on whether a
+    cross-process child happens to be listed in the parent's tree.
+    """
+    me = _hb_my_target()
+    if not me:
+        return None                                   # can't tell — caller decides
+    sid = cdp("Target.attachToTarget", targetId=me, flatten=True)["sessionId"]
+    cdp("DOM.getDocument", session_id=sid, depth=0)   # the DOM agent must be live for the lookup
+    try:
+        cdp("DOM.getFrameOwner", session_id=sid, frameId=frame_id)
+        return True
+    except Exception:
+        return False
+
+
 def iframe_target(url_substr):
-    """First iframe target whose URL contains `url_substr`. Use with js(..., target_id=...)."""
+    """First iframe target in THIS tab whose URL contains `url_substr`. Use with js(..., target_id=...).
+
+    Scoped to our own tab on purpose. The browser is shared — a hundred subagents can be on
+    the same site at once, and matching by URL alone across every target in the browser hands
+    back whichever frame Chrome happened to list first. That is another agent's challenge (or
+    our own stale tab's), and the tell is subtle: the frame reads as visibilityState "hidden"
+    and its widget never renders, so a solver drags at coordinates from a page nobody is
+    looking at. Fall back to the unscoped search only if the frame tree is unreadable."""
+    fallback = None
     for t in cdp("Target.getTargets")["targetInfos"]:
-        if t["type"] == "iframe" and url_substr in t.get("url", ""):
+        if t["type"] != "iframe" or url_substr not in t.get("url", ""):
+            continue
+        try:
+            mine = _frame_is_mine(t["targetId"])
+        except Exception:
+            mine = None
+        if mine is None:                       # ownership unknowable → old behaviour, unchanged
             return t["targetId"]
-    return None
+        if mine:
+            return t["targetId"]
+        fallback = fallback or t["targetId"]
+    if fallback:
+        _hb_warn_once("iframe-scope",
+                      "iframe_target(%r): the only match lives in another tab — using it, but "
+                      "coordinates from it will not line up with this session's page."
+                      % url_substr)
+    return fallback
 
 
 # --- utility ---
@@ -1162,26 +1205,89 @@ def press_hold(target, seconds=6.0):
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", buttons=0, clickCount=1)
 
 
+def _sstep(t):
+    return t * t * (3 - 2 * t)
+
+
+def _approach(x1, y1):
+    """Move to (x1,y1) the way a hand arrives: along a slightly bowed path, decelerating.
+
+    A single teleporting mouseMoved is a tell on its own — the pointer materialises on the
+    control with no history. Anything scoring a gesture has the whole trace, and the approach
+    is part of it.
+    """
+    x0, y0 = _mouse.get("x", x1), _mouse.get("y", y1)
+    dist = _im.hypot(x1 - x0, y1 - y0)
+    if dist < 4:
+        return
+    n = max(6, min(28, int(dist / 22)))
+    bow = _ir.uniform(-0.06, 0.06) * dist          # a hand does not travel a straight line
+    for i in range(1, n + 1):
+        e = _sstep(i / n)
+        px = x0 + (x1 - x0) * e - (y1 - y0) / (dist or 1) * bow * _im.sin(_im.pi * e)
+        py = y0 + (y1 - y0) * e + (x1 - x0) / (dist or 1) * bow * _im.sin(_im.pi * e)
+        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py)
+        _it.sleep(_ir.uniform(0.006, 0.018))
+    # The final step already lands exactly on (x1,y1) — sin(pi) zeroes the bow — so sending it
+    # again would put two identical samples back to back, which no hand produces.
+    _mouse["x"], _mouse["y"] = x1, y1
+
+
 def drag(target, to=None, dx=None, dy=0):
     """Trusted drag from `target` (CSS selector or (x, y) start coords) — for slide-to-verify.
-    Give an absolute `to`=(x,y) target, or a relative `dx`/`dy`. Moves in small held-button
-    steps (ease-in-out + tiny jitter, pressed bitmask held) so the site sees a real drag."""
+    Give an absolute `to`=(x,y) target, or a relative `dx`/`dy`.
+
+    The shape of the motion is the point, not just its endpoints. A slide-to-verify widget
+    scores the trace, and the machine tells are all in the middle of it: a pointer that
+    materialises on the handle with no approach, a symmetric velocity curve, evenly spaced
+    samples, and an arrival that is dead-on the target to the pixel and releases instantly.
+    Landing the right coordinates with that profile still fails, and each failure costs
+    reputation on the address — which is how a working solver turns a challenge into a block.
+
+    So: approach the handle, dwell, accelerate faster than we decelerate, wander a little
+    (less as we arrive, as a hand does), overshoot slightly, correct back, and hold before
+    letting go.
+    """
     c = _pt(target)
     if not c:
         raise RuntimeError("drag: no visible element " + str(target))
     x0, y0 = c
     x1, y1 = (to if to else (x0 + (dx or 0), y0 + dy))
-    _move(x0, y0)
+    span = _im.hypot(x1 - x0, y1 - y0)
+    _approach(x0, y0)
+    _it.sleep(_ir.uniform(0.05, 0.15))                    # settle before pressing
     cdp("Input.dispatchMouseEvent", type="mousePressed", x=x0, y=y0, button="left", buttons=1, clickCount=1)
-    _it.sleep(_ir.uniform(0.05, 0.12))
-    steps = max(14, int(_im.hypot(x1 - x0, y1 - y0) / 10))
+    _it.sleep(_ir.uniform(0.06, 0.14))                    # a hand does not move the instant it presses
+
+    # Each dispatch is a round trip, so wall-clock runs well past the sleeps: 46 steps put a
+    # 280px drag at 3.7s, which is slower than a hand, not more human than one.
+    steps = max(14, min(34, int(span / 9)))
+    ov = _ir.uniform(3.0, 11.0) if span > 40 else 0.0     # overshoot, then come back
+    ovx = (x1 - x0) / (span or 1) * ov
+    ovy = (y1 - y0) / (span or 1) * ov
+    hesitate = sorted(_ir.sample(range(3, steps - 2), min(2, max(0, steps - 6)))) if steps > 8 else []
     for i in range(1, steps + 1):
         t = i / steps
-        e = t * t * (3 - 2 * t)                                   # smoothstep ease
-        px = x0 + (x1 - x0) * e + (_ir.uniform(-1.0, 1.0) if i < steps else 0)
-        py = y0 + (y1 - y0) * e + (_ir.uniform(-1.0, 1.0) if i < steps else 0)
+        # peak velocity early (t**0.78 skews smoothstep left) — acceleration is brisk, the
+        # settle is long. A symmetric curve is the single loudest tell in a synthetic drag.
+        e = _sstep(t ** 0.78)
+        wob = (1.0 - t) * 1.4                             # precision improves on approach
+        px = x0 + (x1 + ovx - x0) * e + _ir.uniform(-wob, wob)
+        py = y0 + (y1 + ovy - y0) * e + _ir.uniform(-wob, wob)
         cdp("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py, buttons=1)
-        _it.sleep(_ir.uniform(0.008, 0.022))
+        _it.sleep(_ir.uniform(0.004, 0.016))
+        if i in hesitate:
+            _it.sleep(_ir.uniform(0.04, 0.09))            # a glance at the target
+    if ov:                                                # corrective sub-movement back onto it
+        n = _ir.randint(2, 3)
+        for j in range(1, n + 1):
+            k = j / (n + 1.0)                             # approaches the target, never lands on it
+            cdp("Input.dispatchMouseEvent", type="mouseMoved", buttons=1,
+                x=x1 + ovx * (1 - k) + _ir.uniform(-0.6, 0.6),
+                y=y1 + ovy * (1 - k) + _ir.uniform(-0.6, 0.6))
+            _it.sleep(_ir.uniform(0.015, 0.04))
+    cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x1, y=y1, buttons=1)
+    _it.sleep(_ir.uniform(0.08, 0.22))                    # hold, then let go
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x1, y=y1, button="left", buttons=0, clickCount=1)
     _mouse["x"], _mouse["y"] = x1, y1
 
@@ -1408,7 +1514,7 @@ def _frame_control(xo):
     # changing the control.
     try:
         got = js(r"""(function(){
-          var out=[], all=document.querySelectorAll('*');
+          var out=[], boxes=[], all=document.querySelectorAll('*');
           for(var i=0;i<all.length && i<4000;i++){
             var e=all[i], b=e.getBoundingClientRect();
             if(b.width<12||b.height<12||b.width>900||b.height>400) continue;
@@ -1418,12 +1524,25 @@ def _frame_control(xo):
             var t=((e.innerText||e.getAttribute('aria-label')||'')+'').trim().toLowerCase().slice(0,60);
             var cls=((e.className&&e.className.baseVal!==undefined?e.className.baseVal:e.className)||'')+'';
             var id=(e.id||'')+'';
+            var grab=(st.cursor==='grab'||st.cursor==='grabbing');
+            // The handle, not its icon: a grab cursor is inherited, so the glyph inside the
+            // handle carries it too. The outermost element with the cursor is the thing you
+            // grab; anything nested inside it is part of the same control.
+            if(grab && e.parentElement &&
+               getComputedStyle(e.parentElement).cursor===st.cursor) continue;
             var kind=null, score=0;
             if(role==='checkbox'||(tag==='input'&&e.type==='checkbox')){ kind='checkbox'; score=100; }
+            // A grab cursor beats every other signal, and that ordering is the whole point.
+            // Text and class names identify the WIDGET; the cursor identifies the GRIP. On a
+            // live DataDome slider the text sits on a 338x121 wrapper while the handle is a
+            // wordless 63x40 div, so ranking text first started the drag 140px right of the
+            // handle, on nothing. Scored above the challenge-furniture bonus below, which the
+            // wrapper also collects (90+15=105) — that is exactly how it kept winning.
+            else if(grab){ kind='slider'; score=130; }
             else if(/press|hold/.test(t)){ kind='press-hold'; score=95; }
             else if(/slider|slide|drag/.test(cls+' '+id+' '+t)){ kind='slider'; score=90; }
             else if(tag==='button'||role==='button'){ kind='button'; score=60; }
-            else if(st.cursor==='pointer'||st.cursor==='grab'){ kind='button'; score=40; }
+            else if(st.cursor==='pointer'){ kind='button'; score=40; }
             if(!kind) continue;
             if(/captcha|challenge|verify|human/.test(cls+' '+id)) score+=15;
             // A block page's only control is "contact support" — reachable, clickable, and
@@ -1433,9 +1552,28 @@ def _frame_control(xo):
             // challenge here to solve.
             if(/support|contact|help|customer|servicio|kundendienst|assistance/.test(
                  t+' '+cls+' '+id)) score-=200;
-            out.push({kind:kind,score:score,x:b.x,y:b.y,w:b.width,h:b.height,why:(t||cls||id).slice(0,40)});
+            out.push({kind:kind,score:score,x:b.x,y:b.y,w:b.width,h:b.height,grab:grab,
+                      why:(t||cls||id).slice(0,40)});
+            // A slide-to-verify widget draws its DESTINATION as a second box the same shape as
+            // the handle, further right. Knowing it turns the drag from "shove it far enough
+            // right and hope the latch catches" into an aimed gesture that lands where the
+            // widget wants it. Collected for every candidate; only used if a handle wins.
+            boxes.push({x:b.x,y:b.y,w:b.width,h:b.height});
           }
-          out.sort(function(a,b){return b.score-a.score || (b.w*b.h)-(a.w*a.h);});
+          // Tie-break on the SMALLER element, not the larger. A slider handle lives inside a
+          // track that shares its class prefix, so "biggest wins" returned the wrapper: a
+          // 280x100 container at (960,254) instead of the 63x40 grab handle at (820,305).
+          // Dragging the wrapper's centre starts the gesture in the middle of the track.
+          out.sort(function(a,b){return b.score-a.score || (a.w*a.h)-(b.w*b.h);});
+          var top=out[0];
+          if(top&&top.kind==='slider'){
+            var dest=null;
+            for(var k=0;k<boxes.length;k++){ var c=boxes[k];
+              if(Math.abs(c.h-top.h)<=2 && Math.abs(c.w-top.w)<=4 &&
+                 Math.abs(c.y-top.y)<=4 && c.x>top.x+top.w/2 &&
+                 (!dest||c.x>dest.x)) dest=c; }
+            if(dest){ top.dest_x=dest.x+dest.w/2; top.dest_y=dest.y+dest.h/2; }
+          }
           // Is this a BLOCK rather than a challenge? Vendors say so plainly in the body —
           // DataDome sets dd-response-page--hard-block and prints the offending IP. There is
           // nothing to solve on such a page, and sending the agent to look at a screenshot of
@@ -1458,10 +1596,14 @@ def _frame_control(xo):
         return None
     # Frame-local → page. The frame's own viewport origin IS the iframe element's top-left in
     # the parent, which _xorigin_challenge already measured.
-    return {"kind": got["kind"], "why": got.get("why") or "",
-            "x": int(xo["x"] + got["x"] + got["w"] / 2),
-            "y": int(xo["y"] + got["y"] + got["h"] / 2),
-            "w": int(got["w"]), "h": int(got["h"])}
+    out = {"kind": got["kind"], "why": got.get("why") or "",
+           "x": int(xo["x"] + got["x"] + got["w"] / 2),
+           "y": int(xo["y"] + got["y"] + got["h"] / 2),
+           "w": int(got["w"]), "h": int(got["h"])}
+    if got.get("dest_x") is not None:
+        out["dest_x"] = int(xo["x"] + got["dest_x"])
+        out["dest_y"] = int(xo["y"] + got["dest_y"])
+    return out
 
 
 def slider_gap(background, piece, step=2, refine=True):
@@ -1640,6 +1782,17 @@ def solve_challenge(act=True, hold_seconds=7.0):
     you read the control and act by coordinates, then confirm with challenge_cleared(). HARD
     perception (identify images, read text, rotate, audio) returns 'escalate:'. 'none' if clear.
     act=False = classify only."""
+    # A challenge widget may never RENDER in a hidden tab: DataDome sits on its loader and
+    # never draws the slider while document.visibilityState is "hidden". Every tab this tool
+    # opens is backgrounded on purpose — that is the promise it makes to an operator's
+    # keyboard. On an unattended browser there is no keyboard to protect, so foreground the
+    # page and let the widget exist. (Page.setWebLifecycleState does NOT do this; it changes
+    # the frozen/active lifecycle, not visibilityState. Only a real foreground does.)
+    if os.environ.get("HORSE_BROWSER_UNATTENDED"):
+        try:
+            cdp("Page.bringToFront")
+        except Exception:
+            pass
     d = _eval(_DETECT_JS) or {"kind": "none"}
     kind, sel, why = d.get("kind"), d.get("sel"), d.get("why", "")
     if kind == "hard":
@@ -1721,7 +1874,15 @@ def solve_challenge(act=True, hold_seconds=7.0):
                                 dx = int(hit["x"] * scale)
                 except Exception:
                     dx = None                                    # unreadable → fall through
-                drag((fc["x"], fc["y"]), dx=dx if dx else max(180, int(xo["w"] * 0.72)))
+                if dx:
+                    drag((fc["x"], fc["y"]), dx=dx)
+                elif fc.get("dest_x"):
+                    # Aim at the destination the widget drew for us rather than shoving right
+                    # and trusting the latch. On a full-page frame the old fallback computed
+                    # 0.72 x 1665px = 1199px of travel for a 217px track.
+                    drag((fc["x"], fc["y"]), to=(fc["dest_x"], fc["dest_y"]))
+                else:
+                    drag((fc["x"], fc["y"]), dx=max(180, int(min(xo["w"], 420) * 0.72)))
                 _it.sleep(2.0)
                 res = challenge_cleared()
                 if res.startswith("cleared"):

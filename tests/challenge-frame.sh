@@ -48,6 +48,13 @@ FIXPIDS=""
 # keyboard — see tests/attached-mode.sh, which learned this the hard way).
 CHROME_ARGS=( --remote-debugging-port="$CPORT" --user-data-dir="$W/p"
               --no-first-run --no-default-browser-check
+              # Without these a backgrounded test browser never acks Input.dispatchMouseEvent:
+              # the renderer is throttled, every gesture call sits until the IPC timeout, and
+              # the run looks like a hang rather than a missing flag. The real launcher passes
+              # them for the same reason (bin/horse-browser).
+              --disable-renderer-backgrounding
+              --disable-background-timer-throttling
+              --disable-backgrounding-occluded-windows
               --host-resolver-rules="MAP parent.test 127.0.0.1, MAP frame.test 127.0.0.1"
               about:blank )
 APP="${BIN%/Contents/MacOS/*}"
@@ -142,6 +149,49 @@ print('SC', solve_challenge(False))
     || fail "hard block detected" "reported kind='$k' — it would have clicked contact-support"
 }
 one_blocked
+
+echo "[4] a second tab on the same site must not hijack the frame lookup"
+# The browser is shared: a hundred subagents can be on the same challenged site at once, and
+# every one of those tabs contributes an iframe target whose URL matches. Matching by URL alone
+# returns whichever Chrome lists first — another agent's frame, at coordinates that mean nothing
+# on our page. Caught live on Hermes: the frame read visibilityState "hidden" and its widget had
+# never rendered, because it belonged to a backgrounded tab.
+one_two_tabs() {
+  local cx=$(( (RANDOM % 200) + 60 )) cy=$(( (RANDOM % 120) + 120 ))
+  local p1 p2 q1 q2; p1="$(port)"; p2="$(port)"; q1="$(port)"; q2="$(port)"
+  python3 "$HERE/lib/oopif-fixture.py" "$p1" "$p2" checkbox "$cx" "$cy" 30 30 > "$W/fa.json" &
+  FIXPIDS="$FIXPIDS $!"
+  # a DECOY tab: same vendor frame URL, deliberately different control coordinates
+  python3 "$HERE/lib/oopif-fixture.py" "$q1" "$q2" checkbox 470 460 30 30 > "$W/fb.json" &
+  FIXPIDS="$FIXPIDS $!"
+  for _ in $(seq 1 30); do [ -s "$W/fa.json" ] && [ -s "$W/fb.json" ] && break; sleep 0.2; done
+  local ex ey
+  ex=$(python3 -c "import json;print(json.load(open('$W/fa.json'))['expect_x'])" 2>/dev/null)
+  ey=$(python3 -c "import json;print(json.load(open('$W/fa.json'))['expect_y'])" 2>/dev/null)
+  [ -n "$ex" ] || { fail "two tabs" "fixture did not start"; return; }
+  local out
+  out="$(hb "
+import time
+from horse_harness.helpers import _xorigin_challenge, _frame_control
+# the decoy first, in a tab this session does NOT drive
+other = cdp('Target.createTarget', url='http://parent.test:$q1/')['targetId']
+time.sleep(2.0)
+goto_url('http://parent.test:$p1/'); wait_for_load(); time.sleep(1.5)
+fc = _frame_control(_xorigin_challenge())
+if fc:
+    print('FCX', fc['x']); print('FCY', fc['y'])
+cdp('Target.closeTarget', targetId=other)
+")"
+  local gx gy; gx="$(sed -n 's/^FCX //p' <<<"$out")"; gy="$(sed -n 's/^FCY //p' <<<"$out")"
+  if [ -z "$gx" ]; then fail "two tabs" "no control found"; return; fi
+  local dx=$(( gx > ex ? gx - ex : ex - gx )) dy=$(( gy > ey ? gy - ey : ey - gy ))
+  if [ "$dx" -le 3 ] && [ "$dy" -le 3 ]; then
+    pass "with a decoy tab open, the control comes from OUR tab — ($gx,$gy)"
+  else
+    fail "two tabs" "got ($gx,$gy), our tab's control is at ($ex,$ey) — read the wrong tab's frame"
+  fi
+}
+one_two_tabs
 
 echo "[2] repeated with fresh random positions (a hardcoded answer cannot survive this)"
 for i in 1 2 3; do one checkbox "checkbox run $i"; done
