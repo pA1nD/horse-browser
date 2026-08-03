@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 extension/_metadata/
 harness/.venv/
+tests/lib/traces/surface-*.json
