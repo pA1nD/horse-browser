@@ -49,9 +49,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── a BARE browser: the two flags that make it reachable, and nothing else ──────────
+# ── a BARE browser: the flags that make it reachable, and nothing else ──────────────
+# …plus SwiftShader, deliberately. A headless Linux pod has no hardware GL — Xvfb is a
+# software X server — so its WebGL renderer string names SwiftShader out loud, one of the
+# most-checked bot signals there is. Forcing it here is the only way a Mac, which always has
+# real GL, can test the mask that hides it. --enable-unsafe-swiftshader is required as well:
+# Chrome 151 gates software WebGL behind it, and having NO WebGL is the louder tell.
 "$BIN" --remote-debugging-port="$PORT" --user-data-dir="$WORK/profile" \
-       --no-first-run --no-default-browser-check about:blank >/dev/null 2>&1 &
+       --no-first-run --no-default-browser-check \
+       --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader about:blank >/dev/null 2>&1 &
 CHROME_PID=$!
 for _ in $(seq 1 60); do
   curl -sf --max-time 1 "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1 && break
@@ -140,6 +146,45 @@ print("WIRE", brands.get("Google Chrome") == major and major is not None, seen.g
 grep -q "WIRE True" <<<"$out" \
   && pass "realness wire half applied over CDP (sec-ch-ua matches the UA major)" \
   || fail "realness wire half applied over CDP" "$out"
+
+# ── 6b. realness, WebGL half — the string that says "SwiftShader" out loud ──────────
+# The browser above is forced onto SwiftShader, so unmasked it reports a software
+# rasteriser, which real desktop Chrome never does. Assert BOTH strings, together: they are
+# read as a pair and compared, so masking only the renderer would ship an Intel GPU behind a
+# Google vendor — a pairing that exists on no real machine, i.e. one tell traded for another.
+out="$(hb '
+goto_url("https://example.com"); wait_for_load()
+r = js("""(()=>{const rd=(c)=>{const g=document.createElement("canvas").getContext(c);
+ if(!g)return ["no ctx","no ctx"]; const d=g.getExtension("WEBGL_debug_renderer_info");
+ if(!d)return ["no ext","no ext"];
+ return [g.getParameter(d.UNMASKED_VENDOR_WEBGL),g.getParameter(d.UNMASKED_RENDERER_WEBGL)];};
+const a=rd("webgl"),b=rd("webgl2");
+return {v:a[0],r:a[1],v2:b[0],r2:b[1],
+        native:(""+WebGLRenderingContext.prototype.getParameter).includes("[native code]")};})()""")
+print("V", r["v"]); print("R", r["r"])
+print("SAME", r["v"]==r["v2"] and r["r"]==r["r2"])
+print("NATIVE", r["native"])
+')"
+v="$(sed -n 's/^V //p' <<<"$out")"; rr="$(sed -n 's/^R //p' <<<"$out")"
+same="$(sed -n 's/^SAME //p' <<<"$out")"; nat="$(sed -n 's/^NATIVE //p' <<<"$out")"
+case "$rr" in
+  *SwiftShader*|*swiftshader*|*llvmpipe*)
+    fail "WebGL renderer no longer names a software rasteriser" "renderer=$rr" ;;
+  "no ctx"|"no ext"|"")
+    fail "WebGL renderer masked" "no usable WebGL context: [$rr] — $out" ;;
+  *)
+    pass "WebGL renderer no longer names a software rasteriser" ;;
+esac
+case "$v:$rr" in
+  *Intel*:*Intel*) pass "WebGL vendor and renderer agree (masked as one pair)" ;;
+  *) fail "WebGL vendor and renderer agree" "vendor=$v renderer=$rr" ;;
+esac
+[ "$same" = "True" ] \
+  && pass "WebGL2 reports the same strings as WebGL1" \
+  || fail "WebGL2 matches WebGL1" "$out"
+[ "$nat" = "True" ] \
+  && pass "patched getParameter still reads as [native code]" \
+  || fail "patched getParameter reads as native" "$out"
 
 # ── 7. the reap path: the registry names what to close, no extension involved ───────
 before="$(curl -s "http://127.0.0.1:$PORT/json/list" | python3 -c \

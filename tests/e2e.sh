@@ -661,6 +661,27 @@ grep -q "BRAND_JS True" <<<"$out" && grep -q "BRAND_HE True" <<<"$out" \
 grep -q "NONDEGEN True" <<<"$out" && pass "fingerprint non-degenerate (plugins/languages/cores)" \
   || fail "fingerprint non-degenerate" "$out"
 
+# The WebGL mask's other half, and the one that is easy to get wrong: it must NOT fire here.
+# This browser has real hardware GL, so the renderer string is the truth and rewriting it
+# would be a fresh tell — the substitute is for a headless pod, where the honest answer names
+# SwiftShader. tests/attached-mode.sh forces software GL and asserts the masking side.
+out="$(hb '
+r = js("""(()=>{const g=document.createElement("canvas").getContext("webgl");
+ if(!g)return "no ctx"; const d=g.getExtension("WEBGL_debug_renderer_info");
+ return d?g.getParameter(d.UNMASKED_RENDERER_WEBGL):"no ext"})()""")
+print("GLR", r)
+')"
+glr="$(sed -n 's/^GLR //p' <<<"$out")"
+case "$glr" in
+  "no ctx"|"no ext"|"") skip "WebGL mask leaves real hardware GL alone" "no WebGL here: $glr" ;;
+  *"Mesa 22.3.6"*)      fail "WebGL mask leaves real hardware GL alone" \
+                             "the pod substitute leaked onto a machine with real GL: $glr" ;;
+  *SwiftShader*|*llvmpipe*)
+                        fail "WebGL mask leaves real hardware GL alone" \
+                             "software renderer here means the mask should have fired: $glr" ;;
+  *)                    pass "WebGL mask leaves real hardware GL alone ($(cut -c1-38 <<<"$glr")…)" ;;
+esac
+
 # The WIRE half. The sec-ch-ua request header must carry the same major as the UA string —
 # a mismatch is what Cloudflare Turnstile flags. It used to come from a static rules.json the
 # launcher rewrote on update, which went stale whenever Chrome for Testing self-updated
