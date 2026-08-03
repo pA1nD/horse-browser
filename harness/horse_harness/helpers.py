@@ -1424,14 +1424,31 @@ def _keyinfo(ch):
     return (ch, '', 0, False)
 
 
+def _key_location(code):
+    """DOM_KEY_LOCATION for a physical key code: 1 left, 2 right, 3 numpad, 0 standard."""
+    if code.endswith("Left") and code[:-4] in ("Shift", "Control", "Alt", "Meta"):
+        return 1
+    if code.endswith("Right") and code[:-5] in ("Shift", "Control", "Alt", "Meta"):
+        return 2
+    return 3 if code.startswith("Numpad") else 0
+
+
 def _key(ch):
     key, code, vk, shift = _keyinfo(ch)
-    base = dict(key=key, code=code, windowsVirtualKeyCode=vk, nativeVirtualKeyCode=vk)
+    base = dict(key=key, code=code, windowsVirtualKeyCode=vk, nativeVirtualKeyCode=vk,
+                location=_key_location(code))
     # keyDown WITH text makes Chrome actually insert the char (fires a native `input`
     # event); keyUp without text. Real, fully-formed events → site keyup/input listeners fire.
     if shift:
         # hold a real Shift keydown around the char so event.shiftKey is true, like a keyboard
-        sk = dict(key='Shift', code='ShiftLeft', windowsVirtualKeyCode=16, nativeVirtualKeyCode=16)
+        # location=1 is DOM_KEY_LOCATION_LEFT, and it is not cosmetic: `code` says which
+        # physical key, `location` says which side, and a real ShiftLeft always reports 1.
+        # CDP defaults it to 0, so every capital letter and every shifted symbol this tool has
+        # typed — including anything the credential broker types — carried a left Shift that
+        # claimed to be on neither side. `e.code === 'ShiftLeft' && e.location !== 1` is one
+        # line for a page to check.
+        sk = dict(key='Shift', code='ShiftLeft', windowsVirtualKeyCode=16,
+                  nativeVirtualKeyCode=16, location=1)
         cdp("Input.dispatchKeyEvent", type="keyDown", modifiers=8, **sk)
         cdp("Input.dispatchKeyEvent", type="keyDown", text=ch, modifiers=8, **base)
         cdp("Input.dispatchKeyEvent", type="keyUp", modifiers=8, **base)
@@ -1445,7 +1462,8 @@ def press(name, times=1):
     """Press a named key with a real, trusted key event: Enter, Tab, Escape, Backspace,
     Delete, Space, Arrow{Up,Down,Left,Right}."""
     code, vk, txt = _SPECIAL[name]
-    base = dict(key=code, code=code, windowsVirtualKeyCode=vk, nativeVirtualKeyCode=vk)
+    base = dict(key=code, code=code, windowsVirtualKeyCode=vk, nativeVirtualKeyCode=vk,
+                location=_key_location(code))
     for _ in range(times):
         cdp("Input.dispatchKeyEvent", type="keyDown", **(dict(base, text=txt) if txt else base))
         cdp("Input.dispatchKeyEvent", type="keyUp", **base)
