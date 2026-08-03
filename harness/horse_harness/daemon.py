@@ -3,7 +3,7 @@
 horse-browser always supplies the CDP endpoint (BU_CDP_URL / BU_CDP_WS), so the
 local-Chrome profile discovery and permission-popup flows from browser-harness are gone.
 """
-import asyncio, json, os, re, sys, time, urllib.request
+import asyncio, contextlib, json, os, re, sys, time, urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -131,6 +131,54 @@ def _track_target(tid):
         os.replace(tmp, f)
     except OSError:
         pass
+    finally:
+        if fd is not None:
+            try:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@contextlib.contextmanager
+def _adopt_lock():
+    """Serialise "adopt the New Tab Page" across every daemon on ONE browser.
+
+    Yields True while held, False when it could not be taken. A caller that gets False must
+    NOT adopt — minting is always safe, adopting on a guess is not. That is the right way
+    round: the cost of not adopting is one extra tab, the cost of adopting the same tab twice
+    is two sessions driving one page.
+
+    Keyed on the CDP endpoint, not the lane, because the thing being raced for is the
+    browser's tab. Keying it per lane would serialise nothing; keying it globally would make
+    daemons on unrelated browsers (multi-instance) wait on each other for no reason.
+    """
+    fd = None
+    try:
+        import fcntl
+        ep = os.environ.get("BU_CDP_URL") or os.environ.get("BU_CDP_WS") or "default"
+        key = re.sub(r"[^A-Za-z0-9]+", "-", ep)[-48:]
+        p = _tabs_file().parent
+        p.mkdir(parents=True, exist_ok=True)
+        # Dotfile: the launcher's reaper globs TABS/* and glob("*") skips dotfiles. Anything
+        # else here would be read as a dead session's registry and its tabs closed.
+        fd = os.open(str(p / f".adopt-{key}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield True
+    except (ImportError, OSError) as e:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            fd = None
+        log(f"cannot serialise New Tab Page adoption ({e}) — minting instead, which is safe")
+        yield False
+        return
     finally:
         if fd is not None:
             try:
@@ -312,10 +360,22 @@ class Daemon:
             # nobody's work. Leaving it there means the browser sits at a dead tab beside
             # the blank we just made. The first session that needs a tab takes it over —
             # unless some session has already claimed it.
-            claimed = _all_tracked()
-            ntp = next((t for t in targets
-                        if is_reusable_new_tab_page(t) and t["targetId"] not in claimed), None)
-
+            #
+            # Deciding and claiming must be ONE step, across every daemon on this browser.
+            # Two cold lanes otherwise both snapshot targets, both read the registries before
+            # either writes, both see the New Tab Page unclaimed, and both adopt it: two
+            # sessions driving one tab, and either watchdog free to close the other's work.
+            # `targets` above was fetched before this point, so it is re-read inside the lock
+            # — a snapshot taken outside it is exactly the stale evidence that causes this.
+            ntp = None
+            with _adopt_lock() as locked:
+                if locked:
+                    fresh = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+                    claimed = _all_tracked()
+                    ntp = next((t for t in fresh
+                                if is_reusable_new_tab_page(t) and t["targetId"] not in claimed), None)
+                    if ntp:
+                        _track_target(ntp["targetId"])   # claim INSIDE the lock, or it is not a claim
             if ntp:
                 tid = adopted = ntp["targetId"]
                 log(f"adopted the browser's New Tab Page ({tid}) instead of minting")

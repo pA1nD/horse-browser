@@ -905,3 +905,66 @@ def test_self_reap_reports_failure_when_closes_fail(tmp_path, monkeypatch):
         raise AssertionError("a total close failure was reported as success")
     assert json.loads((tmp_path / "tabs").read_text()) == ["T1", "T2"], \
         "the registry must survive so the launcher's sweep can still find these tabs"
+
+
+def test_ntp_adoption_decides_and_claims_entirely_inside_the_lock(tmp_path, monkeypatch):
+    """THE race: two cold lanes both snapshot targets, both read the registries before either
+    writes, both see the New Tab Page unclaimed, both adopt it — two sessions driving one tab,
+    either watchdog free to close the other's work.
+
+    The fix is not "check again", it is "never decide on evidence gathered outside the lock".
+    So assert exactly that: the target list is re-fetched and the registries are read only
+    while the lock is held, and the claim is written before it is released. A snapshot taken
+    before the lock is the stale evidence that causes this bug."""
+    ntp = {"targetId": "NTP", "type": "page", "url": "chrome://newtab/"}
+    _registry(tmp_path, monkeypatch, [])
+    d, created = _scripted_for_attach([ntp, _SW_TARGETS["targetInfos"][1]],
+                                      monkeypatch, bound=None, label="sess-1", claimed=True)
+
+    events = []
+    import contextlib as _c
+
+    @_c.contextmanager
+    def _watched_lock():
+        events.append("lock-acquired")
+        try:
+            yield True
+        finally:
+            events.append("lock-released")
+    monkeypatch.setattr(daemon, "_adopt_lock", _watched_lock)
+    monkeypatch.setattr(daemon, "_all_tracked", lambda: events.append("read-registries") or set())
+    real_track = daemon._track_target
+    monkeypatch.setattr(daemon, "_track_target",
+                        lambda tid: (events.append("claim:" + tid), real_track(tid))[1])
+
+    pick = asyncio.run(d.attach_first_page())
+    assert pick["targetId"] == "NTP" and created["n"] == 0
+
+    held = events[events.index("lock-acquired"):events.index("lock-released")]
+    assert "read-registries" in held, f"registries read outside the lock: {events}"
+    assert any(e.startswith("claim:NTP") for e in held), f"claim written outside the lock: {events}"
+    # …and the targets the decision used were fetched fresh, not reused from before the lock.
+    # >= 2: one before the lock (the bound/registry passes need it) and at least one inside,
+    # which is the point — the decision must not reuse the pre-lock snapshot.
+    assert len([m for (m, _p, _s) in d.cdp.calls if m == "Target.getTargets"]) >= 2, \
+        "the decision reused the pre-lock snapshot"
+
+
+def test_ntp_adoption_is_skipped_when_it_cannot_be_serialised(tmp_path, monkeypatch):
+    """No lock means no way to know we are alone. Minting costs one extra tab; adopting on a
+    guess costs two sessions on one page — so the unserialisable case must mint."""
+    ntp = {"targetId": "NTP", "type": "page", "url": "chrome://newtab/"}
+    _registry(tmp_path, monkeypatch, [])
+    d, created = _scripted_for_attach([ntp, _SW_TARGETS["targetInfos"][1]],
+                                      monkeypatch, bound=None, label="sess-1", claimed=True)
+
+    import contextlib as _c
+    @_c.contextmanager
+    def _no_lock():
+        yield False
+    monkeypatch.setattr(daemon, "_adopt_lock", _no_lock)
+
+    pick = asyncio.run(d.attach_first_page())
+
+    assert pick["targetId"] == "NEW-BLANK"
+    assert created["n"] == 1
