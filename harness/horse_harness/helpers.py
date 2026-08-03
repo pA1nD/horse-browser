@@ -1126,6 +1126,16 @@ def _focus(css):
 
 
 # ── mouse ────────────────────────────────────────────────────────────────────────
+# PointerEvent.pressure is whatever CDP's `force` said, and CDP defaults it to 0. So every
+# gesture this tool sent reported a button held down with zero force behind it — a state no
+# physical pointer can produce, and one line of JS to check. A real mouse reports 0.5 while any
+# button is down and 0 otherwise. Measured on a live DataDome slider: with the motion fitted to
+# a recorded hand on all nine trace metrics, the slide was still rejected within two seconds,
+# while an untouched challenge sat unchanged for thirty — so the gesture was being read, and
+# this was in every event of it.
+PRESSED_FORCE = 0.5
+
+
 def _move(x, y):
     cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
     _mouse["x"], _mouse["y"] = x, y
@@ -1161,9 +1171,11 @@ def click_xy(x, y):
         _debug_click(x, y)
     _move(x, y)
     _it.sleep(_ir.uniform(0.02, 0.06))
-    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", clickCount=1)
+    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", buttons=1,
+        clickCount=1, force=0.5)
     _it.sleep(_ir.uniform(0.03, 0.08))
-    cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", clickCount=1)
+    cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", buttons=0,
+        clickCount=1, force=0)
 
 
 def click(css):
@@ -1207,18 +1219,21 @@ def press_hold(target, seconds=6.0):
         raise RuntimeError("press_hold: no visible element " + str(target))
     x, y = c
     _move(x, y)
-    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", buttons=1, clickCount=1)
+    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", buttons=1,
+        clickCount=1, force=0.5)
     t0 = _it.time(); end = t0 + seconds
     nudges = sorted(_ir.uniform(0.4, max(0.5, seconds - 0.3)) for _ in range(_ir.randint(2, 4)))
     for nt in nudges:                                          # a few irregular micro-tremors, else still
         dt = (t0 + nt) - _it.time()
         if dt > 0:
             _it.sleep(dt)
-        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x + _ir.uniform(-2.0, 2.0), y=y + _ir.uniform(-2.0, 2.0), buttons=1)
+        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x + _ir.uniform(-2.0, 2.0),
+            y=y + _ir.uniform(-2.0, 2.0), buttons=1, force=0.5)
     rem = end - _it.time()
     if rem > 0:
         _it.sleep(rem)
-    cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", buttons=0, clickCount=1)
+    cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", buttons=0,
+        clickCount=1, force=0)
 
 
 def _sstep(t):
@@ -1315,7 +1330,8 @@ def drag(target, to=None, dx=None, dy=0):
         _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=hx, y=hy)
         _it.sleep(_dwell())
     _it.sleep(_ir.uniform(0.05, 0.15))                    # settle before pressing
-    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x0, y=y0, button="left", buttons=1, clickCount=1)
+    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x0, y=y0, button="left", buttons=1,
+        clickCount=1, force=0.5)
     _it.sleep(_ir.uniform(0.06, 0.14))                    # a hand does not move the instant it presses
 
     # Sample count, duration and overshoot are measured against 14 recorded human drags of this
@@ -1352,7 +1368,7 @@ def drag(target, to=None, dx=None, dy=0):
         py = (y0 + (y1 + ovy - y0) * e + arc * _im.sin(_im.pi * e)
               + _ir.uniform(-wob, wob))
         (px, py), _lastpt, _runlen = _unstall((round(px), round(py)), _lastpt, _runlen)
-        _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py, buttons=1)
+        _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py, buttons=1, force=0.5)
         _it.sleep(_dwell())
         if i in hesitate:
             _it.sleep(_ir.uniform(0.04, 0.09))            # a glance at the target
@@ -1360,11 +1376,11 @@ def drag(target, to=None, dx=None, dy=0):
         n = _ir.randint(2, 3)
         for j in range(1, n + 1):
             k = j / (n + 1.0)                             # approaches the target, never lands on it
-            _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", buttons=1,
+            _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", buttons=1, force=0.5,
                         x=x1 + ovx * (1 - k) + _ir.uniform(-0.6, 0.6),
                         y=y1 + ovy * (1 - k) + _ir.uniform(-0.6, 0.6))
             _it.sleep(_ir.uniform(0.015, 0.04))
-    cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x1, y=y1, buttons=1)
+    cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x1, y=y1, buttons=1, force=0.5)
     _it.sleep(_ir.uniform(0.08, 0.22))                    # hold, then let go
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x1, y=y1, button="left", buttons=0, clickCount=1)
     _mouse["x"], _mouse["y"] = x1, y1

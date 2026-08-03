@@ -41,13 +41,21 @@ cat > "$W/page.html" <<'HTML'
 <div id="h" style="position:absolute;left:120px;top:200px;width:60px;height:40px;
      background:#4a90d9;cursor:grab"></div>
 <script>
-window.LOG=[];
+window.LOG=[]; window.PTR=[];
 var t0=performance.now();
 ['mousemove','mousedown','mouseup'].forEach(function(n){
   document.addEventListener(n,function(e){
     LOG.push([n[5]==='m'?'m':(n==='mousedown'?'d':'u'),
               Math.round(e.clientX*10)/10, Math.round(e.clientY*10)/10,
               Math.round(performance.now()-t0)]);
+  },true);
+});
+// What the pointer says about ITSELF, not just where it was. A physical pointer cannot report
+// a button held with no force behind it, and reading that takes one property access.
+['pointerdown','pointermove','pointerup'].forEach(function(n){
+  document.addEventListener(n,function(e){
+    if (PTR.length < 400) PTR.push({t:n, p:e.pressure, b:e.buttons, k:e.pointerType,
+                                    w:e.width, h:e.height, prim:e.isPrimary});
   },true);
 });
 </script>
@@ -72,9 +80,11 @@ fi
 for _ in $(seq 1 60); do curl -sf -m 1 "http://127.0.0.1:$CPORT/json/version" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -sf -m 2 "http://127.0.0.1:$CPORT/json/version" >/dev/null 2>&1 || { echo "FATAL: chrome did not come up"; exit 1; }
 
-OUT="$(BU_CDP_URL="http://127.0.0.1:$CPORT" BU_NAME="hb-drag$$" HORSE_SESSION="drag-$$" \
-      HORSE_BROWSER_IPC_TIMEOUT=30 \
-      PYTHONPATH="$ROOT/harness" SPORT="$SPORT" "$PY" -m horse_harness.run <<'PYEOF'
+# The measurement runs from a FILE, not a heredoc inside $( ). Bash 3.2 — still what macOS
+# ships — mis-parses that combination once the heredoc body gets complex, and reports it as
+# "unexpected EOF while looking for matching `)'" pointing at the line the substitution
+# starts on, which is nowhere near the text it actually choked on.
+cat > "$W/measure.py" <<'PYEOF'
 import json, os, statistics
 
 # open_tab, not goto_url: the about:blank window Chrome creates at launch never acknowledges
@@ -135,9 +145,20 @@ def runlen(r):
 res["max_run"] = max(runlen(r) for r in runs)
 res["dupe_pct"] = round(100.0 * sum(sum(1 for a, b in zip(moves(r), moves(r)[1:]) if a[1:3] == b[1:3])
                                     for r in runs) / sum(len(moves(r)) for r in runs), 1)
+# 8. the pointer's self-description. CDP defaults `force` to 0, so every gesture this tool sent
+#    reported a button down with zero pressure — a state no physical pointer produces.
+ptr = json.loads(js("JSON.stringify(window.PTR)"))
+held = [e for e in ptr if e["b"] == 1]
+free = [e for e in ptr if e["b"] == 0]
+res["pressure_held"] = sorted({e["p"] for e in held}) if held else []
+res["pressure_free"] = sorted({e["p"] for e in free}) if free else []
+res["ptr_shape"] = sorted({(e["k"], e["w"], e["h"], e["prim"]) for e in ptr})
 print(json.dumps(res))
 PYEOF
-)"
+
+OUT="$(BU_CDP_URL="http://127.0.0.1:$CPORT" BU_NAME="hb-drag$$" HORSE_SESSION="drag-$$" \
+      HORSE_BROWSER_IPC_TIMEOUT=30 \
+      PYTHONPATH="$ROOT/harness" SPORT="$SPORT" "$PY" -m horse_harness.run < "$W/measure.py")"
 echo "$OUT" | tail -1 > "$W/res.json"
 q() { python3 -c "import json,sys;print(json.load(open('$W/res.json'))['$1'])" 2>/dev/null; }
 
@@ -176,6 +197,9 @@ chk "it holds briefly before letting go"                 "all(h >= 40 for h in v
 # grid produces.
 chk "the pointer never stalls longer than a hand does"   "v <= 4"                    max_run
 chk "repeats stay inside the recorded human range"       "v <= 10.0"                 dupe_pct
+chk "a held button reports real pressure"                "v == [0.5]"                pressure_held
+chk "a free button reports no pressure"                  "v == [0]"                  pressure_free
+chk "it describes itself as one primary mouse"           "v == [['mouse', 1, 1, True]]" ptr_shape
 
 echo
 if [ "$FAIL" -eq 0 ]; then echo "── $PASS passed, 0 failed"; else
