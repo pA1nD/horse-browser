@@ -222,6 +222,11 @@ session dies also self-reaps its group, so this is politeness, not a leak backst
 
 - `horse-browser --doctor` — endpoint, daemon, and extension state. `horse-browser harness-setup`
   — (re)build the harness venv.
+- `horse-browser instances` — every browser on this machine with a debugging port: pid, port,
+  uptime, live tab count, profile. Anything not on a profile this machine is configured for is
+  marked `<- stray`. A throwaway browser that outlives the script which started it (an
+  interrupted test, a timed-out one-liner) leaves no trace anywhere else, and stays up holding
+  memory and a port. It never kills anything: some strays legitimately belong to another tool.
 - Omnibox popups are not real work tabs. CDP target order is not the visible tab-strip order.
 - `page_info()` returning `{dialog:…}` means a native alert/confirm/prompt froze the JS thread;
   handle the dialog (`cdp("Page.handleJavaScriptDialog", accept=True)`) before anything else.

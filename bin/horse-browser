@@ -1096,6 +1096,61 @@ PY
 # ── status / update ──────────────────────────────────────────────────────────
 _chrome_ver() { echo "${1:-}" | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1; }
 
+# hb_instances: every browser this tool could be talking to, and which ones nobody owns.
+#
+# Exists because "there are a lot of open horse browsers around" was answered by reading raw ps
+# output and eyeballing which --user-data-dir paths were legitimate. Four strays from timed-out
+# ad-hoc runs had been sitting for the better part of an hour with nothing to notice them: a
+# throwaway browser that outlives its script leaves no trace anywhere this tool looks.
+#
+# A profile is only recognised if it is one this machine is configured to use. Anything else is
+# printed as a stray with its port and age, so it can be killed by hand — this never kills
+# anything itself. Some of those "strays" are legitimately somebody else's (another module runs
+# its own instance), and guessing wrong would take down a browser an operator is signed into.
+hb_instances() {
+  local rows found=0 strays=0
+  # [-]- so the grep does not match its OWN process line, which carries the pattern in its
+  # argv, has no port to parse, and under set -e ends the listing at whatever it had printed.
+  rows="$(_hb_ps_wide 2>/dev/null | grep -E -- "[-]-remote-debugging-port=" | grep -v -- "--type=" || true)"
+  if [ -z "$rows" ]; then echo "horse-browser: no browsers running"; return 0; fi
+  printf '%-6s %-6s %-10s %-5s %s\n' PID PORT UPTIME TABS PROFILE
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    local pid port prof up tabs mark
+    pid="$(awk '{print $1}' <<<"$line")"
+    port="$(grep -oE -- '--remote-debugging-port=[0-9]+' <<<"$line" | head -1 | cut -d= -f2 || true)"
+    prof="$(grep -oE -- '--user-data-dir=[^ ]+' <<<"$line" | head -1 | cut -d= -f2- || true)"
+    [ -n "$prof" ] || prof="(default profile)"
+    [ -n "$port" ] || continue
+    # A browser, not something that merely mentions one. On macOS `open -g -n -a Chrome --args
+    # --remote-debugging-port=...` carries the whole flag list in its own argv, so the launcher
+    # helper shows up beside the browser it started and gets counted twice.
+    case "$(ps -o comm= -p "$pid" 2>/dev/null || true)" in
+      *hrome*|*hromium*) ;;
+      *) continue ;;
+    esac
+    found=$((found + 1))
+    up="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')"
+    # Ask the browser, not the process table: a live CDP port is what "usable" means here, and
+    # the tab count is the number that says whether anyone is actually using it.
+    tabs="$(curl -s -m 2 "http://127.0.0.1:$port/json/list" 2>/dev/null \
+            | grep -c '"type": *"page"' || true)"
+    [ -n "$tabs" ] || tabs="-"
+    case "$prof" in
+      "$PROFILE"|"$HOME/.config/horse-browser/"*) mark="" ;;
+      *) mark="  <- stray"; strays=$((strays + 1)) ;;
+    esac
+    printf '%-6s %-6s %-10s %-5s %s%s\n' "$pid" "$port" "${up:-?}" "$tabs" "$prof" "$mark"
+  done <<<"$rows"
+  if [ "$strays" -gt 0 ]; then
+    echo
+    echo "$strays browser(s) on a profile this machine is not configured for. Some belong to"
+    echo "other tools; kill only what you recognise:  kill <PID>"
+  fi
+  [ "$found" -gt 0 ] || echo "horse-browser: no browsers running"
+}
+
+
 hb_status() {
   local ver running
   ver="$(git -C "$ROOT" describe --tags 2>/dev/null || true)"
@@ -1602,6 +1657,7 @@ ensure_lane_hook
 # horse-browser's own subcommands — handled here, never forwarded to browser-harness.
 case "${1:-}" in
   status) hb_status; exit 0 ;;
+  instances) hb_instances; exit 0 ;;
   update) hb_update && exit 0 || exit 1 ;;
   install-chrome)
     # Build-time only: fetch Chrome, print a stable path, touch nothing else. Deliberately
