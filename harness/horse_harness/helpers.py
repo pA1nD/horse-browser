@@ -1225,6 +1225,36 @@ def _sstep(t):
     return t * t * (3 - 2 * t)
 
 
+def _unstall(pt, last, runlen):
+    """Keep a repeated pointer position from becoming a stall.
+
+    Chrome quantises dispatched coordinates, so sub-pixel motion lands on the same pixel and a
+    settling gesture emits identical samples. A hand does that too — the recorded drags repeat a
+    position up to three times in a row — so suppressing repeats entirely would be its own tell.
+    What a hand does not do is sit on one pixel for five or seven samples, which is what a
+    decaying jitter produces once it drops below the rounding grid. Allow the repeat, cap the run.
+    """
+    if pt == last:
+        runlen += 1
+        if runlen >= 2:
+            pt = (pt[0] + _ir.choice((-1, 1)), pt[1])
+            runlen = 0
+    else:
+        runlen = 0
+    return pt, pt, runlen
+
+
+def _dwell():
+    """One inter-sample gap, drawn the way a hand's are distributed.
+
+    Not uniform. Recorded drags have a coefficient of variation near 1.1 — mostly quick samples
+    with occasional long ones — where a uniform draw sits near 0.3. Evenly-spread randomness is
+    still evenly spread, and the spacing of a pointer's samples is about the cheapest thing for
+    a scorer to histogram.
+    """
+    return _ir.uniform(0.030, 0.075) if _ir.random() < 0.18 else _ir.uniform(0.003, 0.012)
+
+
 def _approach(x1, y1):
     """Move to (x1,y1) the way a hand arrives: along a slightly bowed path, decelerating.
 
@@ -1236,14 +1266,14 @@ def _approach(x1, y1):
     dist = _im.hypot(x1 - x0, y1 - y0)
     if dist < 4:
         return
-    n = max(6, min(28, int(dist / 22)))
+    n = max(10, min(34, int(dist / 12)))        # a hand's approach: ~16 samples, not 4
     bow = _ir.uniform(-0.06, 0.06) * dist          # a hand does not travel a straight line
     for i in range(1, n + 1):
         e = _sstep(i / n)
         px = x0 + (x1 - x0) * e - (y1 - y0) / (dist or 1) * bow * _im.sin(_im.pi * e)
         py = y0 + (y1 - y0) * e + (x1 - x0) / (dist or 1) * bow * _im.sin(_im.pi * e)
         _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py)
-        _it.sleep(_ir.uniform(0.006, 0.018))
+        _it.sleep(_dwell())
     # The final step already lands exactly on (x1,y1) — sin(pi) zeroes the bow — so sending it
     # again would put two identical samples back to back, which no hand produces.
     _mouse["x"], _mouse["y"] = x1, y1
@@ -1271,27 +1301,59 @@ def drag(target, to=None, dx=None, dy=0):
     x1, y1 = (to if to else (x0 + (dx or 0), y0 + dy))
     span = _im.hypot(x1 - x0, y1 - y0)
     _approach(x0, y0)
+    # A hand arrives on the control and hovers before it presses. Those samples land ON the
+    # target, where any scorer watching the control sees them — a synthetic drag enters and
+    # presses in the same instant. Recorded hands: 16 samples over the handle before the press;
+    # this was emitting 4, and the four were the tail of the approach rather than a pause.
+    # Wander wide enough to survive rounding: Chrome quantises dispatched coordinates, so a
+    # +/-2.5px hover only had about five distinct positions and kept landing on the same pixel —
+    # seven identical samples in a row, where the widest human run recorded was three.
+    last, runlen = None, 0
+    for _ in range(_ir.randint(8, 14)):
+        hx, hy = round(x0 + _ir.uniform(-6, 6)), round(y0 + _ir.uniform(-6, 6))
+        (hx, hy), last, runlen = _unstall((hx, hy), last, runlen)
+        _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=hx, y=hy)
+        _it.sleep(_dwell())
     _it.sleep(_ir.uniform(0.05, 0.15))                    # settle before pressing
     cdp("Input.dispatchMouseEvent", type="mousePressed", x=x0, y=y0, button="left", buttons=1, clickCount=1)
     _it.sleep(_ir.uniform(0.06, 0.14))                    # a hand does not move the instant it presses
 
-    # Each dispatch is a round trip, so wall-clock runs well past the sleeps: 46 steps put a
-    # 280px drag at 3.7s, which is slower than a hand, not more human than one.
-    steps = max(14, min(34, int(span / 9)))
-    ov = _ir.uniform(3.0, 11.0) if span > 40 else 0.0     # overshoot, then come back
+    # Sample count, duration and overshoot are measured against 14 recorded human drags of this
+    # same distance (tests/lib/human-trace.py), not guessed. A hand emitted a median of 63
+    # samples over 1.75s; this emitted 27 over 0.9s. Overshoot went the other way — the invented
+    # 3-11px was 3.5x what a hand actually does, which is 2.5px.
+    steps = max(24, min(80, int(span / 3.5)))
+    # Overshoot is bimodal in the recorded drags, not a small constant: 7 of 14 landed with no
+    # overshoot at all, and the other 7 ran 5-24px past before correcting. Always overshooting
+    # by a little matches neither half — it is the average of two behaviours and looks like
+    # neither. Toss for which one this drag is.
+    ov = (_ir.uniform(5.0, 24.0) if _ir.random() < 0.5 else 0.0) if span > 40 else 0.0
     ovx = (x1 - x0) / (span or 1) * ov
     ovy = (y1 - y0) / (span or 1) * ov
+    arc = _ir.choice((-1, 1)) * _ir.uniform(12.0, 32.0)   # the vertical bow of the path
+    _lastpt, _runlen = None, 0
     hesitate = sorted(_ir.sample(range(3, steps - 2), min(2, max(0, steps - 6)))) if steps > 8 else []
     for i in range(1, steps + 1):
         t = i / steps
-        # peak velocity early (t**0.78 skews smoothstep left) — acceleration is brisk, the
-        # settle is long. A symmetric curve is the single loudest tell in a synthetic drag.
-        e = _sstep(t ** 0.78)
-        wob = (1.0 - t) * 1.4                             # precision improves on approach
+        # Front-loaded far harder than a symmetric curve, and harder than this first guessed:
+        # a hand covers half the distance in the first 17% of the time and spends the rest
+        # settling. t**0.39 puts the half-distance point there; t**0.78 put it at 33%.
+        e = _sstep(t ** 0.39)
+        # Precision improves on approach, but never to perfect stillness — the floor matters.
+        # With the travel front-loaded, the tail advances well under a pixel per sample, and a
+        # jitter that decays to zero there let five consecutive samples round to the same pixel.
+        # A hand settling still trembles; the widest run in the recorded drags was three.
+        wob = 0.7 + (1.0 - t) * 1.4
+        # A hand does not hold a straight line: across 222px of travel the recorded drags
+        # wandered a median of 29px vertically, where this held under 2px. That flatness is the
+        # loudest thing left in the trace — a scorer does not have to model intent to notice a
+        # pointer that never deviates from the axis it is moving along.
         px = x0 + (x1 + ovx - x0) * e + _ir.uniform(-wob, wob)
-        py = y0 + (y1 + ovy - y0) * e + _ir.uniform(-wob, wob)
+        py = (y0 + (y1 + ovy - y0) * e + arc * _im.sin(_im.pi * e)
+              + _ir.uniform(-wob, wob))
+        (px, py), _lastpt, _runlen = _unstall((round(px), round(py)), _lastpt, _runlen)
         _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py, buttons=1)
-        _it.sleep(_ir.uniform(0.004, 0.016))
+        _it.sleep(_dwell())
         if i in hesitate:
             _it.sleep(_ir.uniform(0.04, 0.09))            # a glance at the target
     if ov:                                                # corrective sub-movement back onto it

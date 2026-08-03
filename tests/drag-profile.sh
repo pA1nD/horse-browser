@@ -83,7 +83,7 @@ import json, os, statistics
 # for itself acks in ~10ms. (Agent code always takes this path; only ad-hoc CDP hits the other.)
 open_tab("http://127.0.0.1:%s/page.html" % os.environ["SPORT"]); wait_for_load()
 runs = []
-for _ in range(6):
+for _ in range(12):
     js("window.LOG=[]")
     drag((150, 220), to=(430, 220))
     runs.append(json.loads(js("JSON.stringify(window.LOG)")))
@@ -154,7 +154,10 @@ sys.exit(0 if ($expr) else 1)"; then pass "$label ($fld=$(q "$fld"))"; else fail
 
 chk "the pointer approaches the handle before pressing"  "v >= 4"                    approach
 chk "the drag takes a hand's time, not a loop's"         "all(0.45 <= d <= 3.0 for d in v)" dur
-chk "it overshoots, then corrects back onto the target"  "sum(1 for o in v if o >= 1.5) >= 4" overshoot
+# Bimodal in the recorded hand: 7 of 14 drags overshot 5-24px, the other 7 not at all. So the
+# property is that BOTH happen — a drag that always overshoots by a little is the average of two
+# behaviours and resembles neither. Twelve runs, so a fair coin does not fail this by luck.
+chk "sometimes it overshoots, sometimes it does not"     "2 <= sum(1 for o in v if o >= 1.5) <= 10" overshoot
 chk "samples are not metronomic"                         "min(v) >= 0.12"            dt_cv
 # Judged on the DISTRIBUTION, not run by run. This is a shape property measured through
 # randomised sleeps and a browser under load — with the whole suite running, individual drags
@@ -166,8 +169,13 @@ chk "it accelerates faster than it decelerates"          "sorted(v)[len(v)//2] <
 chk "no run decelerates first"                           "max(v) <= 0.62"            half_at
 chk "it releases on the target"                          "all(e <= 2.0 for e in v)"  err_x
 chk "it holds briefly before letting go"                 "all(h >= 40 for h in v)"   hold
-chk "the pointer never stalls in place"                  "v <= 2"                    max_run
-chk "repeats stay at hand-rate, not loop-rate"           "v < 5.0"                   dupe_pct
+# Bounds taken from 14 recorded human drags (tests/lib/traces/, see tests/lib/human-trace.py),
+# not chosen by taste: a hand's longest run of identical samples was 3 and its repeat rate
+# reached 8.5%. A hand DOES repeat a position — it pauses, and the pointer quantises. What it
+# does not do is stall for seven samples, which is what a jitter narrower than the rounding
+# grid produces.
+chk "the pointer never stalls longer than a hand does"   "v <= 4"                    max_run
+chk "repeats stay inside the recorded human range"       "v <= 10.0"                 dupe_pct
 
 echo
 if [ "$FAIL" -eq 0 ]; then echo "── $PASS passed, 0 failed"; else
