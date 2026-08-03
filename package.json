@@ -1,6 +1,6 @@
 {
   "name": "@pa1nd/horse-browser",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "publishConfig": {
     "access": "public"
   },
@@ -33,7 +33,8 @@
     "node": ">=18"
   },
   "os": [
-    "darwin"
+    "darwin",
+    "linux"
   ],
   "license": "MIT",
   "author": "pA1nD",
