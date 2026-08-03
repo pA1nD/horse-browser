@@ -376,9 +376,10 @@ def test_activate_target_falls_back_to_native_without_extension():
     assert ("Target.activateTarget", {"targetId": "PAGE1"}, None) in d.cdp.calls
 
 
-def _scripted_for_attach(targets, monkeypatch, bound=None, label=""):
+def _scripted_for_attach(targets, monkeypatch, bound=None, label="", tracked=()):
     monkeypatch.setattr(daemon, "_bound_target", lambda: bound)
     monkeypatch.setattr(daemon, "_session_label", lambda: label)
+    monkeypatch.setattr(daemon, "_tracked_tabs", lambda: list(tracked))
     monkeypatch.setattr(daemon, "_remember_target", lambda tid: remembered.append(tid))
     remembered.clear()
     d = daemon.Daemon()
@@ -431,6 +432,49 @@ def test_attach_with_identity_never_grabs_foreign_tab(monkeypatch):
     assert any("groupTab" in e and "NEW-BLANK" in e and "sess-1" in e for e in evals), evals
     creates = [p for (m, p, _s) in d.cdp.calls if m == "Target.createTarget"]
     assert creates == [{"url": "about:blank", "background": True}]
+
+
+def test_attach_reuses_an_own_registry_tab_before_minting(monkeypatch):
+    """The blank-tab-pile bug: a dead binding must not mint while the session still
+    owns a live tab. Every closed tab (operator, reap race, crash) used to become a
+    fresh about:blank that no reaper could attribute to anyone."""
+    mine = {"targetId": "MINE-2", "type": "page", "url": "about:blank"}
+    d, created = _scripted_for_attach(
+        [_FOREIGN_PAGE, mine, _SW_TARGETS["targetInfos"][1]],
+        monkeypatch, bound="GONE", label="sess-1", tracked=["MINE-1", "MINE-2"])
+
+    pick = asyncio.run(d.attach_first_page())
+
+    assert pick["targetId"] == "MINE-2"          # newest live tab in the registry
+    assert created["n"] == 0                     # …and nothing minted
+    assert remembered == ["MINE-2"]
+
+
+def test_attach_still_mints_when_every_registry_tab_is_dead(monkeypatch):
+    """Reuse must not weaken isolation: with no live tab of ours, mint — never adopt
+    the neighbour's page that happens to be sitting there."""
+    d, created = _scripted_for_attach([_FOREIGN_PAGE, _SW_TARGETS["targetInfos"][1]],
+                                      monkeypatch, bound="GONE", label="sess-1",
+                                      tracked=["DEAD-1", "DEAD-2"])
+
+    pick = asyncio.run(d.attach_first_page())
+
+    assert pick["targetId"] == "NEW-BLANK"
+    assert created["n"] == 1
+
+
+def test_attach_never_reuses_a_registry_tab_that_is_not_a_page(monkeypatch):
+    """A stale registry entry that now names a worker/iframe target must not be attached
+    to as if it were the session's page."""
+    worker = {"targetId": "MINE-2", "type": "service_worker", "url": "chrome-extension://x/sw.js"}
+    d, created = _scripted_for_attach([worker, _SW_TARGETS["targetInfos"][1]],
+                                      monkeypatch, bound="GONE", label="sess-1",
+                                      tracked=["MINE-2"])
+
+    pick = asyncio.run(d.attach_first_page())
+
+    assert pick["targetId"] == "NEW-BLANK"
+    assert created["n"] == 1
 
 
 def test_attach_without_identity_keeps_legacy_first_page(monkeypatch):
@@ -510,6 +554,56 @@ def test_remember_target_also_records_the_tab_in_the_registry(tmp_path, monkeypa
     daemon._remember_target("T-minted")
     assert json.loads(f.read_text()) == ["T-minted"]
     assert (tmp_path / "current").read_text() == "T-minted"     # binding still written
+
+
+def test_watchdog_keeps_the_registry_when_the_reap_failed(tmp_path, monkeypatch):
+    """The registry is the ONLY record of a session's tabs. Deleting it after a failed
+    close leaves those tabs alive and unattributable — an orphan no sweep can reach."""
+    f = _registry(tmp_path, monkeypatch, ["T1", "T2"])
+    monkeypatch.setattr(daemon, "_anchor_alive", lambda: False)
+    monkeypatch.setattr(daemon, "ANCHOR_PID", "999999")
+    d = daemon.Daemon()
+
+    async def boom():
+        raise RuntimeError("browser unreachable")
+    d._reap_own_tabs = boom
+
+    async def go():
+        d.stop = asyncio.Event()
+        await d._watchdog(interval=0)
+    asyncio.run(go())
+
+    assert json.loads(f.read_text()) == ["T1", "T2"]        # kept for the launcher's sweep
+    assert not (tmp_path / "current").exists()              # the binding still dies
+    assert d.stop.is_set()
+
+
+def test_watchdog_drops_the_registry_once_the_tabs_are_actually_closed(tmp_path, monkeypatch):
+    f = _registry(tmp_path, monkeypatch, ["T1", "T2"])
+    monkeypatch.setattr(daemon, "_anchor_alive", lambda: False)
+    monkeypatch.setattr(daemon, "ANCHOR_PID", "999999")
+    d = daemon.Daemon()
+
+    async def ok():
+        return None
+    d._reap_own_tabs = ok
+
+    async def go():
+        d.stop = asyncio.Event()
+        await d._watchdog(interval=0)
+    asyncio.run(go())
+
+    assert not f.exists()
+
+
+def test_track_target_writes_atomically(tmp_path, monkeypatch):
+    """Both the daemon and every client process write this file. A non-atomic write lets
+    a reader catch it half-written, parse nothing, and collapse the registry on its own
+    next write — silently orphaning every tab it listed."""
+    f = _registry(tmp_path, monkeypatch, ["a"])
+    daemon._track_target("b")
+    assert json.loads(f.read_text()) == ["a", "b"]
+    assert list(tmp_path.glob("*.tmp")) == []               # no temp file left behind
 
 
 def test_track_target_moves_a_retouched_tab_to_the_end(tmp_path, monkeypatch):

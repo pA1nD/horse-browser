@@ -106,7 +106,12 @@ def _track_target(tid):
         ids.append(tid)
         f = _tabs_file()
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(ids[-64:]))
+        # Atomic: the daemon and every client process write this same file. A reader
+        # that catches a half-written one parses nothing, treats the registry as empty,
+        # and the next write collapses it — orphaning every tab it had listed.
+        tmp = f.with_name(f.name + f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(ids[-64:]))
+        os.replace(tmp, f)
     except OSError:
         pass
 
@@ -217,6 +222,17 @@ class Daemon:
         bound = _bound_target()
         if bound:
             pick = next((t for t in targets if t["targetId"] == bound and t.get("type") == "page"), None)
+        if pick is None and label:
+            # The binding is dead, but the registry may still list live tabs of ours.
+            # Adopt the newest instead of minting: a bound tab dies for ordinary reasons
+            # (the operator closed it, a reap raced us, the page crashed), and minting
+            # on each one turns every death into a fresh about:blank nobody reaps.
+            pages = {t["targetId"]: t for t in targets if t.get("type") == "page"}
+            for tid in reversed(_tracked_tabs()):
+                if tid in pages:
+                    pick = pages[tid]
+                    log(f"bound tab {bound} gone, reusing own tab {tid}")
+                    break
         if pick is None and not label:
             pages = [t for t in targets if is_real_page(t)]
             if pages:
@@ -428,13 +444,21 @@ class Daemon:
             if _anchor_alive():
                 continue
             log(f"anchor {ANCHOR_PID} gone — reaping session tabs + shutting down")
+            reaped = True
             try:
                 await self._reap_own_tabs()
             except Exception as e:
+                reaped = False
                 log(f"self-reap failed: {e}")
             try:
                 _bound_file().unlink(missing_ok=True)   # the binding dies with the session
-                _tabs_file().unlink(missing_ok=True)    # …and so does its tab registry
+                if reaped:
+                    _tabs_file().unlink(missing_ok=True)   # …and so does its tab registry
+                else:
+                    # Keep it. The registry is the ONLY record of these tabs; deleting it
+                    # after a failed close leaves them alive and invisible to every future
+                    # reaper — an orphan no sweep can ever attribute to a session.
+                    log("self-reap failed: keeping the tab registry for the launcher's sweep")
             except OSError:
                 pass
             self.stop.set()

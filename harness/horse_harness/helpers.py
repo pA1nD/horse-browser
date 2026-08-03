@@ -431,7 +431,11 @@ def _hb_track(target_id):
         ids.append(target_id)
         f = _hb_tabs_file()
         os.makedirs(os.path.dirname(f), exist_ok=True)
-        open(f, "w").write(json.dumps(ids[-64:]))
+        # Atomic — see daemon._track_target: a torn read collapses the registry and
+        # orphans every tab it listed. Same file, same hazard, both writers.
+        tmp = "%s.%d.tmp" % (f, os.getpid())
+        open(tmp, "w").write(json.dumps(ids[-64:]))
+        os.replace(tmp, f)
     except Exception:
         pass
 
