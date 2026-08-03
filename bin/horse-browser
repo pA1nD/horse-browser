@@ -211,6 +211,15 @@ profile_pids() {
 #   stat(1)       BSD `stat -f %m` vs GNU `stat -c %Y`.
 HB_OS="$(uname -s)"
 
+# _hb_mkparent FILE — make sure FILE's directory exists before something writes there.
+#
+# Named, not inlined, because the bug it prevents does not look like a missing directory when
+# it happens. horse-browser's own dirs (~/.config/horse-browser, ~/.cache/horse-browser) are
+# created by install.sh, so on any developer machine they have existed for months — and every
+# failure to create them surfaces somewhere else entirely: as a lock that seems held, or a
+# redirect that silently drops output. Anything writing under $HOME or $CACHE calls this first.
+_hb_mkparent() { mkdir -p "$(dirname "$1")" 2>/dev/null || true; }
+
 _hb_stat_mtime() {   # epoch seconds of $1, or 0
   if [ "$HB_OS" = "Darwin" ]; then stat -f %m "$1" 2>/dev/null || echo 0
   else                             stat -c %Y "$1" 2>/dev/null || echo 0; fi
@@ -296,6 +305,7 @@ ensure_display() {
     return 1; }
   local geom="${HORSE_BROWSER_SCREEN:-1920x1080x24}"
   say "horse-browser: no display — starting Xvfb on $DISPLAY ($geom)…"
+  _hb_mkparent "$CACHE/xvfb.log"   # $CACHE is install.sh's, and a first run has none
   Xvfb "$DISPLAY" -screen 0 "$geom" -nolisten tcp >"$CACHE/xvfb.log" 2>&1 &
   local _ ; for _ in $(seq 1 20); do
     { command -v xdpyinfo >/dev/null 2>&1 && xdpyinfo >/dev/null 2>&1; } && return 0
@@ -380,10 +390,28 @@ fi
 HB_LOCK_DEPTH=0
 hb_lock() {
   if [ "$HB_LOCK_DEPTH" -gt 0 ]; then HB_LOCK_DEPTH=$((HB_LOCK_DEPTH + 1)); return 0; fi
+  # The lock IS a directory, so its parent has to exist. On a first run it does not:
+  # ~/.config/horse-browser/ is written by install.sh, and a machine that got this launcher
+  # any other way — an image layer, a copied checkout, a fresh $HOME — has never had it.
+  # Without this, mkdir fails with ENOENT and the code below reads that as "someone else
+  # holds the lock", so a virgin machine reports contention that does not exist and refuses
+  # to launch. macOS never sees it because the config dir has existed since install.
+  _hb_mkparent "$HB_LOCK"
   if mkdir "$HB_LOCK" 2>/dev/null; then
     echo $$ > "$HB_LOCK/pid" 2>/dev/null || true
     HB_LOCK_DEPTH=1
     return 0
+  fi
+  # Still no lock, and now the two reasons diverge. If the directory is not even there, this
+  # was never contention — it is a path we cannot write. Saying "another invocation holds the
+  # lock" there sends the reader hunting for a process that was never running.
+  # rc 2, not 1, so callers can tell the two apart. They print "another invocation is
+  # launching…" and then wait 45s for a lock to be released — which is the right thing to do
+  # for contention and pure noise on top of an accurate error when the path is simply
+  # unwritable. Observed exactly that: the correct diagnosis, immediately buried by a wrong one.
+  if [ ! -d "$HB_LOCK" ]; then
+    echo "horse-browser: cannot create the lock at $HB_LOCK — is $(dirname "$HB_LOCK") writable?" >&2
+    return 2
   fi
   # Held by another process — break it only if provably stale: holder dead, pid
   # never written (crashed between mkdir and echo), or age past any legal mutation
@@ -1226,6 +1254,7 @@ PY
 # ensure_browser: bring the browser up (launching if needed) and self-heal a GPU
 # wedge. Returns 0 when CDP is live and painting; non-zero if it can't recover.
 ensure_browser() {
+  local _lk
   require_supported_os || return 1
   if cdp_up; then
     say "horse-browser: already up on :$PORT"
@@ -1244,6 +1273,7 @@ ensure_browser() {
       # triggers a delayed re-blank that kills every CDP websocket browser-wide).
       say "horse-browser: display asleep — skipping paint check (DOM automation works; screenshots need a virtual display)."
       local dstamp="$HOME/.config/horse-browser/.last-display-asleep-log" dnow dlast
+      _hb_mkparent "$dstamp"
       dnow=$(date +%s); dlast=$(cat "$dstamp" 2>/dev/null || echo 0)
       if [ $(( dnow - dlast )) -gt 1800 ]; then      # log the episode, not every call
         echo "$dnow" > "$dstamp" 2>/dev/null || true
@@ -1287,7 +1317,11 @@ ensure_browser() {
   fi
 
   # ── single-flight: exactly one invocation launches; the rest wait on CDP ──
-  if ! hb_lock; then
+  hb_lock; _lk=$?
+  # 2 = the lock PATH is unusable, not held. hb_lock already said why, precisely; waiting 45s
+  # for a phantom holder to release would only bury that with a wrong explanation.
+  [ "$_lk" = "2" ] && return 1
+  if [ "$_lk" != "0" ]; then
     say "horse-browser: another invocation is launching the browser — waiting…"
     for _ in $(seq 1 45); do
       sleep 1
@@ -1295,7 +1329,9 @@ ensure_browser() {
       [ -d "$HB_LOCK" ] || break
     done
     # Lock released but CDP still down → the winner failed; one hand-off retry.
-    if ! hb_lock; then
+    hb_lock; _lk=$?
+    [ "$_lk" = "2" ] && return 1
+    if [ "$_lk" != "0" ]; then
       echo "horse-browser: browser is down and another invocation holds the lock — giving up." >&2
       return 1
     fi
