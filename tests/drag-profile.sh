@@ -106,15 +106,20 @@ for r in runs:
     d = [b - a for a, b in zip(ts, ts[1:]) if b > a]
     sp.append(round(statistics.pstdev(d) / (statistics.mean(d) or 1), 3))
 res["dt_cv"] = sp
-# 5. velocity peak position: fraction of elapsed time at which the fastest step happened
-pk = []
+# 5. asymmetry: what fraction of the elapsed time is spent covering the FIRST HALF of the
+#    distance. A hand accelerates briskly and settles slowly, so it is well under 0.5;
+#    symmetric easing — the tell this replaced — sits at exactly 0.5.
+#    Measured over the whole first half rather than at the single fastest sample: with
+#    randomised inter-sample sleeps, one short sleep makes any step look like the peak, so
+#    "where was the maximum" reports the sleep jitter, not the easing.
+half = []
 for r in runs:
     m = [e for e in moves(r) if e[3] >= press(r)[3]]
-    v = [(abs(b[1] - a[1]) / max(1, b[3] - a[3]), b[3]) for a, b in zip(m, m[1:])]
-    if v:
-        span = (m[-1][3] - m[0][3]) or 1
-        pk.append(round((max(v)[1] - m[0][3]) / span, 2))
-res["peak_at"] = pk
+    x0, x1, t0 = m[0][1], rel(r)[1], m[0][3]
+    span = (m[-1][3] - t0) or 1
+    mid = next((e for e in m if abs(e[1] - x0) >= abs(x1 - x0) / 2.0), m[-1])
+    half.append(round((mid[3] - t0) / span, 2))
+res["half_at"] = half
 # 6. accuracy at release, and the pause before it
 res["err_x"] = [round(abs(rel(r)[1] - 430), 1) for r in runs]
 res["hold"]  = [rel(r)[3] - max(e[3] for e in moves(r)) for r in runs]
@@ -151,7 +156,7 @@ chk "the pointer approaches the handle before pressing"  "v >= 4"               
 chk "the drag takes a hand's time, not a loop's"         "all(0.45 <= d <= 3.0 for d in v)" dur
 chk "it overshoots, then corrects back onto the target"  "sum(1 for o in v if o >= 1.5) >= 4" overshoot
 chk "samples are not metronomic"                         "min(v) >= 0.12"            dt_cv
-chk "peak velocity comes early, not at the midpoint"     "sum(1 for p in v if p <= 0.45) >= 4" peak_at
+chk "it accelerates faster than it decelerates"          "sum(1 for p in v if p <= 0.47) >= 5" half_at
 chk "it releases on the target"                          "all(e <= 2.0 for e in v)"  err_x
 chk "it holds briefly before letting go"                 "all(h >= 40 for h in v)"   hold
 chk "the pointer never stalls in place"                  "v <= 2"                    max_run
