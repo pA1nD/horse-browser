@@ -167,27 +167,45 @@ profile_pids() {
     printf '%s\n' "$pid"
     return 0
   fi
-  ps -ww -o pid= -o command= -ax | grep -F -- "--user-data-dir=$PROFILE" \
+  _hb_ps_wide | grep -F -- "--user-data-dir=$PROFILE" \
     | grep -v -- "--type=" | grep -v grep | awk '{print $1}' || true
 }
 
-# require_macos: the launcher OWNS a browser, and every mechanism it owns one with is a macOS
-# mechanism — focus-free launch via `open -g -n`, the GPU-wedge heal, CGDisplayIsAsleep, the
-# lock's stat(1) flags. package.json gates npm to darwin, but a --force install (or a copied
-# checkout) gets past that and would otherwise discover all this as a 30-second CDP timeout.
-# Say it once, plainly, at the two entry points that touch a browser. The vendored HARNESS is
-# portable — its unit suite passes on Linux — so the honest fallback is to point it at a
-# browser you launched yourself; that is what the message offers.
-require_macos() {
-  [ "$(uname -s)" = "Darwin" ] && return 0
+# ── the platform layer ───────────────────────────────────────────────────────────────
+# horse-browser owns a browser, and a few of the mechanisms it owns one with are per-OS. The
+# whole point is that `horse-browser` is the SAME command on a laptop and in a pod — that is
+# what lets a skill, a domain-skills/ file or an agent's muscle memory transfer unchanged — so
+# the differences are named here, once, instead of spreading `uname` through the file.
+#
+# What actually differs, and nothing else does:
+#   launch        macOS needs `open -g -n` to avoid stealing focus. A pod has no window
+#                 server and no human, so a plain background exec is not just adequate,
+#                 it is correct.
+#   display       macOS has one. Linux has none — we start Xvfb (see ensure_display).
+#   display sleep the GPU-wedge heal and CGDisplayIsAsleep are macOS concepts. Xvfb never
+#                 sleeps and has no window server to lose, so both are skipped.
+#   stat(1)       BSD `stat -f %m` vs GNU `stat -c %Y`.
+HB_OS="$(uname -s)"
+
+_hb_stat_mtime() {   # epoch seconds of $1, or 0
+  if [ "$HB_OS" = "Darwin" ]; then stat -f %m "$1" 2>/dev/null || echo 0
+  else                             stat -c %Y "$1" 2>/dev/null || echo 0; fi
+}
+
+_hb_ps_wide() {      # pid + full argv for every process, both ps dialects
+  if [ "$HB_OS" = "Darwin" ]; then ps -ww -o pid= -o command= -ax
+  else                             ps -ww -eo pid=,args=; fi
+}
+
+require_supported_os() {
+  case "$HB_OS" in Darwin|Linux) return 0 ;; esac
   if [ -n "${HORSE_BROWSER_ALLOW_UNSUPPORTED_OS:-}" ]; then
-    say "horse-browser: unsupported OS ($(uname -s)) — continuing anyway (HORSE_BROWSER_ALLOW_UNSUPPORTED_OS). Launch, heal and display handling are macOS-shaped; expect them to misbehave."
+    say "horse-browser: unsupported OS ($HB_OS) — continuing anyway (HORSE_BROWSER_ALLOW_UNSUPPORTED_OS). Launch, heal and display handling will misbehave."
     return 0
   fi
   cat >&2 <<EOF
-horse-browser: macOS only — this machine is $(uname -s).
-  The launcher's job is owning a browser (focus-free launch, GPU heal, display state), and
-  each of those is a macOS mechanism. Chrome for Testing also ships no linux-arm64 build.
+horse-browser: macOS and Linux only — this machine is $HB_OS.
+  The launcher owns a browser, and launch/display handling is written for those two.
   The vendored harness itself IS portable — drive a browser you launched yourself:
       <your chrome> --remote-debugging-port=9223 --user-data-dir=/some/profile &
       BU_CDP_URL=http://127.0.0.1:9223 python3 -m horse_harness.run <<'PY'
@@ -195,6 +213,65 @@ horse-browser: macOS only — this machine is $(uname -s).
       PY
   To push past this guard anyway: HORSE_BROWSER_ALLOW_UNSUPPORTED_OS=1 horse-browser …
 EOF
+  return 1
+}
+
+# Chrome REFUSES to run as root with its sandbox on ("Running as root without --no-sandbox is
+# not supported"), and --no-sandbox is not an answer we will reach for: rootless podman with
+# nested userns keeps Chrome's own sandbox intact, which is the whole security story of running
+# agent browsers on a shared host. So refuse, and say what to do instead.
+#
+# Only Linux images hit this. A pod runs as an unprivileged uid already; it is `install as
+# root, run the browser as the agent user` that trips over it — measured in the fsn-01 lab.
+refuse_root_browser() {
+  [ "$HB_OS" = "Linux" ] || return 0
+  [ "$(id -u)" = "0" ] || return 0
+  cat >&2 <<EOF
+horse-browser: refusing to launch Chrome as root.
+  Chrome disables its own sandbox rather than run as uid 0, and --no-sandbox is not a
+  trade this tool will make for you — a rootless container keeps the sandbox intact, and
+  that is the point of running agent browsers on a shared host.
+  Run the browser as an unprivileged user instead:
+      setpriv --reuid=1000 --regid=1000 --keep-groups horse-browser …
+  ( --keep-groups, not --groups=…: a passed-through device's gid is unmapped inside the
+    user namespace and has no number to re-specify, so it can only be inherited. )
+  \$HOME must belong to that user too — Chrome puts its crash database there and dies with
+  "chrome_crashpad_handler: --database is required" when it cannot.
+EOF
+  return 1
+}
+
+# ensure_display: a headed browser needs a display, and a server has none.
+#
+# Headed, not headless, deliberately: headless Chrome carries fingerprint tells that the
+# realness mask cannot cover, and the whole point of this browser is that pages treat it as
+# real. Xvfb costs ~20 MB and removes the question.
+#
+# 1920x1080x24 is the commonest desktop configuration on the web, and the launch args keep the
+# window slightly smaller than the screen so outerHeight > innerHeight — a window exactly the
+# size of the screen with no chrome offset is itself a mild tell.
+ensure_display() {
+  [ "$HB_OS" = "Linux" ] || return 0
+  local want="${HORSE_BROWSER_DISPLAY:-:99}"
+  # A display someone else already serves (a real desktop, or an Xvfb the image started) is
+  # left strictly alone — we only fill the gap.
+  if [ -n "${DISPLAY:-}" ] && command -v xdpyinfo >/dev/null 2>&1 \
+     && xdpyinfo >/dev/null 2>&1; then return 0; fi
+  export DISPLAY="$want"
+  command -v xdpyinfo >/dev/null 2>&1 && xdpyinfo >/dev/null 2>&1 && return 0
+  command -v Xvfb >/dev/null 2>&1 || {
+    echo "horse-browser: no display and no Xvfb — install it (apt-get install -y xvfb) or point DISPLAY at one." >&2
+    return 1; }
+  local geom="${HORSE_BROWSER_SCREEN:-1920x1080x24}"
+  say "horse-browser: no display — starting Xvfb on $DISPLAY ($geom)…"
+  Xvfb "$DISPLAY" -screen 0 "$geom" -nolisten tcp >"$CACHE/xvfb.log" 2>&1 &
+  local _ ; for _ in $(seq 1 20); do
+    { command -v xdpyinfo >/dev/null 2>&1 && xdpyinfo >/dev/null 2>&1; } && return 0
+    sleep 0.25
+  done
+  # No xdpyinfo to confirm with (x11-utils not installed) — the socket is the next best proof.
+  [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ] && return 0
+  echo "horse-browser: Xvfb did not come up on $DISPLAY — see $CACHE/xvfb.log" >&2
   return 1
 }
 
@@ -281,7 +358,7 @@ hb_lock() {
   # (worst real hold ≈60s: update-restart = kill 15s + launch 30s + tab reopen).
   local holder lts lnow age
   holder=$(cat "$HB_LOCK/pid" 2>/dev/null || echo "")
-  lts=$(stat -f %m "$HB_LOCK" 2>/dev/null || echo 0); lnow=$(date +%s); age=$(( lnow - lts ))
+  lts=$(_hb_stat_mtime "$HB_LOCK"); lnow=$(date +%s); age=$(( lnow - lts ))
   if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } \
      || { [ -z "$holder" ] && [ "$age" -gt 10 ]; } \
      || [ "$age" -gt 120 ]; then
@@ -319,7 +396,11 @@ hb_unlock() {
 # HDMI dummy plug) for lid-closed visual work.
 
 # display_asleep: 0 when the main display is asleep (no compositing possible).
+# Xvfb has no power state and never stops compositing, so on Linux the answer is always
+# "awake". Said explicitly: the CoreGraphics load would fail there and report awake anyway,
+# and a correct answer that depends on an exception is a trap for whoever edits this next.
 display_asleep() {
+  [ "$HB_OS" = "Darwin" ] || return 1
   python3 - <<'PY' 2>/dev/null
 import ctypes, sys
 cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
@@ -397,7 +478,7 @@ PY
 # heal_gpu: restart ONLY this profile's wedged GPU process; Chrome respawns it.
 heal_gpu() {
   local pids
-  pids=$(ps -ww -o pid,command -ax | grep -- "--type=gpu-process" \
+  pids=$(_hb_ps_wide | grep -- "--type=gpu-process" \
            | grep -F -- "--user-data-dir=$PROFILE" | grep -v grep | awk '{print $1}') || true
   if [ -z "$pids" ]; then
     echo "horse-browser: GPU wedged but no matching GPU process found — quit the browser and re-run." >&2
@@ -448,7 +529,7 @@ recently_healed() {
 # GPU_FALLBACK_INFO to its "pid command" line). gpu_healthy can't catch this state —
 # software rendering paints fine — so it's probed separately on every invocation.
 gpu_fallback() {
-  GPU_FALLBACK_INFO=$(ps -ww -o pid=,command= -ax | grep -- "--type=gpu-process" \
+  GPU_FALLBACK_INFO=$(_hb_ps_wide | grep -- "--type=gpu-process" \
     | grep -F -- "--user-data-dir=$PROFILE" | grep -v grep \
     | grep -E -- '--use-gl=disabled|--use-angle=swiftshader' | head -1) || true
   [ -n "$GPU_FALLBACK_INFO" ]
@@ -1060,7 +1141,7 @@ hb_install_chrome() {
 }
 
 hb_update() {
-  require_macos || return 1
+  require_supported_os || return 1
   command -v npx >/dev/null 2>&1 || { echo "horse-browser: npx (Node) not found — needed to fetch Chrome." >&2; return 1; }
   local oldver out newbin newver
   oldver="$(_chrome_ver "$BIN")"
@@ -1108,7 +1189,7 @@ PY
 # ensure_browser: bring the browser up (launching if needed) and self-heal a GPU
 # wedge. Returns 0 when CDP is live and painting; non-zero if it can't recover.
 ensure_browser() {
-  require_macos || return 1
+  require_supported_os || return 1
   if cdp_up; then
     say "horse-browser: already up on :$PORT"
     if gpu_fallback; then
@@ -1299,6 +1380,22 @@ PY
          --disable-background-timer-throttling
          --disable-backgrounding-occluded-windows
          --no-first-run --no-default-browser-check )
+  if [ "$HB_OS" = "Linux" ]; then
+    # WebGL, on a machine that has no GPU to give it. Chrome 151 gates software WebGL behind
+    # this flag, and without it getContext('webgl') returns null outright — a browser with NO
+    # WebGL is a louder bot tell than one whose renderer names a software rasteriser, because
+    # real desktop Chrome always has it. The renderer string that comes with it is then masked
+    # by extension/realchrome.js, which is why the flag and the mask are one decision and both
+    # live here rather than in whatever image happens to build us.
+    #
+    # Measured on the target hardware: Xvfb is a software X server, so a headed browser reaches
+    # llvmpipe or SwiftShader whatever /dev/dri is passed through. Hardware GL is not available
+    # to a headed browser on a headless host, and no flag combination changes that.
+    args+=( --enable-unsafe-swiftshader )
+    # Slightly smaller than the 1080p screen ensure_display provides, so outerHeight >
+    # innerHeight like any real window. Exactly screen-sized with no chrome offset is a tell.
+    args+=( --window-size=1920,1040 )
+  fi
   sync_manifest_version   # keep the extension's manifest version matched to the package before load
   reset_stale_sw          # …and make sure the browser will actually RUN that version's code
   [ -n "$EXT" ] && args+=( --load-extension="$EXT" )
@@ -1311,12 +1408,25 @@ PY
   # ever appears on :$PORT. Safe: we only get here when :$PORT is down and the gate
   # above cleared our profile's holders. Falls back to a direct exec if the binary
   # isn't inside a .app bundle.
+  #
+  # On Linux none of that applies: there is no LaunchServices, no .app bundle and no focus to
+  # steal, so the plain background exec below is not a fallback but the correct launch. It does
+  # need a display first, and it must not be root — Chrome disables its own sandbox rather than
+  # run as uid 0, and we will not trade the sandbox away silently.
+  refuse_root_browser || return 1
+  ensure_display || return 1
   APP="${BIN%/Contents/MacOS/*}"
   focus_breadcrumb "browser launch (open -g -n) — should NOT take focus; if a steal is logged near here, the launch or its welcome/restore is the cause"
-  if [ "$APP" != "$BIN" ] && [ -d "$APP" ]; then
+  if [ "$HB_OS" = "Darwin" ] && [ "$APP" != "$BIN" ] && [ -d "$APP" ]; then
     open -g -n -a "$APP" --args "${args[@]}"
   else
-    "$BIN" "${args[@]}" >/dev/null 2>&1 &
+    # setsid so the browser outlives the shell that started it — a pod's `RUN`/entrypoint
+    # exits, and a process group killed with it would take the browser along.
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "$BIN" "${args[@]}" >/dev/null 2>&1 &
+    else
+      "$BIN" "${args[@]}" >/dev/null 2>&1 &
+    fi
   fi
 
   say "horse-browser: launching… (waiting for CDP :$PORT)"
@@ -1327,7 +1437,7 @@ PY
   # Log the incident with the one number that diagnoses the known cause: how many
   # OTHER instances of our binary were running (same-bundle collision, stray forks).
   local _others
-  _others=$(ps -ww -axo command= | grep -F -- "$BIN" | grep -v grep \
+  _others=$(_hb_ps_wide | grep -F -- "$BIN" | grep -v grep \
               | grep -cv -- "--user-data-dir=$PROFILE") || true
   heal_log launch-timeout "port=$PORT" "other_instances=${_others:-0}"
   echo "horse-browser: timed out waiting for CDP :$PORT — check the browser window." >&2

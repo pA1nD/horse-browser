@@ -24,7 +24,7 @@
   ],
   "scripts": {
     "postinstall": "bash scripts/postinstall.sh",
-    "test": "bash tests/harness-pytest.sh && bash tests/e2e.sh && bash tests/tab-reap.sh && bash tests/reap-hygiene.sh && bash tests/profile-lock.sh && bash tests/install-chrome.sh && bash tests/multi-instance.sh && bash tests/attached-mode.sh && bash tests/lane-hook.sh && bash tests/detect-identity.sh"
+    "test": "bash tests/harness-pytest.sh && bash tests/e2e.sh && bash tests/tab-reap.sh && bash tests/reap-hygiene.sh && bash tests/profile-lock.sh && bash tests/install-chrome.sh && bash tests/platform-layer.sh && bash tests/multi-instance.sh && bash tests/attached-mode.sh && bash tests/lane-hook.sh && bash tests/detect-identity.sh"
   },
   "dependencies": {
     "@puppeteer/browsers": "^3.0.6"

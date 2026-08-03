@@ -26,7 +26,12 @@ FN="$(mktemp)"; T="$(mktemp -d)"
 KIDS=()
 cleanup() { for k in ${KIDS+"${KIDS[@]}"}; do kill "$k" 2>/dev/null || true; done; rm -f "$FN"; rm -rf "$T"; }
 trap cleanup EXIT
-sed -n '/^profile_pids() {$/,/^}$/p' "$HB" > "$FN"
+# _hb_ps_wide too: profile_pids' fallback scan goes through it (the two ps dialects differ),
+# and without it the fallback silently returns nothing — which reads as "profile is free" and
+# is the one answer that must never be wrong here.
+HB_OS="$(uname -s)"
+sed -n '/^_hb_ps_wide() {/,/^}$/p' "$HB"  > "$FN"
+sed -n '/^profile_pids() {$/,/^}$/p' "$HB" >> "$FN"
 if [ ! -s "$FN" ]; then fail "extract profile_pids from the launcher" "not found"; echo "── 0 passed, 1 failed"; exit 1; fi
 . "$FN"
 
