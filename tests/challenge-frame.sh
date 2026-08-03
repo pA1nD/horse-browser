@@ -193,6 +193,37 @@ cdp('Target.closeTarget', targetId=other)
 }
 one_two_tabs
 
+echo "[5] end to end: solve_challenge actually operates a working slider"
+# Everything above proves the solver can FIND a control. This proves the gesture drives one:
+# a real slide-to-verify widget on pointer events, which moves its handle, decides whether the
+# release landed on the target, and drops the frame when it did. It exists because live
+# challenges cannot be iterated against — a failed slide costs reputation, and on this address
+# one failure took a site straight from "challenge" to "hard block". Two burned sites bought it.
+one_live() {
+  local cx=$(( (RANDOM % 60) + 30 )) cy=$(( (RANDOM % 120) + 100 ))
+  local p1 p2; p1="$(port)"; p2="$(port)"
+  python3 "$HERE/lib/oopif-fixture.py" "$p1" "$p2" live-slider "$cx" "$cy" 60 40 > "$W/fl.json" &
+  FIXPIDS="$FIXPIDS $!"
+  for _ in $(seq 1 30); do [ -s "$W/fl.json" ] && break; sleep 0.2; done
+  [ -s "$W/fl.json" ] || { fail "live slider" "fixture did not start"; return; }
+  local out
+  out="$(hb "
+import time
+goto_url('http://parent.test:$p1/'); wait_for_load(); time.sleep(1.2)
+print('SC', solve_challenge())
+from horse_harness.helpers import _xorigin_challenge
+print('GONE', _xorigin_challenge() is None)
+")"
+  local sc gone
+  sc="$(sed -n 's/^SC //p' <<<"$out")"; gone="$(sed -n 's/^GONE //p' <<<"$out")"
+  if [ "$gone" = "True" ]; then
+    pass "solve_challenge cleared a working slider — ${sc:0:60}"
+  else
+    fail "live slider" "not cleared: ${sc:0:110}"
+  fi
+}
+one_live
+
 echo "[2] repeated with fresh random positions (a hardcoded answer cannot survive this)"
 for i in 1 2 3; do one checkbox "checkbox run $i"; done
 

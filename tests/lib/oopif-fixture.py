@@ -17,7 +17,14 @@ hostnames mapped with --host-resolver-rules produce a genuine OOPIF.
 
     python3 oopif-fixture.py <parent-port> <frame-port> <kind> <x> <y> <w> <h>
 
-kind: checkbox | press-hold | slider | button
+kind: checkbox | press-hold | slider | button | blocked | live-slider
+
+"live-slider" is the only one that WORKS: a real slide-to-verify widget, driven by pointer
+events, that decides whether it was solved and tells the parent to drop the frame. The static
+kinds prove the solver can FIND a control; this one proves the gesture actually operates one and
+that the clear is detected. It exists because live challenges cannot be used to iterate — a
+failed slide on DataDome costs reputation, and on this address one failure took the site
+straight from "challenge" to "hard block". Two sites burned that way bought this fixture.
 """
 import sys, threading, http.server, json
 
@@ -36,8 +43,15 @@ FRAME_X, FRAME_Y = 137, 211
 PARENT = """<!doctype html><meta charset=utf-8><title>fixture parent</title>
 <body style="margin:0;height:2000px">
 <div style="height:%dpx"></div>
-<iframe src="http://frame.test:%d/captcha-delivery/x" title="Verifying you are human"
+<iframe id="ch" src="http://frame.test:%d/captcha-delivery/x" title="Verifying you are human"
         style="margin-left:%dpx;width:400px;height:300px;border:0"></iframe>
+<script>
+// A solved challenge disappears — that is what "cleared" means to the detector, so the fixture
+// has to do it too, and by the same route the real one does: a message from the frame.
+addEventListener('message', function(e){
+  if(e.data === 'dd-solved'){ var f=document.getElementById('ch'); if(f) f.remove(); }
+});
+</script>
 </body>""" % (FRAME_Y, FRAME_PORT, FRAME_X)
 
 # One control, at coordinates we chose, inside a page on a different site. Everything else on
@@ -65,12 +79,49 @@ WRAPPER = ('<div class="captcha__human__slider sliderTrack" style="position:abso
            'left:%dpx;top:%dpx;width:280px;height:100px;background:#eee">'
            'slide right to secure your access</div>' % (max(0, CX - 40), max(0, CY - 30))
            if KIND == "slider" else "")
+# A working slider: press the handle, drag it, release near the target. Pointer events, capture,
+# and a tolerance — the mechanics a real widget uses. It does not score the MOTION (only the
+# vendor can do that); it proves the gesture lands, moves the handle, and that the clear is seen.
+LIVE = """
+<div class="captcha__human__slider sliderTrack" style="position:absolute;left:%dpx;top:%dpx;
+     width:300px;height:56px;background:#eee">slide right to secure your access</div>
+<div class="sliderTarget" style="position:absolute;left:%dpx;top:%dpx;width:%dpx;height:%dpx;
+     background:#cfe3f5"></div>
+<div class="sl-h" style="position:absolute;left:%dpx;top:%dpx;width:%dpx;height:%dpx;
+     background:#4a90d9;cursor:grab"></div>
+<script>
+var h=document.querySelector('.sl-h'), t=document.querySelector('.sliderTarget');
+var x0=%d, tx=%d, down=false, sx=0, ox=0;
+h.addEventListener('pointerdown', function(e){
+  down=true; sx=e.clientX; ox=parseInt(h.style.left,10); h.setPointerCapture(e.pointerId);
+});
+addEventListener('pointermove', function(e){
+  if(!down) return;
+  var nx=Math.max(x0, Math.min(tx+40, ox + (e.clientX-sx)));
+  h.style.left=nx+'px';
+});
+addEventListener('pointerup', function(e){
+  if(!down) return; down=false;
+  var landed=parseInt(h.style.left,10);
+  if(Math.abs(landed-tx) <= 8){ document.body.className='dd-response-page--success';
+    parent.postMessage('dd-solved','*'); }
+  else { h.style.left=x0+'px'; document.body.setAttribute('data-miss', String(landed-tx)); }
+});
+</script>
+""" % (max(0, CX - 20), max(0, CY - 8), CX + 222, CY, CW, CH, CX, CY, CW, CH, CX, CX + 222)
+
 BODY_ATTR = ('class="dd-response-page--hard-block" data-dd-response="hard-block"'
              if KIND == "blocked" else "")
 BLOCK_TEXT = ("<p>Se ha detectado un uso indebido</p><p>IP: 203.0.113.9</p>"
               if KIND == "blocked" else "")
 
-FRAME = """<!doctype html><meta charset=utf-8><title>challenge</title>
+if KIND == "live-slider":
+    FRAME = ("""<!doctype html><meta charset=utf-8><title>challenge</title>
+<body style="margin:0;font:14px sans-serif">
+  <div style="position:absolute;left:5px;top:5px;width:390px;height:60px;background:#eee">decoy banner</div>
+""" + LIVE + "</body>")
+else:
+    FRAME = """<!doctype html><meta charset=utf-8><title>challenge</title>
 <body %s style="margin:0;font:14px sans-serif">%s%s
   <div style="position:absolute;left:5px;top:5px;width:390px;height:60px;background:#eee">decoy banner, bigger than the control</div>
   <div style="position:absolute;left:20px;top:240px;width:360px;height:40px;background:#f6f6f6">decoy footer</div>

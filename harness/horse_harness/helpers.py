@@ -1875,19 +1875,22 @@ def solve_challenge(act=True, hold_seconds=7.0):
                 except Exception:
                     dx = None                                    # unreadable → fall through
                 if dx:
+                    how = "puzzle-offset %dpx" % dx
                     drag((fc["x"], fc["y"]), dx=dx)
                 elif fc.get("dest_x"):
+                    how = "aimed at destination (%d,%d)" % (fc["dest_x"], fc["dest_y"])
                     # Aim at the destination the widget drew for us rather than shoving right
                     # and trusting the latch. On a full-page frame the old fallback computed
                     # 0.72 x 1665px = 1199px of travel for a 217px track.
                     drag((fc["x"], fc["y"]), to=(fc["dest_x"], fc["dest_y"]))
                 else:
+                    how = "no destination found — full-width shove"
                     drag((fc["x"], fc["y"]), dx=max(180, int(min(xo["w"], 420) * 0.72)))
                 _it.sleep(2.0)
                 res = challenge_cleared()
                 if res.startswith("cleared"):
-                    return "solved:frame-slide (%d,%d) dx=%s — %s" % (
-                        fc["x"], fc["y"], dx if dx else "full-width", res)
+                    return "solved:frame-slide from (%d,%d), %s — %s" % (
+                        fc["x"], fc["y"], how, res)
             else:                                   # checkbox / button
                 click_xy(fc["x"], fc["y"])
                 for _ in range(6):
