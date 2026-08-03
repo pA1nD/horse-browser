@@ -300,6 +300,18 @@ EOF
 # 1920x1080x24 is the commonest desktop configuration on the web, and the launch args keep the
 # window slightly smaller than the screen so outerHeight > innerHeight — a window exactly the
 # size of the screen with no chrome offset is itself a mild tell.
+# Is DISPLAY served by Xvfb? Hardware GL is not reachable there, so a "restore hardware GL"
+# heal can only ever fail — and retry, on every invocation.
+virtual_display() {
+  [ "$HB_OS" = "Linux" ] || return 1
+  # DISPLAY is usually still unset here: ensure_display runs on the LAUNCH path, and the case
+  # this guards is "browser already up", which returns long before that. So fall back to the
+  # display ensure_display would have picked, exactly as it picks it.
+  local d="${DISPLAY:-${HORSE_BROWSER_DISPLAY:-:99}}"
+  _hb_ps_wide 2>/dev/null | grep -qE "[X]vfb +${d%%.*}( |\$)"
+}
+
+
 ensure_display() {
   [ "$HB_OS" = "Linux" ] || return 0
   local want="${HORSE_BROWSER_DISPLAY:-:99}"
@@ -1300,6 +1312,21 @@ ensure_browser() {
       local fb_pid fb_flag
       fb_pid=$(awk '{print $1}' <<<"$GPU_FALLBACK_INFO")
       fb_flag=$(grep -oE -- '--use-gl=disabled|--use-angle=swiftshader' <<<"$GPU_FALLBACK_INFO" | head -1)
+      # On a virtual display there is no hardware GL to restore — SwiftShader is the correct and
+      # only state, so this heal can never succeed. Left alone it fires on EVERY invocation:
+      # measured on a pod, it relaunched the browser under live sessions repeatedly, killing
+      # daemon websockets mid-run ("no close frame received or sent") and losing open tabs. A
+      # heal that cannot reach its goal is just a kill loop with a reassuring message.
+      if [ -n "${UNATTENDED:-}" ] || virtual_display; then
+        local gstamp="$HOME/.config/horse-browser/.last-gpu-software-log" gnow glast
+        _hb_mkparent "$gstamp"
+        gnow=$(date +%s); glast=$(cat "$gstamp" 2>/dev/null || echo 0)
+        if [ $(( gnow - glast )) -gt 1800 ]; then     # say it per episode, not per call
+          echo "$gnow" > "$gstamp" 2>/dev/null || true
+          say "horse-browser: software rendering ($fb_flag) — expected on a virtual display; not healing."
+        fi
+        return 0
+      fi
       say "horse-browser: GPU stuck in software rendering ($fb_flag) — relaunching to restore hardware GL."
       relaunch_browser fallback-relaunch "flag=$fb_flag" "gpu_pid=$fb_pid" \
         "gpu_etime=$(ps -o etime= -p "$fb_pid" 2>/dev/null | xargs || true)" || return 1
