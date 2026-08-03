@@ -144,11 +144,15 @@ case "$LANE" in *[!A-Za-z0-9_-]*|"") LANE="" ;; esac   # sane token or nothing
 # `horse-browser install-chrome` inside a pipeline eat everything after it — found running
 # it as an image build step over `ssh host bash -s`, where it consumed the rest of the
 # script and the session just stopped, silently.
+#
+# ONE list, named here and consulted by the dispatch block at the bottom. It used to be two —
+# this guard and the dispatch `case` — and a list that must be kept in step with another list
+# drifts: `instances` was added to the dispatch, not here, so it silently went back to eating
+# stdin. tests/install-chrome.sh asserts the two agree, by enumerating the dispatch itself.
+_SUBCOMMANDS="status instances update install-chrome relaunch harness-setup rule verbs focus-watch skill"
 script=""
-case "${1:-}" in
-  status|update|install-chrome|relaunch|harness-setup|rule|verbs|focus-watch|skill) _SUBCOMMAND=1 ;;
-  *) _SUBCOMMAND= ;;
-esac
+_SUBCOMMAND=
+for _s in $_SUBCOMMANDS; do [ "${1:-}" = "$_s" ] && { _SUBCOMMAND=1; break; }; done
 if [ -n "$_SUBCOMMAND" ]; then
   :
 elif [ -f /dev/fd/0 ]; then

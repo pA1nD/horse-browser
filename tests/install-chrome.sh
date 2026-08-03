@@ -49,6 +49,17 @@ got="$(printf 'SURVIVED\n' | { "$HB" install-chrome --help >/dev/null 2>&1; cat;
 subs="$(sed -n '/^case "\${1:-}" in/,/^esac/p' "$HB" | grep -oE '^  [a-z-]+\)' | tr -d ' )')"
 [ -n "$subs" ] && pass "enumerated the dispatch cases from the launcher ($(wc -w <<<"$subs" | tr -d ' ') found)" \
   || fail "enumerate the dispatch cases" "the case block did not parse"
+# The two lists must agree. When they drifted, the only symptom was a subcommand quietly
+# eating stdin again — a long way from the cause. Name it instead.
+guard="$(sed -n 's/^_SUBCOMMANDS="\(.*\)"$/\1/p' "$HB")"
+missing=""
+for sub in $subs; do
+  grep -qw -- "$sub" <<<"$guard" || missing="$missing $sub"
+done
+[ -z "$missing" ] \
+  && pass "every dispatch case is in the stdin guard's list" \
+  || fail "dispatch and stdin guard agree" "not in _SUBCOMMANDS:$missing"
+
 for sub in $subs; do
   case "$sub" in focus-watch|update|relaunch) continue ;; esac   # these do real work / need a browser
   got="$(printf 'SURVIVED\n' | { "$HB" "$sub" --help >/dev/null 2>&1; cat; })"
