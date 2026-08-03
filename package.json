@@ -4,7 +4,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "A dedicated, focus-safe browser for AI agents: per-session colored tab groups, a live monitor wall, and a browser-harness drop-in launcher. Log in once — every agent inherits the session, and none of them steals your focus.",
+  "description": "A dedicated, focus-safe browser for AI agents: per-session colored tab groups, a live monitor wall, and a browser-harness drop-in launcher. Log in once \u2014 every agent inherits the session, and none of them steals your focus.",
   "bin": {
     "horse-browser": "bin/horse-browser"
   },
@@ -24,7 +24,7 @@
   ],
   "scripts": {
     "postinstall": "bash scripts/postinstall.sh",
-    "test": "bash tests/harness-pytest.sh && bash tests/e2e.sh && bash tests/tab-reap.sh && bash tests/reap-hygiene.sh && bash tests/profile-lock.sh && bash tests/multi-instance.sh && bash tests/attached-mode.sh && bash tests/lane-hook.sh && bash tests/detect-identity.sh"
+    "test": "bash tests/harness-pytest.sh && bash tests/e2e.sh && bash tests/tab-reap.sh && bash tests/reap-hygiene.sh && bash tests/profile-lock.sh && bash tests/install-chrome.sh && bash tests/multi-instance.sh && bash tests/attached-mode.sh && bash tests/lane-hook.sh && bash tests/detect-identity.sh"
   },
   "dependencies": {
     "@puppeteer/browsers": "^3.0.6"

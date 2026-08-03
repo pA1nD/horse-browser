@@ -115,8 +115,19 @@ case "$LANE" in *[!A-Za-z0-9_-]*|"") LANE="" ;; esac   # sane token or nothing
 #     spawn) — so peek first: read to EOF only if a byte arrives within a beat;
 #     silence falls through to bare mode instead of hanging.
 # A bare invocation's stdin is otherwise a tty or /dev/null — never read, never hang.
+#
+# …and never for our own subcommands. They take no script, and swallowing stdin makes
+# `horse-browser install-chrome` inside a pipeline eat everything after it — found running
+# it as an image build step over `ssh host bash -s`, where it consumed the rest of the
+# script and the session just stopped, silently.
 script=""
-if [ -f /dev/fd/0 ]; then
+case "${1:-}" in
+  status|update|install-chrome|relaunch|verbs|focus-watch|skill) _SUBCOMMAND=1 ;;
+  *) _SUBCOMMAND= ;;
+esac
+if [ -n "$_SUBCOMMAND" ]; then
+  :
+elif [ -f /dev/fd/0 ]; then
   script="$(cat)"
 elif [ -p /dev/fd/0 ] || [ -S /dev/fd/0 ]; then
   script="$(python3 -c '
@@ -987,6 +998,67 @@ reset_stale_sw() {
   return 0
 }
 
+# install-chrome — put a Chrome for Testing somewhere and leave a stable path to it.
+#
+# For image builds. `horse-browser` owns WHICH Chrome and WHICH flags — that pairing is not
+# packaging config (--remote-allow-origins decides whether CDP is reachable at all, the
+# backgrounding trio decides whether screenshots survive load, --enable-unsafe-swiftshader is
+# part of the realness story). But the BYTES belong in the image: reproducible, no cold-start
+# download, and a locked-down pod may have no network and no package manager. So the builder
+# runs this at build time and the decision still lives here.
+#
+# Build-time safe by construction: no browser, no daemon, no display, no config written.
+#
+#   RUN  horse-browser install-chrome --prefix=/opt/cft
+#   ENV  HORSE_BROWSER_BIN=/opt/cft/current/chrome
+#
+# `current/` is a symlink to the versioned directory, so the ENV line above never has to name
+# a version — re-running with a newer --version repoints it. It links the DIRECTORY, not the
+# binary: Chrome resolves its resources relative to the executable, so a bare binary symlink
+# would find no locales and no ICU data.
+hb_install_chrome() {
+  local prefix="$CACHE" want="stable"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --prefix=*)  prefix="${1#--prefix=}" ;;
+      --prefix)    shift; prefix="${1:-}" ;;
+      --version=*) want="${1#--version=}" ;;
+      --version)   shift; want="${1:-}" ;;
+      -h|--help)   echo "usage: horse-browser install-chrome [--prefix DIR] [--version stable|X.Y.Z.W]"; return 0 ;;
+      *) echo "horse-browser install-chrome: unknown argument '$1'" >&2; return 1 ;;
+    esac
+    shift
+  done
+  [ -n "$prefix" ] || { echo "horse-browser install-chrome: --prefix needs a directory" >&2; return 1; }
+  command -v npx >/dev/null 2>&1 || {
+    echo "horse-browser install-chrome: npx (Node) not found — needed to fetch Chrome." >&2; return 1; }
+  mkdir -p "$prefix" || return 1
+
+  local out bin
+  # ${prefix} braced: a bare $prefix immediately followed by the multi-byte "…" gets the
+  # ellipsis bytes read into the variable NAME, and set -u then kills the run.
+  echo "horse-browser: fetching Chrome for Testing (chrome@$want) into ${prefix}…" >&2
+  # @puppeteer/browsers resolves the platform itself — mac_arm / mac / linux64 / win64 — so
+  # nothing here is macOS-shaped. Verified fetching linux64 inside a rootless pod.
+  out="$(npx -y @puppeteer/browsers install "chrome@$want" --path "$prefix")" \
+    || { echo "horse-browser install-chrome: fetch failed." >&2; return 1; }
+  bin="$(printf '%s\n' "$out" | grep '^chrome@' | tail -1 | sed 's/^[^ ]* //')"
+  [ -n "$bin" ] && [ -x "$bin" ] || {
+    echo "horse-browser install-chrome: couldn't resolve the installed binary from: $out" >&2; return 1; }
+
+  ln -sfn "$(dirname "$bin")" "$prefix/current" || return 1
+  # The executable is "chrome" on linux64/win64 but "Google Chrome for Testing" inside the
+  # macOS bundle, so the stable path carries the real basename rather than assuming one.
+  local stable="$prefix/current/$(basename "$bin")"
+  [ -x "$stable" ] || { echo "horse-browser install-chrome: $stable is not executable" >&2; return 1; }
+  local ver; ver="$(_chrome_ver "$bin")"
+  echo "horse-browser: Chrome ${ver:-?} installed" >&2
+  echo "  binary  $bin" >&2
+  echo "  stable  $stable  → set HORSE_BROWSER_BIN to this" >&2
+  # stdout is the stable path alone, so a Containerfile can capture it.
+  printf '%s\n' "$stable"
+}
+
 hb_update() {
   require_macos || return 1
   command -v npx >/dev/null 2>&1 || { echo "horse-browser: npx (Node) not found — needed to fetch Chrome." >&2; return 1; }
@@ -1270,6 +1342,10 @@ ensure_lane_hook
 case "${1:-}" in
   status) hb_status; exit 0 ;;
   update) hb_update && exit 0 || exit 1 ;;
+  install-chrome)
+    # Build-time only: fetch Chrome, print a stable path, touch nothing else. Deliberately
+    # before any browser/daemon work — an image build has no display and no running browser.
+    shift; hb_install_chrome "$@" && exit 0 || exit 1 ;;
   relaunch)
     # Apply an upgraded horse-browser package (new launch flags + extension code) without a
     # Chrome version change: new launch args only bind to a fresh process, and the extension
