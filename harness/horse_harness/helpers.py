@@ -1704,7 +1704,15 @@ def solve_challenge(act=True, hold_seconds=7.0):
                     imgs = sorted(frame_images(tid), key=lambda i: -(i["w"] * i["h"])) if tid else []
                     if len(imgs) >= 2:
                         bg, pc = imgs[0], imgs[-1]
-                        if pc["w"] < bg["w"]:                    # a piece, not a second backdrop
+                        # Only when the pair actually LOOKS like background + puzzle piece.
+                        # Not every slider is a puzzle: DataDome's common one is slide-to-the-end
+                        # with no piece at all, and running a correlation over whatever two
+                        # images the frame happened to contain hung the solve indefinitely —
+                        # slider_gap runs in this process, so no IPC timeout can rescue it.
+                        piecey = (pc["w"] <= bg["w"] * 0.5 and pc["h"] <= bg["h"] * 1.2
+                                  and pc["w"] * pc["h"] <= 40000
+                                  and bg["w"] * bg["h"] <= 1200000)
+                        if piecey:
                             hit = slider_gap(bg["b64"], pc["b64"])
                             if hit["score"] >= 0.6:
                                 # Background pixels → page pixels: the image is drawn across the

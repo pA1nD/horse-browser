@@ -98,3 +98,16 @@ def test_refuses_a_piece_larger_than_the_background():
     bg, _pc, _gx, _gy = _puzzle(seed=5)
     with pytest.raises(ValueError):
         slider_gap(bg, Image.new("RGB", (400, 400)))
+
+
+def test_a_huge_pair_is_not_worth_correlating():
+    """slider_gap runs in the CALLING process, so nothing times it out. On a live DataDome
+    slide-to-the-end widget — which has no puzzle piece at all — the solve path fed it whatever
+    two images the frame contained and hung indefinitely at 'SOLVING NOW'.
+
+    The verb itself stays honest (it will correlate whatever you give it); this pins the cost
+    so the guard in solve_challenge has a number to be measured against."""
+    import time
+    bg, pc, _gx, _gy = _puzzle(w=320, h=160, piece=52, seed=3)
+    t0 = time.time(); slider_gap(bg, pc); small = time.time() - t0
+    assert small < 5.0, "a normal puzzle took %.1fs — the solve path budgets on this" % small
