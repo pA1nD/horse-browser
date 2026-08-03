@@ -439,6 +439,22 @@ def _hb_track(target_id):
     _hb_registry_update(lambda ids: [t for t in ids if t != target_id] + [target_id])
 
 
+
+_HB_WARNED = set()
+
+
+def _hb_warn_once(topic, msg):
+    """Say a degradation out loud, once per process. Silence about a fallback is how a
+    downgrade becomes permanent — nobody fixes what nobody sees."""
+    if topic in _HB_WARNED:
+        return
+    _HB_WARNED.add(topic)
+    try:
+        print("\U0001F434 horse-browser: " + msg, file=sys.stderr)
+    except Exception:
+        pass
+
+
 def _hb_registry_lock(path):
     """Exclusive hold on one registry, across processes. Returns an fd to close, or None.
 
@@ -451,7 +467,10 @@ def _hb_registry_lock(path):
     try:
         import fcntl
     except ImportError:
-        return None                       # no flock (Windows): fall through, single writer
+        _hb_warn_once("registry-nolock",
+                      "no fcntl on this platform — registry writes are unlocked, so two "
+                      "processes on one lane can lose a tab claim")
+        return None
     try:
         # Leading dot: the launcher's reaper globs TABS/* to find registries, and glob("*")
         # skips dotfiles. A lock or temp file it COULD see would be read as a dead session's
@@ -460,8 +479,13 @@ def _hb_registry_lock(path):
         fd = os.open(os.path.join(d, "." + n + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
         return fd
-    except OSError:
-        return None                       # unlockable — writing unlocked beats losing the tab
+    except OSError as e:
+        # Unlocked beats not writing at all — but this silently re-enables the lost-update
+        # bug the lock exists to prevent, so it must never pass unremarked.
+        _hb_warn_once("registry-nolock",
+                      "cannot lock the tab registry (%s) — writes are unlocked, so two "
+                      "processes on one lane can lose a tab claim" % e)
+        return None
 
 
 def _hb_registry_unlock(fd):

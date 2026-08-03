@@ -116,8 +116,13 @@ def _track_target(tid):
         # file it could see would be read as a dead session's registry and its tabs closed.
         fd = os.open(str(f.with_name("." + f.name + ".lock")), os.O_CREAT | os.O_RDWR, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
-    except (ImportError, OSError):
-        fd = None                    # unlockable — writing unlocked beats losing the tab
+    except (ImportError, OSError) as e:
+        # Unlocked beats not writing at all, but this re-enables the lost-update bug the lock
+        # prevents — log it, so a degraded daemon is visible instead of merely slower to trust.
+        fd = None
+        if not getattr(_track_target, "_warned", False):
+            _track_target._warned = True
+            log(f"registry writes are UNLOCKED ({e}) — concurrent claims on this lane can be lost")
     try:
         ids = [t for t in _tracked_tabs() if t != tid]
         ids.append(tid)

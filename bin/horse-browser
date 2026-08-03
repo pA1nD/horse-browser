@@ -191,7 +191,17 @@ profile_pids() {
     printf '%s\n' "$pid"
     return 0
   fi
-  _hb_ps_wide | grep -F -- "--user-data-dir=$PROFILE" \
+  # The lock did not answer, so we have to scan — and if we cannot scan either, SAY SO rather
+  # than return empty. Empty means "nobody holds it", which is what lets the caller seed
+  # Preferences into a live profile (silently lost on Chrome's exit) or decide a force-kill is
+  # unnecessary. Degrading quietly on exactly the question you asked is worse than failing.
+  local _scan
+  if ! _scan="$(_hb_ps_wide)"; then
+    echo "horse-browser: no ps(1), and $PROFILE has no usable SingletonLock — cannot tell whether a browser holds this profile." >&2
+    echo "  Treating it as free, which is a guess. Install procps to make it an answer." >&2
+    return 0
+  fi
+  printf '%s\n' "$_scan" | grep -F -- "--user-data-dir=$PROFILE" \
     | grep -v -- "--type=" | grep -v grep | awk '{print $1}' || true
 }
 
@@ -226,14 +236,13 @@ _hb_stat_mtime() {   # epoch seconds of $1, or 0
 }
 
 _hb_ps_wide() {      # pid + full argv for every process, both ps dialects
-  # procps is not guaranteed in a container image — a slim base can have no ps at all, and
-  # every caller here treats "no output" as "nothing matched", which is the safe answer. Say
-  # nothing rather than letting `ps: command not found` leak into the launcher's output.
+  # procps is not guaranteed in a container image — a slim base can have no ps at all.
   #
-  # Losing it is survivable precisely because it is the FALLBACK: profile_pids asks Chrome's
-  # own SingletonLock first, which needs no process table. Observed on a slim pod — the lock
-  # answered, the launch worked, and only the error message was wrong.
-  command -v ps >/dev/null 2>&1 || return 0
+  # Return NON-ZERO, not empty. Every caller reads empty as "nothing matched", and for the
+  # question profile_pids answers — who is holding this browser profile — that is the
+  # dangerous direction: "I cannot look" would read as "it is free", which is what gates
+  # seeding Preferences and force-killing. A distinct failure lets the caller say so.
+  command -v ps >/dev/null 2>&1 || return 1
   if [ "$HB_OS" = "Darwin" ]; then ps -ww -o pid= -o command= -ax
   else                             ps -ww -eo pid=,args=; fi
 }
