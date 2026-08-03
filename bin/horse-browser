@@ -11,12 +11,23 @@
 # callers never hardcode it. Change PORT in the config and the whole fleet follows.
 #
 # Subcommands:
-#   horse-browser status   versions (chrome / browser-harness / horse-browser) + state
-#   horse-browser update   fetch the latest Chrome for Testing and restart onto it
+#   horse-browser status          versions (chrome / harness / horse-browser) + state
+#   horse-browser update          fetch the latest Chrome for Testing and restart onto it
+#   horse-browser install-chrome  put a Chrome somewhere at IMAGE BUILD time (--prefix DIR)
+#
+# Runs on macOS and Linux. On Linux it starts Xvfb when there is no DISPLAY, launches headed,
+# and refuses to run the browser as root (Chrome would disable its own sandbox).
 #
 # Idempotent. Config is written by install.sh to ~/.config/horse-browser/config.
 # Env vars override it: HORSE_BROWSER_BIN, HORSE_BROWSER_PORT, HORSE_BROWSER_PROFILE,
-# HORSE_BROWSER_EXTENSION.
+# HORSE_BROWSER_EXTENSION, HORSE_BROWSER_DISPLAY, HORSE_BROWSER_SCREEN.
+#
+#   HORSE_BROWSER_UNATTENDED=1   nobody will look at this browser: no extension, so no tab
+#                                groups and no Monitor. Not about how many agents share it —
+#                                a hundred subagent lanes on one browser is still "watched" if
+#                                a human ever attaches. Tab ownership is unaffected (the
+#                                registry, never the tab group), and screenshots still work,
+#                                so a viewer can be attached later.
 set -euo pipefail
 
 CONFIG="$HOME/.config/horse-browser/config"
@@ -27,6 +38,19 @@ PORT="${HORSE_BROWSER_PORT:-${PORT:-9223}}"
 PROFILE="${HORSE_BROWSER_PROFILE:-${PROFILE:-$HOME/.config/horse-browser/profile}}"
 BIN="${HORSE_BROWSER_BIN:-${BROWSER_BIN:-}}"
 EXT="${HORSE_BROWSER_EXTENSION:-${EXTENSION_DIR:-}}"
+# UNATTENDED: nobody is going to look at this browser.
+#
+# The axis is NOT how many agents share it — a pod can run a hundred subagent lanes against one
+# browser and that is the most multi-tenant thing here. The axis is whether a human will ever
+# watch. When none will, the extension earns nothing: coloured tab groups, the pinned Monitor
+# and the CCTV wall are all for eyes, and they cost a service worker, a tab, and an extension
+# round trip on every tab we mint.
+#
+# It removes the WATCHING, never the ability to watch later. Tab ownership lives in the
+# registry, not in tab groups, and screenshots are plain per-target CDP — so a remote viewer
+# built later can list and stream an unattended browser without it having been launched any
+# differently.
+UNATTENDED="${HORSE_BROWSER_UNATTENDED:-${UNATTENDED:-}}"
 CACHE="${HORSE_BROWSER_CACHE:-$HOME/.cache/horse-browser}"
 
 # Repo/package root (resolves the launcher symlink) — integrations/ lives here.
@@ -193,6 +217,14 @@ _hb_stat_mtime() {   # epoch seconds of $1, or 0
 }
 
 _hb_ps_wide() {      # pid + full argv for every process, both ps dialects
+  # procps is not guaranteed in a container image — a slim base can have no ps at all, and
+  # every caller here treats "no output" as "nothing matched", which is the safe answer. Say
+  # nothing rather than letting `ps: command not found` leak into the launcher's output.
+  #
+  # Losing it is survivable precisely because it is the FALLBACK: profile_pids asks Chrome's
+  # own SingletonLock first, which needs no process table. Observed on a slim pod — the lock
+  # answered, the launch worked, and only the error message was wrong.
+  command -v ps >/dev/null 2>&1 || return 0
   if [ "$HB_OS" = "Darwin" ]; then ps -ww -o pid= -o command= -ax
   else                             ps -ww -eo pid=,args=; fi
 }
@@ -1016,6 +1048,11 @@ PY
   fi
   printf '  %-18s %s\n' "profile"  "$PROFILE"
   printf '  %-18s %s\n' "config"   "$CONFIG"
+  # Say the mode out loud. "Where are my tab groups?" and "why is there no Monitor?" are the
+  # two questions unattended mode creates, and this is the command people run to answer them.
+  if [ -n "$UNATTENDED" ]; then
+    printf '  %-18s %s\n' "mode" "unattended — no extension, so no tab groups and no Monitor (tabs still tracked in the registry)"
+  fi
 }
 
 # sync_manifest_version: keep the extension manifest's "version" equal to the package
@@ -1398,7 +1435,7 @@ PY
   fi
   sync_manifest_version   # keep the extension's manifest version matched to the package before load
   reset_stale_sw          # …and make sure the browser will actually RUN that version's code
-  [ -n "$EXT" ] && args+=( --load-extension="$EXT" )
+  [ -n "$EXT" ] && [ -z "$UNATTENDED" ] && args+=( --load-extension="$EXT" )
 
   # Launch WITHOUT stealing focus. `open -g` starts the app in the background, so
   # the window appears but your current app keeps keyboard focus. `-n` forces a NEW
@@ -1510,6 +1547,10 @@ maybe_reap   # opportunistically clean up daemons from ended sessions (throttled
 if [ -n "$PASSTHROUGH" ]; then
   ensure_harness || exit 1
   export BU_CDP_URL="http://127.0.0.1:$PORT"
+  # Tell the harness too. It could probe instead, but "no service worker answered" is also
+  # what an ASLEEP MV3 worker looks like, and caching that wrong would silently stop grouping
+  # on a watched browser. The launcher knows for certain — it decided — so it just says.
+  [ -n "$UNATTENDED" ] && export HORSE_BROWSER_UNATTENDED=1
 
   # ── identity: a generic contract, filled in by integrations ─────────────────
   # Core knows three things: HORSE_SESSION (who this agent session is — tab group +

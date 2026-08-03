@@ -523,6 +523,12 @@ def ext_call(fn, *args):
     Each candidate is asked whether it is ours in the same round trip — the guard
     tools/sw_eval.py has always used — so `fn` never runs in a stranger's worker.
     """
+    # Unattended: the launcher did not load the extension, so there is nothing to find. Say so
+    # up front rather than walking every service worker and attaching to each — that is a
+    # target list plus an attach/detach per candidate, on a path that runs for every tab we
+    # mint and every re-home.
+    if os.environ.get("HORSE_BROWSER_UNATTENDED"):
+        return None
     cands = [t["targetId"] for t in cdp("Target.getTargets")["targetInfos"]
              if t.get("type") == "service_worker"
              and t.get("url", "").startswith("chrome-extension://")]

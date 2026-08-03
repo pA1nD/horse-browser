@@ -389,6 +389,10 @@ def _scripted_for_attach(targets, monkeypatch, bound=None, label="", tracked=(),
         monkeypatch.setattr(daemon, "_all_tracked", set)
     remembered.clear()
     d = daemon.Daemon()
+    # start() probes this; these tests call attach_first_page directly. Default to a WATCHED
+    # browser (extension present) because that is what most of them are about — the unattended
+    # case gets its own test below.
+    d.has_extension = True
     created = {"n": 0}
 
     def create(_params, _sid):
@@ -539,6 +543,23 @@ def test_attach_never_adopts_a_new_tab_page_another_session_claimed(tmp_path, mo
 
     assert pick["targetId"] == "NEW-BLANK"
     assert created["n"] == 1
+
+
+def test_unattended_browser_is_not_asked_to_paint_a_tab_group(tmp_path, monkeypatch):
+    """No extension means no group to paint into. Asking anyway costs four CDP round trips
+    discovering the absence, then logs a failure — on every tab minted, for every session.
+    The tab is ours either way: the registry said so, and a group only RENDERS that."""
+    _registry(tmp_path, monkeypatch, [])
+    d, created = _scripted_for_attach([_FOREIGN_PAGE, _SW_TARGETS["targetInfos"][1]],
+                                      monkeypatch, bound="GONE", label="sess-1", claimed=True)
+    d.has_extension = False                     # unattended, or a browser we did not launch
+
+    pick = asyncio.run(d.attach_first_page())
+
+    assert created["n"] == 1                    # the tab is still minted…
+    assert remembered == [pick["targetId"]]     # …and still claimed in the registry
+    evals = [p["expression"] for (m, p, _s) in d.cdp.calls if m == "Runtime.evaluate"]
+    assert not [e for e in evals if "groupTab" in e], evals
 
 
 def test_attach_without_identity_keeps_legacy_first_page(monkeypatch):

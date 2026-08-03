@@ -285,7 +285,12 @@ class Daemon:
                 ))["targetId"]
                 log(f"no {'bound' if label else 'real'} tab, created about:blank ({tid})")
             _track_target(tid)      # claim before painting: the registry is the truth
-            if label:
+            # Paint only when there is something to paint on. has_extension is probed once in
+            # start(); without this the attach path spends four CDP round trips discovering
+            # the absence again, then logs a failure, for every tab minted on an unattended or
+            # attached browser. The tab is already OURS either way — the registry said so a
+            # line above, and the group is a rendering of that, never its source.
+            if label and self.has_extension:
                 status, err = await self._ext_eval(f"self.groupTab({json.dumps(tid)}, {json.dumps(label)})")
                 if status != "ok":
                     log(f"groupTab({tid}) failed: {err}")
