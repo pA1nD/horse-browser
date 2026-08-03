@@ -221,3 +221,18 @@ chrome.tabs.onRemoved.addListener((_id, info) => { if (!info.isWindowClosing) sh
 // state IS the welcome (monitor.html), so a fresh profile opens ONE tab that explains
 // itself and becomes the wall as soon as an agent opens something.
 chrome.runtime.onInstalled.addListener(() => showMonitor(false));
+
+
+// The window's real geometry, for winbounds.js. A backgrounded tab reports outerWidth,
+// outerHeight, screenX and screenY as 0; only the service worker can ask chrome.windows what
+// the window actually is. Returns undefined rather than guessing if the lookup fails — the page
+// side falls back to something self-consistent, and a wrong number is worse than none.
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (!msg || msg.hb !== 'winbounds' || !sender.tab) return;
+  chrome.windows.get(sender.tab.windowId, (w) => {
+    if (chrome.runtime.lastError || !w) { reply(null); return; }
+    reply({ left: w.left, top: w.top, width: w.width, height: w.height });
+  });
+  return true;                      // reply arrives asynchronously
+});
+

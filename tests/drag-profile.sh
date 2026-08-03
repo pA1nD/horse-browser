@@ -43,11 +43,20 @@ cat > "$W/page.html" <<'HTML'
 <script>
 window.LOG=[]; window.PTR=[];
 var t0=performance.now();
-['mousemove','mousedown','mouseup'].forEach(function(n){
+// POINTER events, not the compat mouse ones. Chrome rounds mousemove coordinates to whole
+// pixels, which destroys the sub-pixel detail and manufactures repeats — in a recorded human
+// session, the same gesture read 100% fractional with zero repeats as pointermove, and 0%
+// fractional with 18.4% repeats as mousemove. Measuring the lossy copy meant comparing our
+// gesture against an artefact of Chrome's rounding rather than against the hand.
+['pointermove','pointerdown','pointerup'].forEach(function(n){
   document.addEventListener(n,function(e){
-    LOG.push([n[5]==='m'?'m':(n==='mousedown'?'d':'u'),
-              Math.round(e.clientX*10)/10, Math.round(e.clientY*10)/10,
-              Math.round(performance.now()-t0)]);
+    // Full precision. Rounding to 0.1px here MANUFACTURED the repeated positions this file
+    // then measured, and the human baseline it compared them against came from a recorder that
+    // rounded the same way — so both sides agreed on an artefact. A real pointer's coordinates
+    // are sub-pixel: in a recorded human session, 256 of 256 samples were fractional and not one
+    // repeated the previous position exactly.
+    LOG.push([n==='pointermove'?'m':(n==='pointerdown'?'d':'u'),
+              e.clientX, e.clientY, Math.round(performance.now()-t0)]);
   },true);
 });
 // What the pointer says about ITSELF, not just where it was. A physical pointer cannot report
@@ -143,6 +152,8 @@ def runlen(r):
         best = max(best, cur)
     return best
 res["max_run"] = max(runlen(r) for r in runs)
+res["frac_pct"] = round(100.0 * sum(sum(1 for e in moves(r) if e[1] != int(e[1]) or e[2] != int(e[2]))
+                                    for r in runs) / sum(len(moves(r)) for r in runs))
 res["dupe_pct"] = round(100.0 * sum(sum(1 for a, b in zip(moves(r), moves(r)[1:]) if a[1:3] == b[1:3])
                                     for r in runs) / sum(len(moves(r)) for r in runs), 1)
 # 8. the pointer's self-description. CDP defaults `force` to 0, so every gesture this tool sent
@@ -190,13 +201,17 @@ chk "it accelerates faster than it decelerates"          "sorted(v)[len(v)//2] <
 chk "no run decelerates first"                           "max(v) <= 0.62"            half_at
 chk "it releases on the target"                          "all(e <= 2.0 for e in v)"  err_x
 chk "it holds briefly before letting go"                 "all(h >= 40 for h in v)"   hold
-# Bounds taken from 14 recorded human drags (tests/lib/traces/, see tests/lib/human-trace.py),
-# not chosen by taste: a hand's longest run of identical samples was 3 and its repeat rate
-# reached 8.5%. A hand DOES repeat a position — it pauses, and the pointer quantises. What it
-# does not do is stall for seven samples, which is what a jitter narrower than the rounding
-# grid produces.
-chk "the pointer never stalls longer than a hand does"   "v <= 4"                    max_run
-chk "repeats stay inside the recorded human range"       "v <= 10.0"                 dupe_pct
+# Bounds from the full-precision human recording (tests/lib/traces/events-human.json): 256 of
+# 256 pointer samples fractional, ZERO exact repeats, longest run 1. The earlier, looser numbers
+# here (runs of 3, repeats at 8.5%) were an artefact of a recorder that rounded to 0.1px — once
+# both sides keep full precision, a hand simply never reports the same position twice.
+chk "the pointer never stalls in place"                  "v <= 2"                    max_run
+chk "positions do not repeat, as a real pointer's do not" "v <= 2.0"                 dupe_pct
+# The tell this replaced: every coordinate a whole number. Chrome passes fractional dispatched
+# coordinates through untouched, and a real pointer is sub-pixel on any display with a device
+# pixel ratio above 1 — 256 of 256 samples in the human recording. All-integer positions across
+# a gesture is one line for a page to check, and this code used to round every one of them.
+chk "positions are sub-pixel, as a real pointer's are"   "v >= 80"                   frac_pct
 chk "a held button reports real pressure"                "v == [0.5]"                pressure_held
 chk "a free button reports no pressure"                  "v == [0]"                  pressure_free
 chk "it describes itself as one primary mouse"           "v == [['mouse', 1, 1, True]]" ptr_shape

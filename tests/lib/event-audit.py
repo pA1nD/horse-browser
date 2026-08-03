@@ -50,6 +50,9 @@ PAGE = """<!doctype html><meta charset=utf-8><title>event audit</title>
 <p>Both at once is fine. <span id=n>0</span> events captured.</p>
 <div id=h>drag me</div>
 <input id=t placeholder="type anything here">
+<p style="margin-top:18px"><button id=save style="padding:9px 16px;font:15px system-ui;
+   border-radius:6px;cursor:pointer">Save recording</button>
+   <span id=status style="margin-left:12px;opacity:.75"></span></p>
 <script>
 var PF = %(pf)s, KF = %(kf)s;
 window.EV = [];
@@ -88,7 +91,17 @@ window.__post = function(tag){
   return fetch('/save?tag='+tag, {method:'POST', headers:{'content-type':'application/json'},
                                   body: JSON.stringify(EV)}).then(function(){ return EV.length; });
 };
-addEventListener('keydown', function(e){ if (e.key === 'Enter') window.__post('human'); });
+// A button, not a keystroke. Relying on Enter meant a recording could be made and lost with
+// nothing on screen to say either had happened.
+document.getElementById('save').addEventListener('click', function(){
+  window.__post('human').then(function(n){
+    document.getElementById('status').textContent = 'saved ' + n + ' events — you can close this';
+  }).catch(function(err){
+    document.getElementById('status').textContent = 'save FAILED: ' + err;
+  });
+});
+addEventListener('keydown', function(e){
+  if (e.key === 'Enter') document.getElementById('save').click(); });
 </script>
 """
 
@@ -143,8 +156,17 @@ def invariants(ev):
         if not e.get("isTrusted"):
             bad.append("%s: isTrusted false — the page can see this was scripted" % e["_t"])
         _ = moving  # movement (0,0) is legitimate — a paused hand reports it too; see below
+    # Sub-pixel positions. Chrome preserves fractional dispatched coordinates exactly, and on a
+    # display with devicePixelRatio > 1 a real pointer produces them constantly — 256 of 256
+    # samples in a recorded human session. All-integer coordinates across a whole gesture is
+    # `Number.isInteger(e.clientX)`, which is one line and which no hand passes on such a screen.
+    pts = [e for e in ev if e["_k"] == "p" and e.get("clientX") is not None]
+    if pts and all(float(e["clientX"]).is_integer() and float(e["clientY"]).is_integer()
+                   for e in pts):
+        bad.append("every one of %d pointer positions is a whole number — real input is "
+                   "sub-pixel wherever devicePixelRatio > 1" % len(pts))
     # Rate, not presence. A pointer that never moves between samples is a stalled loop; one
-    # that occasionally does is a hand pausing. Ours sits near 5%, which is the pausing kind.
+    # that occasionally does is a hand pausing.
     mv = [e for e in ev if e["_t"] in ("pointermove", "mousemove")]
     if mv:
         zero = sum(1 for e in mv if not e.get("movementX") and not e.get("movementY"))
@@ -191,10 +213,28 @@ def report():
               % (0 if bad else 1, 1 if bad else 0))
         return 1 if bad else 0
     a, b = summarise(ours), summarise(human)
+    # Coordinates are continuous and depend on where the window happens to be, so their value
+    # SETS never overlap between two sessions and comparing them raw reports six differences that
+    # mean nothing. What matters about a coordinate is its shape: fractional or whole, and
+    # whether screen space is distinct from client space. Those are checked separately.
+    CONTINUOUS = {"clientX", "clientY", "pageX", "pageY", "screenX", "screenY",
+                  "offsetX", "offsetY", "movementX", "movementY"}
+    print("\n  Coordinate shape (the part that is comparable across sessions):")
+    for src, rows in [("ours", ours), ("human", human)]:
+        pts = [e for e in rows if e["_k"] == "p" and e.get("clientX") is not None]
+        if not pts:
+            continue
+        frac = sum(1 for e in pts if not float(e["clientX"]).is_integer())
+        sint = sum(1 for e in pts if float(e["screenX"]).is_integer())
+        same = sum(1 for e in pts if e["screenX"] == e["clientX"])
+        print("    %-6s client fractional %3d%%   screen whole %3d%%   screen==client %3d%%"
+              % (src, 100 * frac // len(pts), 100 * sint // len(pts), 100 * same // len(pts)))
     print("\n  Fields where our values and a hand's do not overlap:")
     diffs = 0
     for key in sorted(set(a) | set(b), key=lambda k: (k[0], k[1])):
         kind, field = key
+        if field in CONTINUOUS:
+            continue
         av, bv = a.get(key, set()), b.get(key, set())
         if not av or not bv or (av & bv):
             continue
@@ -203,6 +243,7 @@ def report():
               % (kind, field, ",".join(sorted(av))[:26], ",".join(sorted(bv))[:34]))
     if not diffs:
         print("    (none — every field's values overlap)")
+    print("\n── %d passed, %d failed" % (2 - bool(bad) - bool(diffs), bool(bad) + bool(diffs)))
     return 1 if (bad or diffs) else 0
 
 

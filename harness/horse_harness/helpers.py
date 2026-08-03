@@ -1240,23 +1240,18 @@ def _sstep(t):
     return t * t * (3 - 2 * t)
 
 
-def _unstall(pt, last, runlen):
-    """Keep a repeated pointer position from becoming a stall.
-
-    Chrome quantises dispatched coordinates, so sub-pixel motion lands on the same pixel and a
-    settling gesture emits identical samples. A hand does that too — the recorded drags repeat a
-    position up to three times in a row — so suppressing repeats entirely would be its own tell.
-    What a hand does not do is sit on one pixel for five or seven samples, which is what a
-    decaying jitter produces once it drops below the rounding grid. Allow the repeat, cap the run.
-    """
-    if pt == last:
-        runlen += 1
-        if runlen >= 2:
-            pt = (pt[0] + _ir.choice((-1, 1)), pt[1])
-            runlen = 0
-    else:
-        runlen = 0
-    return pt, pt, runlen
+# Coordinates go out FRACTIONAL. Chrome preserves them exactly — 100.37 arrives as
+# 100.37000274658203 — and on any display with devicePixelRatio > 1 a real pointer reports
+# sub-pixel positions constantly: in a recorded human session, 256 of 256 pointermove samples
+# had a fractional clientX/clientY and not one repeated the previous position exactly.
+#
+# This code used to round every dispatched coordinate to an integer, which made
+# `Number.isInteger(e.clientX)` true across an entire gesture — a one-line check no hand can
+# pass on a Retina screen. The rounding then caused apparent "stalls" (identical consecutive
+# samples), which earned a whole mechanism to break them up, and a code comment blaming Chrome
+# for quantising input. Chrome does no such thing; the quantisation was ours, and so were the
+# stalls, and so was the human baseline that seemed to permit them — that recorder rounded to
+# 0.1px too. Removing the rounding removed all three.
 
 
 def _dwell():
@@ -1320,14 +1315,9 @@ def drag(target, to=None, dx=None, dy=0):
     # target, where any scorer watching the control sees them — a synthetic drag enters and
     # presses in the same instant. Recorded hands: 16 samples over the handle before the press;
     # this was emitting 4, and the four were the tail of the approach rather than a pause.
-    # Wander wide enough to survive rounding: Chrome quantises dispatched coordinates, so a
-    # +/-2.5px hover only had about five distinct positions and kept landing on the same pixel —
-    # seven identical samples in a row, where the widest human run recorded was three.
-    last, runlen = None, 0
     for _ in range(_ir.randint(8, 14)):
-        hx, hy = round(x0 + _ir.uniform(-6, 6)), round(y0 + _ir.uniform(-6, 6))
-        (hx, hy), last, runlen = _unstall((hx, hy), last, runlen)
-        _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=hx, y=hy)
+        _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved",
+                    x=x0 + _ir.uniform(-6, 6), y=y0 + _ir.uniform(-6, 6))
         _it.sleep(_dwell())
     _it.sleep(_ir.uniform(0.05, 0.15))                    # settle before pressing
     cdp("Input.dispatchMouseEvent", type="mousePressed", x=x0, y=y0, button="left", buttons=1,
@@ -1347,7 +1337,6 @@ def drag(target, to=None, dx=None, dy=0):
     ovx = (x1 - x0) / (span or 1) * ov
     ovy = (y1 - y0) / (span or 1) * ov
     arc = _ir.choice((-1, 1)) * _ir.uniform(12.0, 32.0)   # the vertical bow of the path
-    _lastpt, _runlen = None, 0
     hesitate = sorted(_ir.sample(range(3, steps - 2), min(2, max(0, steps - 6)))) if steps > 8 else []
     for i in range(1, steps + 1):
         t = i / steps
@@ -1355,11 +1344,7 @@ def drag(target, to=None, dx=None, dy=0):
         # a hand covers half the distance in the first 17% of the time and spends the rest
         # settling. t**0.39 puts the half-distance point there; t**0.78 put it at 33%.
         e = _sstep(t ** 0.39)
-        # Precision improves on approach, but never to perfect stillness — the floor matters.
-        # With the travel front-loaded, the tail advances well under a pixel per sample, and a
-        # jitter that decays to zero there let five consecutive samples round to the same pixel.
-        # A hand settling still trembles; the widest run in the recorded drags was three.
-        wob = 0.7 + (1.0 - t) * 1.4
+        wob = 0.25 + (1.0 - t) * 1.4                      # precision improves on approach
         # A hand does not hold a straight line: across 222px of travel the recorded drags
         # wandered a median of 29px vertically, where this held under 2px. That flatness is the
         # loudest thing left in the trace — a scorer does not have to model intent to notice a
@@ -1367,7 +1352,6 @@ def drag(target, to=None, dx=None, dy=0):
         px = x0 + (x1 + ovx - x0) * e + _ir.uniform(-wob, wob)
         py = (y0 + (y1 + ovy - y0) * e + arc * _im.sin(_im.pi * e)
               + _ir.uniform(-wob, wob))
-        (px, py), _lastpt, _runlen = _unstall((round(px), round(py)), _lastpt, _runlen)
         _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py, buttons=1, force=0.5)
         _it.sleep(_dwell())
         if i in hesitate:

@@ -135,4 +135,87 @@
       });
     });
   }catch(e){}
+
+  // ── window geometry in a tab that is never brought to the front ─────────────────────
+  // Measured on this browser: backgrounded, a tab reports {screenX:0, screenY:0, outerWidth:0,
+  // outerHeight:0}; the same tab foregrounded reports {4096, 30, 2028, 1102}. A zero-size window
+  // at the screen origin is one of the oldest automation signals in use, and this tool produced
+  // it on every page it has ever driven — not taking the operator's focus is the whole promise,
+  // so the tabs are always backgrounded.
+  //
+  // The real numbers come from the service worker via winbounds.js. Until that reply lands the
+  // fallback is self-consistent rather than invented: the viewport's own size, plus the chrome
+  // the browser reports around it. Every getter is guarded on the native value being 0, so a
+  // foregrounded tab — which reports the truth — is never touched.
+  try{
+    var WB = null;
+    document.addEventListener('__hb_winbounds', function(e){
+      try{ WB = JSON.parse(e.detail); }catch(err){}
+    });
+    try{ document.dispatchEvent(new CustomEvent('__hb_winbounds_please')); }catch(e){}
+    var geom = {
+      screenX:     function(){ return WB ? WB.left : (screen.availLeft || 0); },
+      screenY:     function(){ return WB ? WB.top  : (screen.availTop  || 0); },
+      outerWidth:  function(){ return WB ? WB.width  : window.innerWidth; },
+      outerHeight: function(){ return WB ? WB.height : window.innerHeight + 87; }
+    };
+    Object.keys(geom).forEach(function(name){
+      // On the global object these are OWN accessors, not prototype properties — looking only
+      // at Window.prototype found nothing and installed nothing, silently.
+      var d = Object.getOwnPropertyDescriptor(window, name)
+           || Object.getOwnPropertyDescriptor(Window.prototype, name);
+      if(!d || !d.get) return;
+      Object.defineProperty(window, name, {
+        get: nativeProxy(d.get, function(t, ta, a){
+          var raw = Reflect.apply(t, ta, a);
+          // When the service worker has told us what the window actually is, that is the truth
+          // and it wins. A backgrounded tab does not only zero these — it also reports the
+          // VIEWPORT as the window, so outerHeight comes back equal to innerHeight, which says
+          // the browser has no chrome around it. Passing that through because it was non-zero
+          // left the second half of the tell in place.
+          if (WB) return geom[name]();
+          return raw ? raw : geom[name]();
+        }),
+        set: undefined, enumerable: d.enumerable, configurable: true
+      });
+    });
+  }catch(e){}
+
+  // ── screen coordinates on injected input ────────────────────────────────────────────
+  // CDP's Input.dispatchMouseEvent takes ONE pair of coordinates and Chrome copies it into
+  // both client and screen space. Real input does not work that way: the OS supplies screen
+  // coordinates as whole numbers, and client coordinates are derived from them by subtracting
+  // the window's origin and dividing by the device pixel ratio — so they come out fractional.
+  //
+  // Measured against a recorded human session on this machine: 276 of 276 pointer samples had a
+  // fractional clientX/clientY and an integer screenX/screenY, offset from each other by the
+  // window's position plus its chrome. Injected events had screenX === clientX exactly, on a
+  // window sitting at (4096, 30) — and moving the window changed nothing, because Chrome never
+  // consults it for these. `e.screenX === e.clientX` is one line, and no real pointer in a
+  // normally-placed window satisfies it.
+  //
+  // So the getters reconstruct what the OS would have reported: client position plus the
+  // window's own origin and chrome, rounded to whole pixels. Only when the raw value betrays an
+  // injected event (screen exactly equal to client) — a genuine event is passed through
+  // untouched, which also keeps this correct if the page is ever driven by a real hand.
+  try{
+    [['screenX','clientX'], ['screenY','clientY']].forEach(function(pair){
+      var d = Object.getOwnPropertyDescriptor(MouseEvent.prototype, pair[0]);
+      if(!d || !d.get) return;
+      Object.defineProperty(MouseEvent.prototype, pair[0], {
+        get: nativeProxy(d.get, function(t, ta, a){
+          var raw = Reflect.apply(t, ta, a);
+          try{
+            var client = ta[pair[1]];
+            if(raw !== client) return raw;              // a real event — leave it alone
+            var origin = pair[0] === 'screenX'
+              ? (window.screenX || 0) + Math.max(0, (window.outerWidth - window.innerWidth) / 2)
+              : (window.screenY || 0) + Math.max(0, window.outerHeight - window.innerHeight);
+            return Math.round(client + origin);
+          }catch(e){ return raw; }
+        }),
+        set: undefined, enumerable: d.enumerable, configurable: true
+      });
+    });
+  }catch(e){}
 })();
