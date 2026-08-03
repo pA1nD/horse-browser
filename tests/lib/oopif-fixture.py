@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""A real out-of-process iframe, on demand, with the control at a KNOWN position.
+
+Why this exists: `_frame_control` claims it can read a control inside a cross-origin challenge
+frame and convert its rect to page coordinates. That claim is only worth anything if it is
+checked against ground truth — a live captcha gives you no ground truth at all (you cannot ask
+DataDome where it put the button), and it changes under you.
+
+So: serve a parent page on one site and the "challenge" on ANOTHER, with the control placed at
+coordinates this file chose. Then the expected answer is known exactly, and the test can assert
+pixels rather than vibes.
+
+Two ports is NOT enough. Chrome's site isolation keys on SITE (scheme + eTLD+1), so
+127.0.0.1:8001 and 127.0.0.1:8002 are cross-ORIGIN but same-site, and the frame stays in the
+parent's process — no separate CDP target, which is the very thing under test. Distinct
+hostnames mapped with --host-resolver-rules produce a genuine OOPIF.
+
+    python3 oopif-fixture.py <parent-port> <frame-port> <kind> <x> <y> <w> <h>
+
+kind: checkbox | press-hold | slider | button
+"""
+import sys, threading, http.server, json
+
+PARENT_PORT, FRAME_PORT, KIND, CX, CY, CW, CH = (
+    int(sys.argv[1]), int(sys.argv[2]), sys.argv[3],
+    int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7]))
+
+# The frame URL carries "captcha-delivery" on purpose: that is the fragment _xorigin_challenge
+# recognises as DataDome and the one _frame_control re-attaches by. Serving it at a neutral
+# path would test a shortcut instead of the code path that actually runs on a live challenge.
+#
+# The iframe sits at a deliberately non-zero offset in the parent: a solver that forgets to add
+# the frame's own position still passes when the frame is at (0,0), and fails here.
+FRAME_X, FRAME_Y = 137, 211
+
+PARENT = """<!doctype html><meta charset=utf-8><title>fixture parent</title>
+<body style="margin:0;height:2000px">
+<div style="height:%dpx"></div>
+<iframe src="http://frame.test:%d/captcha-delivery/x" title="Verifying you are human"
+        style="margin-left:%dpx;width:400px;height:300px;border:0"></iframe>
+</body>""" % (FRAME_Y, FRAME_PORT, FRAME_X)
+
+# One control, at coordinates we chose, inside a page on a different site. Everything else on
+# the page is decoy: bigger boxes, other cursors, similar class names — a solver that simply
+# takes "the biggest element" or "the first div" gets them and fails.
+CONTROLS = {
+    "checkbox":   '<div role="checkbox" aria-label="I am human" class="captcha-cb"',
+    "press-hold": '<div class="px-captcha-btn" ',
+    "slider":     '<div class="slider-handle" ',
+    "button":     '<button class="verify-btn" ',
+}
+LABEL = {"checkbox": "", "press-hold": "Press &amp; Hold", "slider": "", "button": "Verify"}
+
+FRAME = """<!doctype html><meta charset=utf-8><title>challenge</title>
+<body style="margin:0;font:14px sans-serif">
+  <div style="position:absolute;left:5px;top:5px;width:390px;height:60px;background:#eee">decoy banner, bigger than the control</div>
+  <div style="position:absolute;left:20px;top:240px;width:360px;height:40px;background:#f6f6f6">decoy footer</div>
+  <span style="position:absolute;left:10px;top:80px;cursor:pointer">decoy pointer text</span>
+  %s style="position:absolute;left:%dpx;top:%dpx;width:%dpx;height:%dpx;background:#4a90d9;cursor:pointer">%s</%s>
+</body>""" % (CONTROLS[KIND], CX, CY, CW, CH, LABEL[KIND],
+              "button" if KIND == "button" else "div")
+
+
+def serve(port, body_for):
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            b = body_for(self.path).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+        def log_message(self, *a):
+            pass
+    http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
+
+
+threading.Thread(target=serve, args=(PARENT_PORT, lambda p: PARENT), daemon=True).start()
+threading.Thread(target=serve, args=(FRAME_PORT, lambda p: FRAME), daemon=True).start()
+
+# The answer, so the test never has to recompute it: page coords of the control's CENTRE.
+print(json.dumps({
+    "parent": "http://parent.test:%d/" % PARENT_PORT,
+    "frame_x": FRAME_X, "frame_y": FRAME_Y,
+    "expect_x": FRAME_X + CX + CW // 2,
+    "expect_y": FRAME_Y + CY + CH // 2,
+    "kind": KIND,
+}), flush=True)
+threading.Event().wait()

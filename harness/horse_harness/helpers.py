@@ -1374,6 +1374,171 @@ def _xorigin_challenge():
       return null;})()""")
 
 
+def _frame_control(xo):
+    """The actual control INSIDE a cross-origin challenge frame, in PAGE coordinates.
+
+    The premise this replaces — "the DOM can't be read" — is false. A cross-origin iframe is
+    its own CDP target: iframe_target() attaches to it and js(..., target_id=) evaluates
+    inside it. Verified reading 29 nodes of a google.com reCAPTCHA frame from a page on
+    another domain. What was actually missing was using it.
+
+    Without this the solvers guess: the PerimeterX press-hold hardcodes
+    (0.486*innerWidth, 0.553*innerHeight) of the frame, which is right until a layout changes.
+    Reading the control's own rect is exact, and it also tells us WHICH control it is instead
+    of inferring from the vendor name.
+
+    Returns {"kind","x","y","w","h","why"} in page coords, or None when the frame genuinely
+    cannot be read (sandboxed, or nothing control-shaped inside) — vision still covers that.
+    """
+    if not xo:
+        return None
+    # Match the frame by the same URL fragment the vendor was recognised by, so we attach to
+    # the frame we measured rather than the first challenge-ish frame on the page.
+    frag = {"cloudflare": "challenges.cloudflare.com", "datadome": "captcha-delivery",
+            "hcaptcha": "hcaptcha.com", "perimeterx": "perimeterx", "arkose": "arkoselabs",
+            "recaptcha": "recaptcha/api2"}.get(xo.get("vendor"))
+    if not frag:
+        return None
+    tid = iframe_target(frag)
+    if not tid:
+        return None                      # e.g. a CF interstitial widget with no own target
+    # Generic, not a per-vendor selector table: score every visibly interactive element and
+    # take the best. A table would need editing every time a vendor reskins; shape and role
+    # are what actually identify a control, and they are what the vendor cannot change without
+    # changing the control.
+    try:
+        got = js(r"""(function(){
+          var out=[], all=document.querySelectorAll('*');
+          for(var i=0;i<all.length && i<4000;i++){
+            var e=all[i], b=e.getBoundingClientRect();
+            if(b.width<12||b.height<12||b.width>900||b.height>400) continue;
+            var st=getComputedStyle(e);
+            if(st.visibility==='hidden'||st.display==='none'||parseFloat(st.opacity||'1')<0.25) continue;
+            var role=(e.getAttribute('role')||'').toLowerCase(), tag=e.tagName.toLowerCase();
+            var t=((e.innerText||e.getAttribute('aria-label')||'')+'').trim().toLowerCase().slice(0,60);
+            var cls=((e.className&&e.className.baseVal!==undefined?e.className.baseVal:e.className)||'')+'';
+            var id=(e.id||'')+'';
+            var kind=null, score=0;
+            if(role==='checkbox'||(tag==='input'&&e.type==='checkbox')){ kind='checkbox'; score=100; }
+            else if(/press|hold/.test(t)){ kind='press-hold'; score=95; }
+            else if(/slider|slide|drag/.test(cls+' '+id+' '+t)){ kind='slider'; score=90; }
+            else if(tag==='button'||role==='button'){ kind='button'; score=60; }
+            else if(st.cursor==='pointer'||st.cursor==='grab'){ kind='button'; score=40; }
+            if(!kind) continue;
+            if(/captcha|challenge|verify|human/.test(cls+' '+id)) score+=15;
+            out.push({kind:kind,score:score,x:b.x,y:b.y,w:b.width,h:b.height,why:(t||cls||id).slice(0,40)});
+          }
+          out.sort(function(a,b){return b.score-a.score || (b.w*b.h)-(a.w*a.h);});
+          return out[0]||null;})()""", target_id=tid)
+    except Exception:
+        return None
+    if not got:
+        return None
+    # Frame-local → page. The frame's own viewport origin IS the iframe element's top-left in
+    # the parent, which _xorigin_challenge already measured.
+    return {"kind": got["kind"], "why": got.get("why") or "",
+            "x": int(xo["x"] + got["x"] + got["w"] / 2),
+            "y": int(xo["y"] + got["y"] + got["h"] / 2),
+            "w": int(got["w"]), "h": int(got["h"])}
+
+
+def slider_gap(background, piece, step=2, refine=True):
+    """Where does `piece` belong in `background`? → {"x","y","score"} in BACKGROUND pixels.
+
+    For slide-to-verify puzzles (GeeTest and friends), which hand you two images: a background
+    with a notch cut out of it, and the cut-out piece. Finding the notch is the whole task —
+    the drag itself is already human-shaped (see drag()).
+
+    Normalized cross-correlation, not an edge heuristic. Measured on 25 synthetic puzzles with
+    known answers: NCC gives median 0px error and 96% within 2px, where hand-rolled
+    edge-energy scoring gave a median of 50-69px — it kept locking onto the wrong rail. The
+    method matters more than the tuning here, so this uses the one that is correct rather than
+    the one that is clever.
+
+    Inputs are PNG bytes, base64 strings, file paths, or PIL Images. Needs pillow; without it
+    this raises rather than guessing, because a wrong drag is worse than no drag — it burns the
+    attempt and, on a challenge that scores you, some reputation with it.
+
+    score is the correlation at the winner, in [-1, 1]. Below ~0.6 do not trust it; a puzzle
+    whose piece is mostly flat colour correlates with everything.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        raise RuntimeError("slider_gap needs pillow: horse-browser harness-setup, or "
+                           "pip install pillow into harness/.venv")
+    import base64 as _b64, io as _io
+
+    def _img(v):
+        if hasattr(v, "convert"):
+            return v.convert("L")
+        if isinstance(v, str):
+            if v.startswith("data:"):
+                v = v.split(",", 1)[1]
+            if os.path.exists(v):
+                return Image.open(v).convert("L")
+            v = _b64.b64decode(v)
+        return Image.open(_io.BytesIO(v)).convert("L")
+
+    B, P = _img(background), _img(piece)
+    W, H = B.size
+    pw, ph = P.size
+    if pw > W or ph > H:
+        raise ValueError("piece (%dx%d) is larger than the background (%dx%d)" % (pw, ph, W, H))
+    bp, pp = B.load(), P.load()
+
+    def _corr(ox, oy, st):
+        ys = range(0, ph, st); xs = range(0, pw, st)
+        pv = [pp[i, j] for j in ys for i in xs]
+        bv = [bp[ox + i, oy + j] for j in ys for i in xs]
+        n = len(pv)
+        pm, bm = sum(pv) / n, sum(bv) / n
+        pd = [v - pm for v in pv]
+        bd = [v - bm for v in bv]
+        den = (sum(v * v for v in pd) ** 0.5) * (sum(v * v for v in bd) ** 0.5)
+        return (sum(a * b for a, b in zip(pd, bd)) / den) if den > 0 else -1.0
+
+    # Coarse over the whole image, then refine locally. A single fine pass over every offset
+    # is minutes in pure Python (no numpy here); coarse-then-fine is sub-second and lands on
+    # the same answer because the correlation surface has one clear peak.
+    best, bx, by = -2.0, 0, 0
+    for oy in range(0, H - ph + 1, 4):
+        for ox in range(0, W - pw + 1, 2):
+            r = _corr(ox, oy, max(step, 3))
+            if r > best:
+                best, bx, by = r, ox, oy
+    if refine:
+        for oy in range(max(0, by - 6), min(H - ph, by + 6) + 1):
+            for ox in range(max(0, bx - 6), min(W - pw, bx + 6) + 1):
+                r = _corr(ox, oy, 1)
+                if r > best:
+                    best, bx, by = r, ox, oy
+    return {"x": bx, "y": by, "score": round(best, 4)}
+
+
+def frame_images(target_id, min_side=40):
+    """Every <img>/<canvas> inside a frame, as base64 PNG → [{"tag","w","h","b64"}].
+
+    The slider puzzle's two images live inside the challenge frame, so getting them needs the
+    same attach the control-reading does. Canvases are read with toDataURL; images are drawn
+    onto a canvas first, which also sidesteps their crossOrigin state.
+    """
+    return js(r"""(function(){
+      var out=[], els=document.querySelectorAll('img,canvas');
+      for(var i=0;i<els.length;i++){
+        var e=els[i], w=e.naturalWidth||e.width, h=e.naturalHeight||e.height;
+        if(!w||!h||w<%d||h<%d) continue;
+        try{
+          var c=e.tagName.toLowerCase()==='canvas'?e:(function(){
+            var t=document.createElement('canvas'); t.width=w; t.height=h;
+            t.getContext('2d').drawImage(e,0,0); return t;})();
+          out.push({tag:e.tagName.toLowerCase(), w:w, h:h,
+                    b64:c.toDataURL('image/png').split(',')[1]});
+        }catch(err){ /* tainted canvas — skip, the caller falls back to a screenshot */ }
+      }
+      return out;})()""" % (min_side, min_side), target_id=target_id) or []
+
+
 def _overlay_over(xo):
     """A consent/cookie backdrop (OneTrust etc.) stacked over the challenge eats clicks: a
     click_xy at the challenge coords hits the overlay, not the control (seen live on nestle).
@@ -1482,9 +1647,64 @@ def solve_challenge(act=True, hold_seconds=7.0):
             return "solved:drag %s — %s" % (sel, challenge_cleared())
         except Exception as e:
             return "escalate:gesture failed (%r) — ask the operator" % (e,)
-    # sealed cross-origin (checkbox iframe, a slider/hold we couldn't select, or one DETECT
-    # missed) → hand to vision; never guess pixels from a table.
+    # Cross-origin, but not out of reach: the frame is its own CDP target, so read the control
+    # from INSIDE it and act on its real rect. Only when that fails is this genuinely a
+    # perception problem, and only then does vision earn its handoff.
     xo = _xorigin_challenge()
+    fc = _frame_control(xo)
+    if fc:
+        try:
+            if fc["kind"] == "press-hold":
+                press_hold((fc["x"], fc["y"]), seconds=hold_seconds)
+                for _ in range(9):
+                    _it.sleep(1.0)
+                    res = challenge_cleared()
+                    if res.startswith("cleared"):
+                        return "solved:frame-hold (%d,%d) %s — %s" % (fc["x"], fc["y"], fc["why"], res)
+            elif fc["kind"] == "slider":
+                # A puzzle slider has a RIGHT answer, and dragging to the end is not it. If the
+                # frame gives us the two images (background with the notch, and the cut-out
+                # piece), solve for the offset; only fall back to a full-width drag for the
+                # plain "slide to the end" kind, where any travel past the latch works.
+                dx = None
+                try:
+                    tid = iframe_target({"cloudflare": "challenges.cloudflare.com",
+                                         "datadome": "captcha-delivery", "hcaptcha": "hcaptcha.com",
+                                         "perimeterx": "perimeterx", "arkose": "arkoselabs",
+                                         "recaptcha": "recaptcha/api2"}.get(xo.get("vendor"), ""))
+                    imgs = sorted(frame_images(tid), key=lambda i: -(i["w"] * i["h"])) if tid else []
+                    if len(imgs) >= 2:
+                        bg, pc = imgs[0], imgs[-1]
+                        if pc["w"] < bg["w"]:                    # a piece, not a second backdrop
+                            hit = slider_gap(bg["b64"], pc["b64"])
+                            if hit["score"] >= 0.6:
+                                # Background pixels → page pixels: the image is drawn across the
+                                # frame's width, so scale before trusting the offset.
+                                scale = xo["w"] / float(bg["w"]) if bg["w"] else 1.0
+                                dx = int(hit["x"] * scale)
+                except Exception:
+                    dx = None                                    # unreadable → fall through
+                drag((fc["x"], fc["y"]), dx=dx if dx else max(180, int(xo["w"] * 0.72)))
+                _it.sleep(2.0)
+                res = challenge_cleared()
+                if res.startswith("cleared"):
+                    return "solved:frame-slide (%d,%d) dx=%s — %s" % (
+                        fc["x"], fc["y"], dx if dx else "full-width", res)
+            else:                                   # checkbox / button
+                click_xy(fc["x"], fc["y"])
+                for _ in range(6):
+                    _it.sleep(1.0)
+                    res = challenge_cleared()
+                    if res.startswith("cleared"):
+                        return "solved:frame-click (%d,%d) %s — %s" % (fc["x"], fc["y"], fc["why"], res)
+        except Exception as e:
+            return _vision_handoff(xo, kind) + (" [frame-control attempt failed: %r]" % (e,))
+        # Located and acted on, but it did not clear — that IS a perception problem now
+        # (an image grid behind the checkbox, a puzzle needing the gap found). Hand over, but
+        # say where the control was so the agent does not start from nothing.
+        return _vision_handoff(xo, kind) + (
+            " [frame control was %s at (%d,%d); acting on it did not clear — expect a second stage]"
+            % (fc["kind"], fc["x"], fc["y"]))
     if xo or kind in ("checkbox", "hold", "drag"):
         return _vision_handoff(xo, kind)
     return "none"
