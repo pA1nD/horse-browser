@@ -135,6 +135,31 @@ say() { if [ -n "$PASSTHROUGH" ]; then echo "$@" >&2; else echo "$@"; fi; }
 
 cdp_up() { curl -sf "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
 
+# profile_pids: the PIDs of browsers holding $PROFILE.
+#
+# Chrome's own SingletonLock is the authority — a symlink named "<host>-<pid>" pointing at
+# the process that owns the user-data-dir. It is the very lock that makes a second `open -n`
+# defer, and the one that decides whether a Preferences seed written now survives the exit.
+# Ask it first: one readlink beats scanning the whole process table, and it cannot be fooled
+# by an unrelated command line that merely MENTIONS the profile path — which the old scan
+# could, and those false hits end in `kill -9` on an innocent process.
+#
+# The lock names one pid and the pid may have been recycled since, so confirm it really is a
+# browser on this profile before trusting it. No usable lock (crashed exit, a browser that
+# never wrote one) → fall back to the scan.
+profile_pids() {
+  local link pid
+  link=$(readlink "$PROFILE/SingletonLock" 2>/dev/null) || true
+  pid=${link##*-}
+  if [ -n "$pid" ] && [ -z "${pid//[0-9]/}" ] && kill -0 "$pid" 2>/dev/null \
+     && ps -ww -o command= -p "$pid" 2>/dev/null | grep -qF -- "--user-data-dir=$PROFILE"; then
+    printf '%s\n' "$pid"
+    return 0
+  fi
+  ps -ww -o pid= -o command= -ax | grep -F -- "--user-data-dir=$PROFILE" \
+    | grep -v -- "--type=" | grep -v grep | awk '{print $1}' || true
+}
+
 # require_macos: the launcher OWNS a browser, and every mechanism it owns one with is a macOS
 # mechanism — focus-free launch via `open -g -n`, the GPU-wedge heal, CGDisplayIsAsleep, the
 # lock's stat(1) flags. package.json gates npm to darwin, but a --force install (or a copied
@@ -456,8 +481,7 @@ PY
 
   # 2. quit THIS profile's browser (graceful, then force) and wait for it to exit
   local bpids gone p
-  bpids=$(ps -ww -o pid,command -ax | grep -F -- "--user-data-dir=$PROFILE" \
-            | grep -v -- "--type=" | grep -v grep | awk '{print $1}') || true
+  bpids=$(profile_pids) || true
   if [ -n "$bpids" ]; then
     # shellcheck disable=SC2086
     kill $bpids 2>/dev/null || true
@@ -1110,8 +1134,7 @@ launch_browser() {
   # and exit. So: wait for lingering processes (they may be mid-shutdown), then
   # hard-kill what remains.
   local _lpids _p _gone
-  _lpids=$(ps -ww -o pid= -o command= -ax | grep -F -- "--user-data-dir=$PROFILE" \
-             | grep -v -- "--type=" | grep -v grep | awk '{print $1}') || true
+  _lpids=$(profile_pids) || true
   if [ -n "$_lpids" ]; then
     say "horse-browser: previous browser process still exiting — waiting…"
     for _ in $(seq 1 30); do
