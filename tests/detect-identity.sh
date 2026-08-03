@@ -16,7 +16,7 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 PASS=0; FAIL=0
-WORK="$(mktemp -d -t hb-identity)"
+WORK="$(mktemp -d -t hb-identity.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 say()  { printf '%s\n' "$*"; }
 pass() { PASS=$((PASS+1)); say "  ✓ $1"; }

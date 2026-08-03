@@ -22,7 +22,7 @@ say()  { printf '%s\n' "$*"; }
 pass() { PASS=$((PASS+1)); say "  ✓ $1"; }
 fail() { FAIL=$((FAIL+1)); say "  ✗ $1${2:+ — $2}"; }
 
-WORK="$(mktemp -d -t hb-lanehook)"
+WORK="$(mktemp -d -t hb-lanehook.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 
 # cmds <file> <event> — the hook commands wired for an event, one per line

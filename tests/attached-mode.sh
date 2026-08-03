@@ -33,7 +33,7 @@ BIN="$(sed -n 's/^BROWSER_BIN=//p' "$HOME/.config/horse-browser/config" 2>/dev/n
 [ -x "$BIN" ] || { say "FATAL: no Chrome for Testing binary (run: horse-browser update)"; exit 1; }
 
 PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
-WORK="$(mktemp -d -t hb-attached)"
+WORK="$(mktemp -d -t hb-attached.XXXXXX)"
 SESS="attached-$$-$RANDOM"
 BU="hb-${SESS##*-}"
 REG="$HOME/.config/horse-browser/tabs/$BU"

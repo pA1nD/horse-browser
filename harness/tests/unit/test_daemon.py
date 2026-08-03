@@ -376,11 +376,17 @@ def test_activate_target_falls_back_to_native_without_extension():
     assert ("Target.activateTarget", {"targetId": "PAGE1"}, None) in d.cdp.calls
 
 
-def _scripted_for_attach(targets, monkeypatch, bound=None, label="", tracked=()):
+def _scripted_for_attach(targets, monkeypatch, bound=None, label="", tracked=(), claimed=None):
     monkeypatch.setattr(daemon, "_bound_target", lambda: bound)
     monkeypatch.setattr(daemon, "_session_label", lambda: label)
     monkeypatch.setattr(daemon, "_tracked_tabs", lambda: list(tracked))
     monkeypatch.setattr(daemon, "_remember_target", lambda tid: remembered.append(tid))
+    # attach_first_page's mint path calls _track_target directly. Unpatched, that writes the
+    # DEVELOPER's ~/.config/horse-browser/tabs/default — a real registry the reaper then acts
+    # on. Caught by running the suite on a clean machine, where the junk was suddenly visible.
+    if claimed is None:
+        monkeypatch.setattr(daemon, "_track_target", lambda tid: None)
+        monkeypatch.setattr(daemon, "_all_tracked", set)
     remembered.clear()
     d = daemon.Daemon()
     created = {"n": 0}
@@ -483,7 +489,7 @@ def test_attach_adopts_the_new_tab_page_instead_of_minting(tmp_path, monkeypatch
     ntp = {"targetId": "NTP", "type": "page", "url": "chrome://newtab/"}
     _registry(tmp_path, monkeypatch, [])
     d, created = _scripted_for_attach([ntp, _SW_TARGETS["targetInfos"][1]],
-                                      monkeypatch, bound=None, label="sess-1")
+                                      monkeypatch, bound=None, label="sess-1", claimed=True)
 
     pick = asyncio.run(d.attach_first_page())
 
@@ -499,7 +505,7 @@ def test_attach_never_adopts_a_new_tab_page_another_session_claimed(tmp_path, mo
     _registry(tmp_path, monkeypatch, [])
     (tmp_path / "neighbour").write_text(json.dumps(["NTP"]))     # another session owns it
     d, created = _scripted_for_attach([ntp, _SW_TARGETS["targetInfos"][1]],
-                                      monkeypatch, bound=None, label="sess-1")
+                                      monkeypatch, bound=None, label="sess-1", claimed=True)
 
     pick = asyncio.run(d.attach_first_page())
 
