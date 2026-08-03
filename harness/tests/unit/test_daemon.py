@@ -499,6 +499,34 @@ def test_attach_adopts_the_new_tab_page_instead_of_minting(tmp_path, monkeypatch
     assert any("groupTab" in e and "NTP" in e for e in evals), evals   # painted into our group
 
 
+def test_adopted_new_tab_page_is_blanked(tmp_path, monkeypatch):
+    """A New Tab Page is not inert — it keeps fetching (one-google-bar and friends). Adopting
+    one without blanking hands the session a tab busier than the about:blank it replaced,
+    which showed up as extra flake in the multi-instance suite."""
+    ntp = {"targetId": "NTP", "type": "page", "url": "chrome://newtab/"}
+    _registry(tmp_path, monkeypatch, [])
+    d, _created = _scripted_for_attach([ntp, _SW_TARGETS["targetInfos"][1]],
+                                       monkeypatch, bound=None, label="sess-1", claimed=True)
+
+    asyncio.run(d.attach_first_page())
+
+    navs = [p for (m, p, _s) in d.cdp.calls if m == "Page.navigate"]
+    assert navs == [{"url": "about:blank"}], navs
+
+
+def test_minted_tab_is_not_navigated(tmp_path, monkeypatch):
+    """The mint path already creates about:blank — a second navigation would be a wasted
+    round trip on the hot startup path."""
+    _registry(tmp_path, monkeypatch, [])
+    d, created = _scripted_for_attach([_FOREIGN_PAGE, _SW_TARGETS["targetInfos"][1]],
+                                      monkeypatch, bound="GONE", label="sess-1", claimed=True)
+
+    asyncio.run(d.attach_first_page())
+
+    assert created["n"] == 1
+    assert [m for (m, _p, _s) in d.cdp.calls if m == "Page.navigate"] == []
+
+
 def test_attach_never_adopts_a_new_tab_page_another_session_claimed(tmp_path, monkeypatch):
     """Adoption must not take a tab someone else is driving — the registry is the check."""
     ntp = {"targetId": "NTP", "type": "page", "url": "chrome://new-tab-page/"}

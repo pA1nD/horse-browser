@@ -248,6 +248,7 @@ class Daemon:
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         label = _session_label()
         pick = None
+        adopted = None          # set only when we take over the browser's New Tab Page
         bound = _bound_target()
         if bound:
             pick = next((t for t in targets if t["targetId"] == bound and t.get("type") == "page"), None)
@@ -274,8 +275,9 @@ class Daemon:
             claimed = _all_tracked()
             ntp = next((t for t in targets
                         if is_reusable_new_tab_page(t) and t["targetId"] not in claimed), None)
+
             if ntp:
-                tid = ntp["targetId"]
+                tid = adopted = ntp["targetId"]
                 log(f"adopted the browser's New Tab Page ({tid}) instead of minting")
             else:
                 tid = (await self.cdp.send_raw(
@@ -287,11 +289,22 @@ class Daemon:
                 status, err = await self._ext_eval(f"self.groupTab({json.dumps(tid)}, {json.dumps(label)})")
                 if status != "ok":
                     log(f"groupTab({tid}) failed: {err}")
-            pick = {"targetId": tid, "url": ntp["url"] if ntp else "about:blank", "type": "page"}
+            pick = {"targetId": tid, "url": "about:blank", "type": "page"}
         self.session = (await self.cdp.send_raw(
             "Target.attachToTarget", {"targetId": pick["targetId"], "flatten": True}
         ))["sessionId"]
         self.target_id = pick["targetId"]
+        if adopted:
+            # Blank the adopted tab. A New Tab Page is not inert — it keeps fetching
+            # (chrome-untrusted://new-tab-page/one-google-bar and friends), so adopting one
+            # and leaving it there hands the session a tab that is busier than the
+            # about:blank it replaced. Navigate so adoption is behaviourally identical to
+            # minting, minus the extra tab.
+            try:
+                await self.cdp.send_raw("Page.navigate", {"url": "about:blank"},
+                                        session_id=self.session)
+            except Exception as e:
+                log(f"blanking adopted tab {adopted}: {e}")
         _remember_target(self.target_id)
         log(f"attached {pick['targetId']} ({pick.get('url','')[:80]}) session={self.session}")
         await self._enable_default_domains(self.session)
