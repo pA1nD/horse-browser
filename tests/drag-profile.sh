@@ -156,7 +156,14 @@ chk "the pointer approaches the handle before pressing"  "v >= 4"               
 chk "the drag takes a hand's time, not a loop's"         "all(0.45 <= d <= 3.0 for d in v)" dur
 chk "it overshoots, then corrects back onto the target"  "sum(1 for o in v if o >= 1.5) >= 4" overshoot
 chk "samples are not metronomic"                         "min(v) >= 0.12"            dt_cv
-chk "it accelerates faster than it decelerates"          "sum(1 for p in v if p <= 0.47) >= 5" half_at
+# Judged on the DISTRIBUTION, not run by run. This is a shape property measured through
+# randomised sleeps and a browser under load — with the whole suite running, individual drags
+# scatter to 0.51 while the set still centres near 0.39, and symmetric easing (the tell being
+# tested for) sits at 0.50 every time. A per-run threshold turns that scatter into a flaky
+# failure and teaches nothing; the median moves only if the easing actually changes. Same
+# reasoning as harness/tests/unit/test_slider.py, which scores a matcher the same way.
+chk "it accelerates faster than it decelerates"          "sorted(v)[len(v)//2] <= 0.45" half_at
+chk "no run decelerates first"                           "max(v) <= 0.62"            half_at
 chk "it releases on the target"                          "all(e <= 2.0 for e in v)"  err_x
 chk "it holds briefly before letting go"                 "all(h >= 40 for h in v)"   hold
 chk "the pointer never stalls in place"                  "v <= 2"                    max_run
