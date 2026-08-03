@@ -1426,12 +1426,34 @@ def _frame_control(xo):
             else if(st.cursor==='pointer'||st.cursor==='grab'){ kind='button'; score=40; }
             if(!kind) continue;
             if(/captcha|challenge|verify|human/.test(cls+' '+id)) score+=15;
+            // A block page's only control is "contact support" — reachable, clickable, and
+            // completely useless. Measured on a live DataDome hard block: it was the single
+            // interactive element in the frame, so it won by default and the solver went off
+            // to click it. Push it below everything; if it is the best we have, there is no
+            // challenge here to solve.
+            if(/support|contact|help|customer|servicio|kundendienst|assistance/.test(
+                 t+' '+cls+' '+id)) score-=200;
             out.push({kind:kind,score:score,x:b.x,y:b.y,w:b.width,h:b.height,why:(t||cls||id).slice(0,40)});
           }
           out.sort(function(a,b){return b.score-a.score || (b.w*b.h)-(a.w*a.h);});
-          return out[0]||null;})()""", target_id=tid)
+          // Is this a BLOCK rather than a challenge? Vendors say so plainly in the body —
+          // DataDome sets dd-response-page--hard-block and prints the offending IP. There is
+          // nothing to solve on such a page, and sending the agent to look at a screenshot of
+          // one wastes a round trip and misreports the situation: the address is refused, and
+          // that is an operator fact, not a perception problem.
+          var b=document.body, bc=((b&&b.className)||'')+' '+((b&&b.getAttribute('data-dd-response'))||'');
+          var bt=((b&&b.innerText)||'').toLowerCase();
+          var blocked = /hard-block|blocked|access denied/.test(bc)
+                     || /(^|\W)(access denied|acceso denegado|uso indebido|you have been blocked|zugriff verweigert)/.test(bt);
+          return {best: out[0]||null, blocked: !!blocked};})()""", target_id=tid)
     except Exception:
         return None
+    if not got:
+        return None
+    if got.get("blocked") and not (got.get("best") or {}).get("kind") in ("checkbox", "press-hold", "slider"):
+        # A block page with no solvable control. Say so; do not invent a gesture for it.
+        return {"kind": "blocked", "why": "vendor block page", "x": 0, "y": 0, "w": 0, "h": 0}
+    got = got.get("best")
     if not got:
         return None
     # Frame-local → page. The frame's own viewport origin IS the iframe element's top-left in
@@ -1652,6 +1674,13 @@ def solve_challenge(act=True, hold_seconds=7.0):
     # perception problem, and only then does vision earn its handoff.
     xo = _xorigin_challenge()
     fc = _frame_control(xo)
+    if fc and fc["kind"] == "blocked":
+        # Not solvable by anyone — the address is refused, not the browser doubted. Saying
+        # "vision:" here would send the agent to squint at a dead end and would tell the
+        # operator the wrong thing about why the site did not open.
+        return ("blocked:%s — this is a block page, not a challenge: no solvable control in the "
+                "frame. Nothing to solve; the egress address is refused here. Try another exit "
+                "or leave this site alone." % xo.get("vendor", "vendor"))
     if fc:
         try:
             if fc["kind"] == "press-hold":

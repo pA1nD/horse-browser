@@ -43,22 +43,33 @@ PARENT = """<!doctype html><meta charset=utf-8><title>fixture parent</title>
 # One control, at coordinates we chose, inside a page on a different site. Everything else on
 # the page is decoy: bigger boxes, other cursors, similar class names — a solver that simply
 # takes "the biggest element" or "the first div" gets them and fails.
+# Class names taken from the REAL vendors, not invented. The first version of this fixture
+# used names this repo made up, so the scorer was only ever tested against its own assumptions
+# — and against a live DataDome page it picked the "contact support" link, the one control on a
+# hard-block page. A fixture that agrees with you teaches you nothing.
 CONTROLS = {
-    "checkbox":   '<div role="checkbox" aria-label="I am human" class="captcha-cb"',
-    "press-hold": '<div class="px-captcha-btn" ',
-    "slider":     '<div class="slider-handle" ',
+    "checkbox":   '<div role="checkbox" aria-label="I am human" class="recaptcha-checkbox"',
+    "press-hold": '<div id="px-captcha" ',
+    "slider":     '<div class="slider" data-dd-captcha-slider ',
     "button":     '<button class="verify-btn" ',
+    # a hard block: text, an IP, and support — no solvable control anywhere
+    "blocked":    '<button class="captcha__contact_support__submit" ',
 }
-LABEL = {"checkbox": "", "press-hold": "Press &amp; Hold", "slider": "", "button": "Verify"}
+LABEL = {"checkbox": "", "press-hold": "Press &amp; Hold", "slider": "", "button": "Verify",
+         "blocked": "Contact customer service"}
+BODY_ATTR = ('class="dd-response-page--hard-block" data-dd-response="hard-block"'
+             if KIND == "blocked" else "")
+BLOCK_TEXT = ("<p>Se ha detectado un uso indebido</p><p>IP: 203.0.113.9</p>"
+              if KIND == "blocked" else "")
 
 FRAME = """<!doctype html><meta charset=utf-8><title>challenge</title>
-<body style="margin:0;font:14px sans-serif">
+<body %s style="margin:0;font:14px sans-serif">%s
   <div style="position:absolute;left:5px;top:5px;width:390px;height:60px;background:#eee">decoy banner, bigger than the control</div>
   <div style="position:absolute;left:20px;top:240px;width:360px;height:40px;background:#f6f6f6">decoy footer</div>
   <span style="position:absolute;left:10px;top:80px;cursor:pointer">decoy pointer text</span>
   %s style="position:absolute;left:%dpx;top:%dpx;width:%dpx;height:%dpx;background:#4a90d9;cursor:pointer">%s</%s>
-</body>""" % (CONTROLS[KIND], CX, CY, CW, CH, LABEL[KIND],
-              "button" if KIND == "button" else "div")
+</body>""" % (BODY_ATTR, BLOCK_TEXT, CONTROLS[KIND], CX, CY, CW, CH, LABEL[KIND],
+              "button" if KIND in ("button", "blocked") else "div")
 
 
 def serve(port, body_for):

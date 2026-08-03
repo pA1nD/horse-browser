@@ -115,6 +115,34 @@ if fc:
 echo "[1] each control kind, at a random position"
 for k in checkbox press-hold slider button; do one "$k" "$k"; done
 
+echo "[3] a BLOCK page is not a challenge"
+# A vendor hard block has no solvable control — its only button is "contact support". The
+# first version of this solver clicked it, because on a live DataDome block it was the single
+# interactive element in the frame and therefore won by default. Reporting "vision:" there is
+# worse than useless: it sends the agent to squint at a dead end and tells the operator the
+# wrong thing about why the site did not open.
+one_blocked() {
+  local cx=$(( (RANDOM % 200) + 40 )) cy=$(( (RANDOM % 120) + 100 ))
+  local p1 p2; p1="$(port)"; p2="$(port)"
+  python3 "$HERE/lib/oopif-fixture.py" "$p1" "$p2" blocked "$cx" "$cy" 240 22 > "$W/fxb.json" &
+  FIXPIDS="$FIXPIDS $!"
+  for _ in $(seq 1 30); do [ -s "$W/fxb.json" ] && break; sleep 0.2; done
+  local out
+  out="$(hb "
+import time
+from horse_harness.helpers import _xorigin_challenge, _frame_control
+goto_url('http://parent.test:$p1/'); wait_for_load(); time.sleep(1.2)
+fc = _frame_control(_xorigin_challenge())
+print('FCK', (fc or {}).get('kind'))
+print('SC', solve_challenge(False))
+")"
+  local k; k="$(sed -n 's/^FCK //p' <<<"$out")"
+  [ "$k" = "blocked" ] \
+    && pass "a hard-block page reports kind=blocked, not a clickable decoy" \
+    || fail "hard block detected" "reported kind='$k' — it would have clicked contact-support"
+}
+one_blocked
+
 echo "[2] repeated with fresh random positions (a hardcoded answer cannot survive this)"
 for i in 1 2 3; do one checkbox "checkbox run $i"; done
 
