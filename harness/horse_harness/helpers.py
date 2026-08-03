@@ -1480,41 +1480,29 @@ def _xorigin_challenge():
       return null;})()""")
 
 
-def _frame_control(xo):
-    """The actual control INSIDE a cross-origin challenge frame, in PAGE coordinates.
+_SAME_ORIGIN_DOC = """(function(frag){
+  var fr=[].slice.call(document.querySelectorAll('iframe'));
+  for(var i=0;i<fr.length;i++){
+    if((fr[i].src||'').indexOf(frag)<0) continue;
+    try { if(fr[i].contentDocument) return fr[i].contentDocument; } catch(e) {}
+  }
+  return null;})(%s)"""
 
-    The premise this replaces — "the DOM can't be read" — is false. A cross-origin iframe is
-    its own CDP target: iframe_target() attaches to it and js(..., target_id=) evaluates
-    inside it. Verified reading 29 nodes of a google.com reCAPTCHA frame from a page on
-    another domain. What was actually missing was using it.
 
-    Without this the solvers guess: the PerimeterX press-hold hardcodes
-    (0.486*innerWidth, 0.553*innerHeight) of the frame, which is right until a layout changes.
-    Reading the control's own rect is exact, and it also tells us WHICH control it is instead
-    of inferring from the vendor name.
-
-    Returns {"kind","x","y","w","h","why"} in page coords, or None when the frame genuinely
-    cannot be read (sandboxed, or nothing control-shaped inside) — vision still covers that.
-    """
-    if not xo:
-        return None
-    # Match the frame by the same URL fragment the vendor was recognised by, so we attach to
-    # the frame we measured rather than the first challenge-ish frame on the page.
-    frag = {"cloudflare": "challenges.cloudflare.com", "datadome": "captcha-delivery",
-            "hcaptcha": "hcaptcha.com", "perimeterx": "perimeterx", "arkose": "arkoselabs",
-            "recaptcha": "recaptcha/api2"}.get(xo.get("vendor"))
-    if not frag:
-        return None
-    tid = iframe_target(frag)
-    if not tid:
-        return None                      # e.g. a CF interstitial widget with no own target
-    # Generic, not a per-vendor selector table: score every visibly interactive element and
-    # take the best. A table would need editing every time a vendor reskins; shape and role
-    # are what actually identify a control, and they are what the vendor cannot change without
-    # changing the control.
+def _same_origin_frame(frag):
+    """Can this challenge frame's document be read straight from the parent?"""
     try:
-        got = js(r"""(function(){
-          var out=[], boxes=[], all=document.querySelectorAll('*');
+        return bool(_eval("!!" + (_SAME_ORIGIN_DOC % json.dumps(frag))))
+    except Exception:
+        return False
+
+
+# The scan, as a function OF the document to scan. Two documents can hold a challenge and they
+# must score identically: an out-of-process frame's own document (reached by attaching to its
+# target), and a same-origin frame's document reached straight from the parent. Sharing one body
+# is the point — a second copy would drift, and the drift would only ever show up live.
+_CONTROL_SCAN = r"""(function(doc){
+          var out=[], boxes=[], all=doc.querySelectorAll('*');
           for(var i=0;i<all.length && i<4000;i++){
             var e=all[i], b=e.getBoundingClientRect();
             if(b.width<12||b.height<12||b.width>900||b.height>400) continue;
@@ -1579,11 +1567,56 @@ def _frame_control(xo):
           // nothing to solve on such a page, and sending the agent to look at a screenshot of
           // one wastes a round trip and misreports the situation: the address is refused, and
           // that is an operator fact, not a perception problem.
-          var b=document.body, bc=((b&&b.className)||'')+' '+((b&&b.getAttribute('data-dd-response'))||'');
+          var b=doc.body, bc=((b&&b.className)||'')+' '+((b&&b.getAttribute('data-dd-response'))||'');
           var bt=((b&&b.innerText)||'').toLowerCase();
           var blocked = /hard-block|blocked|access denied/.test(bc)
                      || /(^|\W)(access denied|acceso denegado|uso indebido|you have been blocked|zugriff verweigert)/.test(bt);
-          return {best: out[0]||null, blocked: !!blocked};})()""", target_id=tid)
+          return {best: out[0]||null, blocked: !!blocked};})"""
+
+
+def _frame_control(xo):
+    """The actual control INSIDE a cross-origin challenge frame, in PAGE coordinates.
+
+    The premise this replaces — "the DOM can't be read" — is false. A cross-origin iframe is
+    its own CDP target: iframe_target() attaches to it and js(..., target_id=) evaluates
+    inside it. Verified reading 29 nodes of a google.com reCAPTCHA frame from a page on
+    another domain. What was actually missing was using it.
+
+    Without this the solvers guess: the PerimeterX press-hold hardcodes
+    (0.486*innerWidth, 0.553*innerHeight) of the frame, which is right until a layout changes.
+    Reading the control's own rect is exact, and it also tells us WHICH control it is instead
+    of inferring from the vendor name.
+
+    Returns {"kind","x","y","w","h","why"} in page coords, or None when the frame genuinely
+    cannot be read (sandboxed, or nothing control-shaped inside) — vision still covers that.
+    """
+    if not xo:
+        return None
+    # Match the frame by the same URL fragment the vendor was recognised by, so we attach to
+    # the frame we measured rather than the first challenge-ish frame on the page.
+    frag = {"cloudflare": "challenges.cloudflare.com", "datadome": "captcha-delivery",
+            "hcaptcha": "hcaptcha.com", "perimeterx": "perimeterx", "arkose": "arkoselabs",
+            "recaptcha": "recaptcha/api2"}.get(xo.get("vendor"))
+    if not frag:
+        return None
+    tid = iframe_target(frag)
+    if not tid and not _same_origin_frame(frag):
+        # No target, and not readable from here either. Two different reasons a challenge frame
+        # has no target of its own, and only one of them is hopeless: a Cloudflare interstitial
+        # widget with no src, and — the case this used to give up on — a challenge served from
+        # the SAME site as the page hosting it. Site isolation keys on site, so google.com's
+        # reCAPTCHA inside a google.com page stays in the parent's process and never becomes a
+        # target; being same-ORIGIN its document is readable directly. Measured on Google's own
+        # reCAPTCHA demo, where this returned None and sent a perfectly readable checkbox to
+        # vision.
+        return None
+    # Generic, not a per-vendor selector table: score every visibly interactive element and
+    # take the best. A table would need editing every time a vendor reskins; shape and role
+    # are what actually identify a control, and they are what the vendor cannot change without
+    # changing the control.
+    try:
+        got = (js(_CONTROL_SCAN + "(document)", target_id=tid) if tid
+               else js(_CONTROL_SCAN + "(" + (_SAME_ORIGIN_DOC % json.dumps(frag)) + ")"))
     except Exception:
         return None
     if not got:
@@ -1900,13 +1933,31 @@ def solve_challenge(act=True, hold_seconds=7.0):
                         return "solved:frame-click (%d,%d) %s — %s" % (fc["x"], fc["y"], fc["why"], res)
         except Exception as e:
             return _vision_handoff(xo, kind) + (" [frame-control attempt failed: %r]" % (e,))
-        # Located and acted on, but it did not clear — that IS a perception problem now
-        # (an image grid behind the checkbox, a puzzle needing the gap found). Hand over, but
-        # say where the control was so the agent does not start from nothing.
-        return _vision_handoff(xo, kind) + (
-            " [frame control was %s at (%d,%d); acting on it did not clear — expect a second stage]"
-            % (fc["kind"], fc["x"], fc["y"]))
+        # Located and acted on, but it did not clear — that IS a perception problem now (an
+        # image grid behind the checkbox, a puzzle needing the gap found). Do NOT reuse the
+        # sealed-iframe brief here: it opens with "the DOM can't be read", which is false in
+        # exactly this branch — we just read it, and told the agent coordinates that came from
+        # reading it. An agent that is handed accurate coordinates under a claim they could not
+        # have been obtained has no reason to trust them.
+        shot = _vision_shot()
+        return ("vision:%s — the control WAS read from the frame: %s at (%d,%d)%s, and acting on "
+                "it did not clear the challenge. That is a second stage (an image grid behind the "
+                "checkbox, a puzzle whose gap must be found), and it needs perception, not another "
+                "gesture. Look at the screenshot%s, then act by coordinate; confirm with "
+                "challenge_cleared()."
+                % (xo.get("vendor", "challenge") if xo else kind, fc["kind"], fc["x"], fc["y"],
+                   " (%dx%d)" % (fc["w"], fc["h"]) if fc.get("w") else "",
+                   " " + shot if shot else ""))
     if xo or kind in ("checkbox", "hold", "drag"):
+        # Before sending anyone to look at a widget: is it already satisfied? A managed challenge
+        # (Turnstile, reCAPTCHA v3) can pass on its own within a second or two of load, leaving a
+        # token behind and a widget still on the page. Measured on Cloudflare's own demo, where
+        # this returned a vision brief for a challenge that had already issued a 21-char token.
+        # Escalating a solved challenge is worse than not solving one — it spends an agent's turn
+        # and reports the wrong thing about the page.
+        res = challenge_cleared()
+        if res.startswith("cleared"):
+            return "none:" + res
         return _vision_handoff(xo, kind)
     return "none"
 
