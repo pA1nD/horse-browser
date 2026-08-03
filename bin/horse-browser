@@ -1494,6 +1494,19 @@ PY
     # llvmpipe or SwiftShader whatever /dev/dri is passed through. Hardware GL is not available
     # to a headed browser on a headless host, and no flag combination changes that.
     args+=( --enable-unsafe-swiftshader )
+    # A container's /dev/shm defaults to 64 MB, and Chrome leans on shared memory hard for
+    # renderer transfers. Heavy pages then crash the renderer — measured: a fingerprinting
+    # page killed the CDP websocket outright on a 63 MB /dev/shm and rendered fine with this
+    # flag, on the same hardware. It is a WORKAROUND, not the fix: it moves Chrome's shared
+    # memory to /tmp, which is slower. The fix is --shm-size on the container, so this is
+    # applied only when /dev/shm is genuinely too small to say so.
+    local _shm
+    _shm=$(df -Pk /dev/shm 2>/dev/null | awk 'NR==2{print $2}')
+    if [ -n "${_shm:-}" ] && [ "$_shm" -lt 262144 ]; then    # < 256 MiB
+      say "horse-browser: /dev/shm is only $((_shm / 1024))MB — routing Chrome's shared memory to /tmp."
+      say "  Heavy pages crash renderers at this size. Give the container --shm-size=1g to remove the penalty."
+      args+=( --disable-dev-shm-usage )
+    fi
     # Slightly smaller than the 1080p screen ensure_display provides, so outerHeight >
     # innerHeight like any real window. Exactly screen-sized with no chrome offset is a tell.
     args+=( --window-size=1920,1040 )
