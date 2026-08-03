@@ -89,6 +89,22 @@ def cdp(method, session_id=None, **params):
     return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
 
 
+def _cdp_nowait(method, session_id=None, **params):
+    """Send a CDP command without waiting for the renderer's reply.
+
+    Only for INPUT during a gesture, where the reply carries nothing we read. The reply is not
+    free: it arrives after the renderer has handled the event, so on a page that repaints
+    expensively the wait becomes the gesture's speed. Measured on a live DataDome slider under
+    software rendering — ~400ms per move while its handle was tracking the pointer, against
+    ~16ms on the same page's empty background, which stretched a 1.5s drag to 27s. The shape of
+    the motion was right; its duration gave it away.
+
+    Not a general replacement for cdp(): without the round trip there is no backpressure and no
+    error, so anything whose result or failure matters must still wait.
+    """
+    return _send({"method": method, "params": params, "session_id": session_id, "nowait": True})
+
+
 def drain_events():  return _send({"meta": "drain_events"})["events"]
 
 
@@ -1226,7 +1242,7 @@ def _approach(x1, y1):
         e = _sstep(i / n)
         px = x0 + (x1 - x0) * e - (y1 - y0) / (dist or 1) * bow * _im.sin(_im.pi * e)
         py = y0 + (y1 - y0) * e + (x1 - x0) / (dist or 1) * bow * _im.sin(_im.pi * e)
-        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py)
+        _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py)
         _it.sleep(_ir.uniform(0.006, 0.018))
     # The final step already lands exactly on (x1,y1) — sin(pi) zeroes the bow — so sending it
     # again would put two identical samples back to back, which no hand produces.
@@ -1274,7 +1290,7 @@ def drag(target, to=None, dx=None, dy=0):
         wob = (1.0 - t) * 1.4                             # precision improves on approach
         px = x0 + (x1 + ovx - x0) * e + _ir.uniform(-wob, wob)
         py = y0 + (y1 + ovy - y0) * e + _ir.uniform(-wob, wob)
-        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py, buttons=1)
+        _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py, buttons=1)
         _it.sleep(_ir.uniform(0.004, 0.016))
         if i in hesitate:
             _it.sleep(_ir.uniform(0.04, 0.09))            # a glance at the target
@@ -1282,9 +1298,9 @@ def drag(target, to=None, dx=None, dy=0):
         n = _ir.randint(2, 3)
         for j in range(1, n + 1):
             k = j / (n + 1.0)                             # approaches the target, never lands on it
-            cdp("Input.dispatchMouseEvent", type="mouseMoved", buttons=1,
-                x=x1 + ovx * (1 - k) + _ir.uniform(-0.6, 0.6),
-                y=y1 + ovy * (1 - k) + _ir.uniform(-0.6, 0.6))
+            _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", buttons=1,
+                        x=x1 + ovx * (1 - k) + _ir.uniform(-0.6, 0.6),
+                        y=y1 + ovy * (1 - k) + _ir.uniform(-0.6, 0.6))
             _it.sleep(_ir.uniform(0.015, 0.04))
     cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x1, y=y1, buttons=1)
     _it.sleep(_ir.uniform(0.08, 0.22))                    # hold, then let go

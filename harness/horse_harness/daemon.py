@@ -656,6 +656,15 @@ class Daemon:
             raise RuntimeError(f"{len(failed)} of {len(ids)} tabs could not be closed")
         log(f"self-reap: closed {len(ids)} tab(s) for {label[-8:]}")
 
+    async def _send_detached(self, method, params, sid):
+        """Fire a CDP command whose reply nobody is waiting for. Swallows failures on purpose:
+        there is no caller left to raise to, and a dropped mousemove mid-gesture must not take
+        the daemon down with it."""
+        try:
+            await self.cdp.send_raw(method, params, session_id=sid)
+        except Exception as e:
+            log(f"detached {method} failed: {e}")
+
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
         # connect and issue CDP commands. expected_token() is None on POSIX so
@@ -751,6 +760,16 @@ class Daemon:
         # Browser-level Target.* calls must not use a session (stale or otherwise).
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
+        if req.get("nowait"):
+            # Send it and return; do not wait for the renderer to answer. For INPUT during a
+            # gesture the reply carries nothing we use, and waiting for it makes the gesture's
+            # duration a property of how expensive the page is to repaint. Measured on a live
+            # DataDome slider under software rendering: dragging its handle cost ~400ms per
+            # move because each one forced a layout and paint of the moving element, turning a
+            # 1.5s drag into 27s — and a 27-second slide is not a hand, however well shaped.
+            # Ordering is safe: one websocket, sends stay in order.
+            asyncio.create_task(self._send_detached(method, params, sid))
+            return {"result": {}}
         try:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
