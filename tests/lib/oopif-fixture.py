@@ -17,6 +17,10 @@ hostnames mapped with --host-resolver-rules produce a genuine OOPIF.
 
     python3 oopif-fixture.py <parent-port> <frame-port> <kind> <x> <y> <w> <h>
 
+Pass 0 for either port to have the OS choose one; the ports actually bound come back as
+parent_port/frame_port in the JSON on stdout. Prefer that to picking a port yourself — see
+_bind() for the race it avoids.
+
 kind: checkbox | press-hold | slider | button | blocked | live-slider
 
 "live-slider" is the only one that WORKS: a real slide-to-verify widget, driven by pointer
@@ -31,6 +35,33 @@ import sys, threading, http.server, json
 PARENT_PORT, FRAME_PORT, KIND, CX, CY, CW, CH = (
     int(sys.argv[1]), int(sys.argv[2]), sys.argv[3],
     int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7]))
+
+
+def _bind(port):
+    """Bind NOW, in the main thread, and hand back the socket with the port it really got.
+
+    Two bugs live where this used to be. The bind happened inside the serving thread, so a
+    failure killed that thread silently while main went on to print the fixture JSON — the
+    caller saw a ready fixture with nothing listening, Chrome got chrome-error://chromewebdata,
+    and every assertion after it was measured against a blank page. And the port came from a
+    caller that had bound port 0, read the number, and closed it: on a busy machine (a browser
+    per agent, a CDP websocket per session) the OS hands that same port to an outgoing
+    connection before this process can claim it.
+
+    Pass 0 to close both: the OS picks, and we never let go of the socket between picking and
+    serving, so there is no window to lose. A bind that does fail now raises here — a loud,
+    correct death before anything depends on it.
+    """
+    class _Unset(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+    srv = http.server.HTTPServer(("127.0.0.1", port), _Unset)
+    return srv, srv.server_address[1]
+
+
+# Bound before the page bodies below are built: the parent's HTML embeds the frame's real port.
+PARENT_SRV, PARENT_PORT = _bind(PARENT_PORT)
+FRAME_SRV, FRAME_PORT = _bind(FRAME_PORT)
 
 # The frame URL carries "captcha-delivery" on purpose: that is the fragment _xorigin_challenge
 # recognises as DataDome and the one _frame_control re-attaches by. Serving it at a neutral
@@ -132,7 +163,8 @@ else:
               "button" if KIND in ("button", "blocked") else "div")
 
 
-def serve(port, body_for):
+def serve(srv, body_for):
+    """Attach the real handler to an ALREADY-BOUND server and run it."""
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             b = body_for(self.path).encode()
@@ -143,15 +175,19 @@ def serve(port, body_for):
             self.wfile.write(b)
         def log_message(self, *a):
             pass
-    http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
+    srv.RequestHandlerClass = H
+    srv.serve_forever()
 
 
-threading.Thread(target=serve, args=(PARENT_PORT, lambda p: PARENT), daemon=True).start()
-threading.Thread(target=serve, args=(FRAME_PORT, lambda p: FRAME), daemon=True).start()
+threading.Thread(target=serve, args=(PARENT_SRV, lambda p: PARENT), daemon=True).start()
+threading.Thread(target=serve, args=(FRAME_SRV, lambda p: FRAME), daemon=True).start()
 
 # The answer, so the test never has to recompute it: page coords of the control's CENTRE.
+# parent_port/frame_port are the ports actually bound — the caller must use these rather
+# than whatever it asked for, which is the whole point of passing 0.
 print(json.dumps({
     "parent": "http://parent.test:%d/" % PARENT_PORT,
+    "parent_port": PARENT_PORT, "frame_port": FRAME_PORT,
     "frame_x": FRAME_X, "frame_y": FRAME_Y,
     "expect_x": FRAME_X + CX + CW // 2,
     "expect_y": FRAME_Y + CY + CH // 2,

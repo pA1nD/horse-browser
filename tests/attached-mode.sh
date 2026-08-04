@@ -162,6 +162,10 @@ http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
 REFL_PID=$!
 for _ in $(seq 1 20); do curl -sf "http://127.0.0.1:$REFL_PORT/" >/dev/null 2>&1 && break; sleep 0.2; done
+# Name it when the fixture never starts, rather than falling through and letting the realness
+# checks below read a Chrome error page and blame the mask.
+curl -sf -m 2 "http://127.0.0.1:$REFL_PORT/" >/dev/null 2>&1 \
+  || { fail "header reflector came up on :$REFL_PORT" "never answered"; kill $REFL_PID 2>/dev/null; }
 out="$(REFL_PORT="$REFL_PORT" hb '
 import json, os, re
 open_tab("http://127.0.0.1:" + os.environ["REFL_PORT"] + "/"); wait_for_load()

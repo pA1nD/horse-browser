@@ -26,6 +26,33 @@ pass() { PASS=$((PASS+1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL+1)); FAILED+=("$1"); echo "  ✗ $1${2:+ — $2}"; }
 port() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'; }
 
+# Start a fixture and PROVE it is serving before anything depends on it. Sets FX_PORT to the
+# parent port it actually bound; returns non-zero if it never came up.
+#
+# The fixture picks its own ports (0 0) and never lets go of the sockets between picking and
+# serving. Picking here instead — bind port 0, read the number, close it, hand it over — leaves
+# a window in which the OS can give that port to any outgoing connection, and on a busy machine
+# (a browser per agent, a CDP websocket per session) it does. The old code then had no way to
+# notice: the fixture bound inside its serving thread, so the failure killed the thread quietly
+# while the JSON still appeared, `[ -s fx.json ]` said "ready", and Chrome loaded
+# chrome-error://chromewebdata. Every assertion after that was measured against a blank page.
+start_fixture() { # start_fixture <jsonfile> <kind> <x> <y> <w> <h>
+  local out="$1"; shift
+  : > "$out"
+  python3 "$HERE/lib/oopif-fixture.py" 0 0 "$@" > "$out" &
+  FIXPIDS="$FIXPIDS $!"
+  for _ in $(seq 1 30); do [ -s "$out" ] && break; sleep 0.2; done
+  FX_PORT=$(python3 -c "import json;print(json.load(open('$out'))['parent_port'])" 2>/dev/null)
+  [ -n "$FX_PORT" ] || return 1
+  # The JSON is printed once the serving threads are started, not once they are accepting —
+  # so ask the socket itself rather than trusting the announcement.
+  for _ in $(seq 1 40); do
+    curl -sf -m 1 "http://127.0.0.1:$FX_PORT/" >/dev/null 2>&1 && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
 echo "horse-browser challenge-frame — reading a sealed cross-origin control"
 "$ROOT/bin/horse-browser" harness-setup >/dev/null 2>&1
 [ -x "$PY" ] || { echo "FATAL: harness venv missing"; exit 1; }
@@ -73,15 +100,14 @@ hb() { BU_CDP_URL="http://127.0.0.1:$CPORT" BU_NAME="hb-cfr$$" HORSE_SESSION="cf
 # --- one case: random control position, assert the reported page coords ------------------
 one() {   # one <kind> <label>
   local kind="$1" label="$2"
-  local cx cy cw ch p1 p2 fx
+  local cx cy cw ch p1 fx
   cx=$(( (RANDOM % 300) + 20 ))          # inside the 400x300 frame, clear of the decoys
   cy=$(( (RANDOM % 140) + 90 ))
   cw=$(( (RANDOM % 60) + 24 ))
   ch=$(( (RANDOM % 30) + 20 ))
-  p1="$(port)"; p2="$(port)"
-  python3 "$HERE/lib/oopif-fixture.py" "$p1" "$p2" "$kind" "$cx" "$cy" "$cw" "$ch" > "$W/fx.json" &
-  FIXPIDS="$FIXPIDS $!"
-  for _ in $(seq 1 30); do [ -s "$W/fx.json" ] && break; sleep 0.2; done
+  start_fixture "$W/fx.json" "$kind" "$cx" "$cy" "$cw" "$ch" \
+    || { fail "$label" "fixture did not start"; return; }
+  p1="$FX_PORT"
   local ex ey
   ex=$(python3 -c "import json;print(json.load(open('$W/fx.json'))['expect_x'])" 2>/dev/null)
   ey=$(python3 -c "import json;print(json.load(open('$W/fx.json'))['expect_y'])" 2>/dev/null)
@@ -130,10 +156,10 @@ echo "[3] a BLOCK page is not a challenge"
 # wrong thing about why the site did not open.
 one_blocked() {
   local cx=$(( (RANDOM % 200) + 40 )) cy=$(( (RANDOM % 120) + 100 ))
-  local p1 p2; p1="$(port)"; p2="$(port)"
-  python3 "$HERE/lib/oopif-fixture.py" "$p1" "$p2" blocked "$cx" "$cy" 240 22 > "$W/fxb.json" &
-  FIXPIDS="$FIXPIDS $!"
-  for _ in $(seq 1 30); do [ -s "$W/fxb.json" ] && break; sleep 0.2; done
+  local p1
+  start_fixture "$W/fxb.json" blocked "$cx" "$cy" 240 22 \
+    || { fail "blocked frame" "fixture did not start"; return; }
+  p1="$FX_PORT"
   local out
   out="$(hb "
 import time
@@ -158,13 +184,14 @@ echo "[4] a second tab on the same site must not hijack the frame lookup"
 # never rendered, because it belonged to a backgrounded tab.
 one_two_tabs() {
   local cx=$(( (RANDOM % 200) + 60 )) cy=$(( (RANDOM % 120) + 120 ))
-  local p1 p2 q1 q2; p1="$(port)"; p2="$(port)"; q1="$(port)"; q2="$(port)"
-  python3 "$HERE/lib/oopif-fixture.py" "$p1" "$p2" checkbox "$cx" "$cy" 30 30 > "$W/fa.json" &
-  FIXPIDS="$FIXPIDS $!"
+  local p1 q1
+  start_fixture "$W/fa.json" checkbox "$cx" "$cy" 30 30 \
+    || { fail "two tabs" "fixture did not start"; return; }
+  p1="$FX_PORT"
   # a DECOY tab: same vendor frame URL, deliberately different control coordinates
-  python3 "$HERE/lib/oopif-fixture.py" "$q1" "$q2" checkbox 470 460 30 30 > "$W/fb.json" &
-  FIXPIDS="$FIXPIDS $!"
-  for _ in $(seq 1 30); do [ -s "$W/fa.json" ] && [ -s "$W/fb.json" ] && break; sleep 0.2; done
+  start_fixture "$W/fb.json" checkbox 470 460 30 30 \
+    || { fail "two tabs" "decoy fixture did not start"; return; }
+  q1="$FX_PORT"
   local ex ey
   ex=$(python3 -c "import json;print(json.load(open('$W/fa.json'))['expect_x'])" 2>/dev/null)
   ey=$(python3 -c "import json;print(json.load(open('$W/fa.json'))['expect_y'])" 2>/dev/null)
@@ -201,11 +228,10 @@ echo "[5] end to end: solve_challenge actually operates a working slider"
 # one failure took a site straight from "challenge" to "hard block". Two burned sites bought it.
 one_live() {
   local cx=$(( (RANDOM % 60) + 30 )) cy=$(( (RANDOM % 120) + 100 ))
-  local p1 p2; p1="$(port)"; p2="$(port)"
-  python3 "$HERE/lib/oopif-fixture.py" "$p1" "$p2" live-slider "$cx" "$cy" 60 40 > "$W/fl.json" &
-  FIXPIDS="$FIXPIDS $!"
-  for _ in $(seq 1 30); do [ -s "$W/fl.json" ] && break; sleep 0.2; done
-  [ -s "$W/fl.json" ] || { fail "live slider" "fixture did not start"; return; }
+  local p1
+  start_fixture "$W/fl.json" live-slider "$cx" "$cy" 60 40 \
+    || { fail "live slider" "fixture did not start"; return; }
+  p1="$FX_PORT"
   local out
   out="$(hb "
 import time

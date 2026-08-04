@@ -706,6 +706,11 @@ http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
 REFL_PID=$!
 for _ in $(seq 1 20); do curl -sf "http://127.0.0.1:$REFL_PORT/" >/dev/null 2>&1 && break; sleep 0.2; done
+# Falling through silently here left the checks below reading a Chrome error page and blaming
+# the UA — say it plainly instead. (The port came from a bind-0-then-close pick, so on a busy
+# machine the reflector can genuinely lose the race and never start.)
+curl -sf -m 2 "http://127.0.0.1:$REFL_PORT/" >/dev/null 2>&1 \
+  || { fail "header reflector came up on :$REFL_PORT" "never answered"; kill $REFL_PID 2>/dev/null; }
 out="$(REFL_PORT="$REFL_PORT" hb '
 import json, os, re
 tid = open_tab("http://127.0.0.1:" + os.environ["REFL_PORT"] + "/")
