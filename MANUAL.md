@@ -163,6 +163,10 @@ them. With a real fingerprint (always on) plus a trusted gesture, the easy ones 
   images, read distorted text, rotate, audio) returns `escalate:<why>` — only those go to the
   operator. Gesture verbs take a CSS selector **or an `(x,y)`** you read off a screenshot:
   `press_hold(css_or_xy, s)`, `drag(css_or_xy, to=(x,y)/dx=…)`, `click_xy(x,y)`.
+  Both gestures pace themselves against the clock, so a busy machine costs them samples rather
+  than seconds — the shape and duration are fitted to recorded human traces and hold under
+  load. Don't wrap them in sleeps of your own to "slow them down": that lands the gesture
+  outside the band it was fitted to, which is the thing being scored.
 - **Cross-origin iframe challenges → vision is primary.** A challenge sealed in a cross-origin
   iframe (Turnstile, DataDome, hCaptcha) can't be reached by `querySelector`, but CDP input
   still lands on the pixel. `solve_challenge()` hands these back as `vision:<vendor> …

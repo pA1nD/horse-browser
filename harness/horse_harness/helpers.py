@@ -1261,6 +1261,27 @@ def _dwell():
     return _ir.uniform(0.030, 0.075) if _ir.random() < 0.18 else _ir.uniform(0.003, 0.012)
 
 
+def _pace(next_at):
+    """Sleep until `next_at`; return the base for scheduling the sample after it.
+
+    Sample spacing has to be a SCHEDULE, not a sleep taken after each dispatch. A dispatch is
+    not free — it is an IPC round trip to the daemon — and its cost is a property of how busy
+    the machine is, not of the gesture: measured at ~2ms idle and ~66ms under fleet load. Adding
+    the full gap on top of that stretched a 1.8s drag to 9s (same commit, same machine, load the
+    only difference), which is well outside the band the recorded hands define. Sleeping until a
+    planned instant absorbs the overhead instead of compounding it.
+
+    Returns `now` rather than `next_at` when we are already late, so falling behind never earns
+    a burst of zero-gap samples trying to catch up — back-to-back identical timestamps are their
+    own tell.
+    """
+    now = _it.monotonic()
+    if next_at > now:
+        _it.sleep(next_at - now)
+        return next_at
+    return now
+
+
 def _approach(x1, y1):
     """Move to (x1,y1) the way a hand arrives: along a slightly bowed path, decelerating.
 
@@ -1274,12 +1295,22 @@ def _approach(x1, y1):
         return
     n = max(10, min(34, int(dist / 12)))        # a hand's approach: ~16 samples, not 4
     bow = _ir.uniform(-0.06, 0.06) * dist          # a hand does not travel a straight line
-    for i in range(1, n + 1):
-        e = _sstep(i / n)
+    # Clock-paced like the drag body: the reach for a control takes about as long as it takes,
+    # whatever the machine is doing. Left on a fixed sample count, a loaded machine turned a
+    # third-of-a-second reach into several seconds of crawl before the press even happened.
+    dur = n * _ir.uniform(0.014, 0.020)
+    started = _it.monotonic()
+    nxt = started
+    t = 0.0
+    while True:
+        t = min(1.0, (_it.monotonic() - started) / dur, t + 0.125)   # >= 8 samples, however slow
+        e = _sstep(t)
         px = x0 + (x1 - x0) * e - (y1 - y0) / (dist or 1) * bow * _im.sin(_im.pi * e)
         py = y0 + (y1 - y0) * e + (x1 - x0) / (dist or 1) * bow * _im.sin(_im.pi * e)
         _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py)
-        _it.sleep(_dwell())
+        if t >= 1.0:
+            break
+        nxt = _pace(nxt + _dwell())
     # The final step already lands exactly on (x1,y1) — sin(pi) zeroes the bow — so sending it
     # again would put two identical samples back to back, which no hand produces.
     _mouse["x"], _mouse["y"] = x1, y1
@@ -1311,10 +1342,17 @@ def drag(target, to=None, dx=None, dy=0):
     # target, where any scorer watching the control sees them — a synthetic drag enters and
     # presses in the same instant. Recorded hands: 16 samples over the handle before the press;
     # this was emitting 4, and the four were the tail of the approach rather than a pause.
-    for _ in range(_ir.randint(8, 14)):
+    hover_n = _ir.randint(8, 14)
+    hover_until = _it.monotonic() + hover_n * _ir.uniform(0.014, 0.020)
+    nxt = _it.monotonic()
+    for k in range(hover_n):
         _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved",
                     x=x0 + _ir.uniform(-6, 6), y=y0 + _ir.uniform(-6, 6))
-        _it.sleep(_dwell())
+        # Also on the clock: a pause over the control is a duration, not a sample count, so a
+        # slow dispatch spends the pause rather than extending it.
+        if k >= 3 and _it.monotonic() >= hover_until:
+            break
+        nxt = _pace(nxt + _dwell())
     _it.sleep(_ir.uniform(0.05, 0.15))                    # settle before pressing
     cdp("Input.dispatchMouseEvent", type="mousePressed", x=x0, y=y0, button="left", buttons=1,
         clickCount=1, force=0.5)
@@ -1325,6 +1363,17 @@ def drag(target, to=None, dx=None, dy=0):
     # samples over 1.75s; this emitted 27 over 0.9s. Overshoot went the other way — the invented
     # 3-11px was 3.5x what a hand actually does, which is 2.5px.
     steps = max(24, min(80, int(span / 3.5)))
+    # How long the travel should TAKE, drawn from the same distribution `steps` samples at a
+    # hand's spacing used to produce by accident — but now stated as a target and held against
+    # the clock, because emergent duration is only correct on an idle machine. The path below
+    # advances on elapsed time, not on the loop counter, so a slow dispatch costs samples
+    # rather than seconds: under load the gesture thins out, which a hand also does, instead of
+    # stretching to 9 seconds, which no hand does.
+    dur = steps * _ir.uniform(0.014, 0.020)
+    # Floor on samples: when the machine is so slow that even one dispatch eats a big slice of
+    # the budget, holding the duration exactly would emit a 3-sample teleport. Past this point
+    # shape matters more than the stopwatch, so let the drag run long instead.
+    MIN_SAMPLES = 18
     # Overshoot is bimodal in the recorded drags, not a small constant: 7 of 14 landed with no
     # overshoot at all, and the other 7 ran 5-24px past before correcting. Always overshooting
     # by a little matches neither half — it is the average of two behaviours and looks like
@@ -1333,9 +1382,18 @@ def drag(target, to=None, dx=None, dy=0):
     ovx = (x1 - x0) / (span or 1) * ov
     ovy = (y1 - y0) / (span or 1) * ov
     arc = _ir.choice((-1, 1)) * _ir.uniform(12.0, 32.0)   # the vertical bow of the path
-    hesitate = sorted(_ir.sample(range(3, steps - 2), min(2, max(0, steps - 6)))) if steps > 8 else []
-    for i in range(1, steps + 1):
-        t = i / steps
+    # Hesitations are placed on the PATH (fractions of the way along) rather than on sample
+    # indices, since the sample count is no longer fixed. They pause the motion clock too: a
+    # hand that pauses mid-drag leaves the pointer where it was, so time passing during a
+    # hesitation must not advance the path — otherwise "hesitating" reads as a sudden jump.
+    hesitate = sorted(_ir.uniform(0.15, 0.85) for _ in range(_ir.randint(0, 2)))
+    t = 0.0
+    started = _it.monotonic()
+    paused = 0.0
+    nxt = started
+    while True:
+        moved = _it.monotonic() - started - paused
+        t = min(1.0, moved / dur, t + 1.0 / MIN_SAMPLES)
         # Front-loaded far harder than a symmetric curve, and harder than this first guessed:
         # a hand covers half the distance in the first 17% of the time and spends the rest
         # settling. t**0.39 puts the half-distance point there; t**0.78 put it at 33%.
@@ -1349,17 +1407,24 @@ def drag(target, to=None, dx=None, dy=0):
         py = (y0 + (y1 + ovy - y0) * e + arc * _im.sin(_im.pi * e)
               + _ir.uniform(-wob, wob))
         _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", x=px, y=py, buttons=1, force=0.5)
-        _it.sleep(_dwell())
-        if i in hesitate:
-            _it.sleep(_ir.uniform(0.04, 0.09))            # a glance at the target
+        if t >= 1.0:
+            break
+        nxt = _pace(nxt + _dwell())
+        if hesitate and t >= hesitate[0]:
+            hesitate.pop(0)
+            h = _ir.uniform(0.04, 0.09)                   # a glance at the target
+            _it.sleep(h)
+            paused += h                                   # the pointer waits; the path does not
+            nxt += h
     if ov:                                                # corrective sub-movement back onto it
         n = _ir.randint(2, 3)
+        nxt = _it.monotonic()
         for j in range(1, n + 1):
             k = j / (n + 1.0)                             # approaches the target, never lands on it
             _cdp_nowait("Input.dispatchMouseEvent", type="mouseMoved", buttons=1, force=0.5,
                         x=x1 + ovx * (1 - k) + _ir.uniform(-0.6, 0.6),
                         y=y1 + ovy * (1 - k) + _ir.uniform(-0.6, 0.6))
-            _it.sleep(_ir.uniform(0.015, 0.04))
+            nxt = _pace(nxt + _ir.uniform(0.015, 0.04))
     cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x1, y=y1, buttons=1, force=0.5)
     _it.sleep(_ir.uniform(0.08, 0.22))                    # hold, then let go
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x1, y=y1, button="left", buttons=0, clickCount=1)
