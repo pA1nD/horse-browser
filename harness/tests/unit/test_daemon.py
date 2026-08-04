@@ -22,11 +22,11 @@ def _fresh_daemon():
     return d
 
 
-def test_set_session_enables_all_four_default_domains_on_new_session():
+def test_set_session_enables_all_default_domains_on_new_session():
     """Regression: switch_tab() / open_tab() in helpers.py route through the
     `set_session` IPC, which previously only enabled Page on the new
     session. With Network disabled, wait_for_network_idle() silently stops
-    receiving events after a tab switch. Initial attach enables all four
+    receiving events after a tab switch. Initial attach enables all of the
     (Page, DOM, Runtime, Network); set_session must enable the same set."""
     d = _fresh_daemon()
     new_session = "session-AFTER-switch"
@@ -41,7 +41,7 @@ def test_set_session_enables_all_four_default_domains_on_new_session():
         method for (method, _params, sid) in d.cdp.calls
         if sid == new_session and method.endswith(".enable")
     ]
-    assert set(enabled_on_new) == {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}, (
+    assert set(enabled_on_new) == {"Page.enable", "DOM.enable", "Network.enable"}, (
         f"set_session must enable Page/DOM/Runtime/Network on the new session "
         f"(parity with initial attach). Got: {enabled_on_new}"
     )
@@ -85,7 +85,9 @@ def test_enable_default_domains_swallows_errors_per_domain():
     attempted = [m for (m, _p, _s) in d.cdp.calls]
     assert "Page.enable" in attempted
     assert "DOM.enable" in attempted  # attempted, but raised
-    assert "Runtime.enable" in attempted
+    # Runtime is deliberately NOT enabled — it is detectable and we consume none of its
+    # events. This asserts the absence so nobody restores it for symmetry.
+    assert "Runtime.enable" not in attempted
     assert "Network.enable" in attempted
 
 
@@ -141,12 +143,12 @@ def test_set_session_does_not_disable_network_when_no_previous_session():
 
 
 def test_set_session_runs_disable_and_enables_in_parallel():
-    """The four Domain.enable calls (plus Network.disable on the old session)
+    """The Domain.enable calls (plus Network.disable on the old session)
     must run concurrently via asyncio.gather, not sequentially. With the old
     sequential code, helpers.switch_tab() would block in _send() for up to
     ~22s on a slow/remote daemon while the helper's IPC socket has a 5s
     read timeout, causing client-side socket timeouts. Verifying that all
-    five CDP calls reach send_raw before any returns proves parallelization."""
+    all of them reach send_raw before any returns proves parallelization."""
     class _ConcurrencyProbeCDP:
         def __init__(self):
             self.calls = []
@@ -180,7 +182,7 @@ def test_set_session_runs_disable_and_enables_in_parallel():
         for _ in range(50):
             await asyncio.sleep(0)
             # 5 = Network.disable on OLD + 4 enables on NEW.
-            if d.cdp.in_flight >= 5:
+            if d.cdp.in_flight >= 4:
                 break
         peak = d.cdp.max_concurrent
         d.cdp.release.set()
@@ -188,7 +190,7 @@ def test_set_session_runs_disable_and_enables_in_parallel():
         return peak, d.cdp.calls
 
     peak, calls = asyncio.run(run())
-    assert peak == 5, (
+    assert peak == 4, (
         f"set_session must run disable + 4 enables concurrently via gather "
         f"(observed peak in-flight = {peak}; expected 5 = 1 disable on OLD + "
         f"4 enables on NEW). Sequential await would peak at 1."
@@ -196,12 +198,12 @@ def test_set_session_runs_disable_and_enables_in_parallel():
     # Sanity: the right calls were made.
     methods = sorted({m for (m, _p, _s) in calls})
     assert "Network.disable" in methods
-    assert {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}.issubset(methods)
+    assert {"Page.enable", "DOM.enable", "Network.enable"}.issubset(methods)
 
 
-def test_set_session_first_attach_runs_four_enables_in_parallel():
+def test_set_session_first_attach_runs_enables_in_parallel():
     """When there's no previous session, the disable path is skipped — only
-    the four enables run, still in parallel."""
+    the enables run, still in parallel."""
     class _ConcurrencyProbeCDP:
         def __init__(self):
             self.calls = []
@@ -232,7 +234,7 @@ def test_set_session_first_attach_runs_four_enables_in_parallel():
         }))
         for _ in range(50):
             await asyncio.sleep(0)
-            if d.cdp.in_flight >= 4:
+            if d.cdp.in_flight >= 3:
                 break
         peak = d.cdp.max_concurrent
         d.cdp.release.set()
@@ -240,8 +242,8 @@ def test_set_session_first_attach_runs_four_enables_in_parallel():
         return peak
 
     peak = asyncio.run(run())
-    assert peak == 4, (
-        f"first set_session must run 4 enables concurrently "
+    assert peak == 3, (
+        f"first set_session must run the 3 enables concurrently "
         f"(observed peak = {peak}). No Network.disable should fire."
     )
 

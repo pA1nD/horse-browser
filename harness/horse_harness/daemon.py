@@ -490,7 +490,16 @@ class Daemon:
                 )
             except Exception as e:
                 log(f"enable {d} on {session_id}: {e}")
-        await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
+        # NOT Runtime. Enabling it is detectable — Cloudflare and DataDome both check for it,
+        # and brotector catches it via a getter on `name` that CDP's own serialisation trips
+        # (nameLookupCount 3 against us before this line changed). Rebrowser's detector missed
+        # it because that one only probes the `stack` variant, which is a good reminder that one
+        # green detector is not a clean bill of health.
+        #
+        # It cost us nothing to enable: Runtime.enable exists to receive Runtime.* EVENTS, and
+        # this codebase consumes none — the only events acted on are Page.javascriptDialog* and
+        # Network.*. Runtime.evaluate is a command and works regardless.
+        await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Network")))
         await self._apply_realness(session_id)   # after Page+Network: both are prerequisites
 
     async def _apply_realness(self, session_id):
