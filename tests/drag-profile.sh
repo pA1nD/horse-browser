@@ -202,7 +202,13 @@ sys.exit(0 if ($expr) else 1)"; then pass "$label ($fld=$(q "$fld"))"; else fail
 }
 
 chk "the pointer approaches the handle before pressing"  "v >= 4"                    approach
-chk "the drag takes a hand's time, not a loop's"         "all(0.45 <= d <= 3.0 for d in v)" dur
+# Bounds taken from the recorded drags themselves, not picked: the 14 human traces in
+# tests/lib/traces run 1.08s .. 3.42s, median 1.75s. The old ceiling of 3.0 was tighter than the
+# hands it claims to encode — the slowest recorded HUMAN would have failed it — while the floor
+# of 0.45 was half the fastest one. On an idle machine we sit at 1.5-2.1s; the upper half of the
+# band only comes into play when dispatch is so expensive that drag() stops trading samples for
+# time and runs long on purpose, and a 3s drag is a thing a hand demonstrably does.
+chk "the drag takes a hand's time, not a loop's"         "all(1.0 <= d <= 3.5 for d in v)" dur
 # Bimodal in the recorded hand: 7 of 14 drags overshot 5-24px, the other 7 not at all. So the
 # property is that BOTH happen — a drag that always overshoots by a little is the average of two
 # behaviours and resembles neither. Twelve runs, so a fair coin does not fail this by luck.
