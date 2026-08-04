@@ -177,28 +177,36 @@ def test_set_session_runs_disable_and_enables_in_parallel():
             "session_id": "session-NEW",
             "target_id": "target-NEW",
         }))
-        # Yield repeatedly until everything that's going to be in-flight is
-        # in-flight. Cap iterations to avoid hanging if parallelization breaks.
+        # Yield enough times that everything which is going to start has started.
+        # Deliberately no early break on a specific count: asserting an exact number
+        # of calls made this test a tripwire for any change to set_session's payload
+        # (it broke when Runtime.enable was dropped, and again when the foreground
+        # lease was added) while never testing the property it exists to protect.
         for _ in range(50):
             await asyncio.sleep(0)
-            # 5 = Network.disable on OLD + 4 enables on NEW.
-            if d.cdp.in_flight >= 4:
-                break
         peak = d.cdp.max_concurrent
         d.cdp.release.set()
         await handle_task
         return peak, d.cdp.calls
 
     peak, calls = asyncio.run(run())
-    assert peak == 4, (
-        f"set_session must run disable + 4 enables concurrently via gather "
-        f"(observed peak in-flight = {peak}; expected 5 = 1 disable on OLD + "
-        f"4 enables on NEW). Sequential await would peak at 1."
+    # A LOWER bound, not an exact count: the gather's branches (Network.disable on OLD
+    # + the enables on NEW) must all be in flight together, and sequential code would
+    # peak at 1. Stated as ">=" so that adding work to set_session — the lease did —
+    # can only satisfy it further, while a regression to sequential awaits still fails.
+    # Not `== len(calls)`: _enable_default_domains legitimately runs realness AFTER its
+    # enables, so some calls are correctly not concurrent with the rest.
+    assert peak >= 4, (
+        f"set_session must issue Network.disable and the enables concurrently via gather "
+        f"(observed peak in-flight = {peak} across {len(calls)} calls). "
+        f"Sequential await would peak at 1."
     )
     # Sanity: the right calls were made.
     methods = sorted({m for (m, _p, _s) in calls})
     assert "Network.disable" in methods
     assert {"Page.enable", "DOM.enable", "Network.enable"}.issubset(methods)
+    # The new session takes the foreground lease as part of the same gather.
+    assert ("Emulation.setFocusEmulationEnabled", {"enabled": True}, "session-NEW") in calls
 
 
 def test_set_session_first_attach_runs_enables_in_parallel():
@@ -234,17 +242,18 @@ def test_set_session_first_attach_runs_enables_in_parallel():
         }))
         for _ in range(50):
             await asyncio.sleep(0)
-            if d.cdp.in_flight >= 3:
-                break
         peak = d.cdp.max_concurrent
         d.cdp.release.set()
         await handle_task
-        return peak
+        return peak, d.cdp.calls
 
-    peak = asyncio.run(run())
-    assert peak == 3, (
-        f"first set_session must run the 3 enables concurrently "
-        f"(observed peak = {peak}). No Network.disable should fire."
+    peak, calls = asyncio.run(run())
+    assert peak >= 3, (   # lower bound: the enables overlap; sequential would peak at 1
+        f"first set_session must run its enables concurrently "
+        f"(observed peak = {peak} across {len(calls)} calls)."
+    )
+    assert "Network.disable" not in {m for (m, _p, _s) in calls}, (
+        "no previous session — nothing to disable"
     )
 
 

@@ -246,11 +246,6 @@ def current_tab():
         "title": r["title"],
     }
 
-def _mark_tab():
-    """Prepend horse emoji to tab title so the user can see which tab the agent controls."""
-    try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
-    except Exception: pass
-
 def close_tab(target=None):
     """Close a tab. If `target` is omitted, closes the currently attached tab.
     Accepts a raw targetId string or a dict from all_tabs()/current_tab()."""
@@ -700,18 +695,19 @@ def _session_id():
 
 def switch_tab(target):
     """Make `target` the tab this session drives — focus-safe. Accepts a targetId string or a
-    current_tab()/all_tabs() dict. Attaches it (`Target.attachToTarget flatten`), binds the daemon
-    session to it, and enables `Emulation.setFocusEmulationEnabled` so it drives live in the
-    background. It does NOT call `Target.activateTarget` and does NOT change which tab is visible in
-    the window, so concurrent agents and the operator never see their view flip."""
+    current_tab()/all_tabs() dict. Attaches it (`Target.attachToTarget flatten`) and binds the
+    daemon session to it, which takes the foreground lease — `Emulation.setFocusEmulationEnabled`
+    plus the 🐴 mark — on the new tab and releases it on the one being left. It does NOT call
+    `Target.activateTarget` and does NOT change which tab is visible in the window, so concurrent
+    agents and the operator never see their view flip.
+
+    The lease, not this function, owns focus emulation and the horse: the daemon renews it on every
+    call that drives the page and drops it after HORSE_BROWSER_FOCUS_TTL of silence, so a tab you
+    have stopped working on stops painting instead of compositing for the rest of the session."""
     target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
-    except Exception: pass
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _hb_remember(target_id)   # remember the tab I'm now driving, so a drift can restore THIS one
-    cdp("Emulation.setFocusEmulationEnabled", enabled=True)
-    _mark_tab()
     return sid
 
 

@@ -77,7 +77,7 @@ horse-browser rule check     # is the rule file up to date? (exit 1 if drifted �
 Sign into Gmail, GitHub, your dashboards, whatever — **once** — and every agent you point at `:9223` inherits those sessions. No re-auth dance, no cookie juggling, no "paste your token" on every run. The catch with one shared browser is everyone trips over everyone, so three things keep it civil:
 
 - **Coexists with your daily browser.** A *separate* browser (Chrome for Testing) — launching it never hijacks your everyday Chrome/Brave, and clicking yours never lands you in the agents' window.
-- **Focus-safe by construction.** Tabs open in the background and activate through the extension instead of `Target.activateTarget` (which calls `[NSApp activate]` and yanks the browser over whatever you're doing). The page is told it's foregrounded via focus emulation, so nothing misbehaves.
+- **Focus-safe by construction.** Tabs open in the background and activate through the extension instead of `Target.activateTarget` (which calls `[NSApp activate]` and yanks the browser over whatever you're doing). The page is told it's foregrounded via focus emulation, so nothing misbehaves — as a **lease** that lapses when no agent is driving, so a tab you've walked away from stops painting instead of burning a core in the background forever.
 - **Per-session tab groups.** Each agent's tabs live in their own colored group; you see whose-is-whose at a glance, humans and agents in one window.
 
 (Browserbase, Steel, Hyperbrowser & co. solve scale by giving each agent its *own throwaway* browser. Great for the cloud; useless when you want **one real browser, on your machine, that stays logged in**. That's this.)
@@ -91,6 +91,8 @@ Sign into Gmail, GitHub, your dashboards, whatever — **once** — and every ag
 Click the 🐴 toolbar button for a live **2×2 / 3×3 wall** of screencasts — one tab per cell — so you can watch every agent browse at once on a big screen.
 
 Built around **stable slots**: a tab keeps its cell, so the picture never shuffles under you. Activity lights up *in place* (a green pulse on the tab an agent just acted on) instead of reordering everything; the wall only changes membership when a tab has gone idle and a busier one is waiting. A theme-aware sidebar **groups every tab by session** — coloured Chrome-style groups (emoji + code), favicon rows, and a slot number on each on-wall tab so a row maps straight to its preview. Click any pane to jump to that tab. Pure read-only over CDP (a *second* client alongside whatever's driving), so it costs the agents nothing.
+
+The wall **runs as hard as it is watched**: full rate when its window has focus, about a frame a second when it's visible but you're working elsewhere (a second-display dashboard still updates), and nothing at all when its tab isn't on screen. Live video of nine tabs is expensive — measured at 160 fps aggregate and 3.86 MB/s of JPEG before this, running identically whether or not anyone was looking.
 
 Run several browsers side by side (`HORSE_BROWSER_PORT` + `HORSE_BROWSER_PROFILE`, one per agent) and each one's Monitor shows only its own tabs — the launcher tells every browser's extension which port it lives on, and the wall proves the port is its own before attaching.
 

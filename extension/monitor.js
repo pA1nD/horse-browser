@@ -83,6 +83,47 @@ const sessionHandlers = new Map();  // CDP sessionId → frame handler
 const panes = new Map();            // targetId → pane (only for tabs currently on the wall)
 let slots = [];                     // slot index → targetId | null  (the persistent wall)
 
+// ── attention: how hard the wall runs depends on whether anyone can see it ───
+// A screencast is live video. Nine panes at everyNthFrame:1 was measured at 160 fps
+// aggregate and 3.86 MB/s of JPEG encoded, shipped over CDP, decoded and drawn —
+// running identically whether the wall was on screen or buried behind an editor, where
+// it cost ~30% of a core around the clock. Frame cost has to follow attention.
+//
+// Three states, because "visible" and "focused" are different questions:
+//   live   — the wall's tab is showing AND its window has focus. Someone is watching it.
+//   glance — showing, but the window is not focused. The wall is a second-display
+//            dashboard you look over at: it must keep updating, just not as video.
+//   off    — the wall's tab isn't the active tab. Nobody can see it; stream nothing.
+// We can't tell "on a second display" from "buried behind another app" — occlusion
+// detection is off in this browser by launch flag — so `glance` deliberately serves both
+// and is priced so the buried case is affordable.
+const RATE = { live: 4, glance: 60 };   // everyNthFrame; 60fps source → ~15fps / ~1fps
+function attention() {
+  if (document.hidden) return "off";
+  return document.hasFocus() ? "live" : "glance";
+}
+let mode = attention();
+const shot = (m) => ({ format: "jpeg", quality: 50, maxWidth: 900, maxHeight: 560,
+                       everyNthFrame: RATE[m] });
+
+function applyMode() {
+  const next = attention();
+  if (next === mode) return;
+  const was = mode;
+  mode = next;
+  for (const p of panes.values()) {
+    if (!p.sid) continue;
+    if (mode === "off") send("Page.stopScreencast", {}, p.sid);
+    else send("Page.startScreencast", shot(mode), p.sid);   // re-issuing changes the rate
+  }
+  // Coming back from off, panes hold whatever was on screen when we stopped. Repaint
+  // them now rather than leaving a stale wall until the next heartbeat.
+  if (was === "off" && mode !== "off") { for (const p of panes.values()) forceCapture(p); reconcile(); }
+}
+document.addEventListener("visibilitychange", applyMode);
+window.addEventListener("focus", applyMode);
+window.addEventListener("blur", applyMode);
+
 // Every CDP request times out. Right after a browser restart the freshly-restored
 // renderer sometimes never answers an attach/screencast call; without a timeout
 // that promise hangs forever, and because reconcile() holds a non-reentrant lock
@@ -416,8 +457,7 @@ async function watch(info) {
   // fire the first-paint still immediately (don't await) so the pane shows ASAP,
   // and kick off the screencast in parallel — neither blocks the other.
   forceCapture(pane); // still: fastest first paint; the 2s heartbeat repaints thereafter
-  send("Page.startScreencast",
-    { format: "jpeg", quality: 50, maxWidth: 900, maxHeight: 560, everyNthFrame: 1 }, sid);
+  if (mode !== "off") send("Page.startScreencast", shot(mode), sid);
 }
 
 function removePane(targetId) {
@@ -490,7 +530,10 @@ async function reconcile() {
 }
 
 let reconcileTimer;
-function scheduleReconcile() { clearTimeout(reconcileTimer); reconcileTimer = setTimeout(reconcile, 250); }
+function scheduleReconcile() {
+  if (mode === "off") return;   // tab churn in a busy browser must not drive an unseen wall
+  clearTimeout(reconcileTimer); reconcileTimer = setTimeout(reconcile, 250);
+}
 for (const ev of [chrome.tabs.onCreated, chrome.tabs.onRemoved, chrome.tabs.onUpdated,
                   chrome.tabs.onMoved, chrome.tabs.onAttached, chrome.tabs.onDetached,
                   chrome.tabs.onActivated,
@@ -499,7 +542,14 @@ for (const ev of [chrome.tabs.onCreated, chrome.tabs.onRemoved, chrome.tabs.onUp
 }
 // 1s poll: re-runs the slot machine so an idling slot crosses the HOT_MS guard and
 // any standing-by tab can enter promptly — and keeps the relative times ticking.
-setInterval(reconcile, 1000);
+// Off the wall, nobody reads those times: poll slowly when glancing, not at all when
+// the wall isn't on screen (applyMode reconciles on the way back).
+let pollTick = 0;
+setInterval(() => {
+  if (mode === "off") return;
+  if (mode === "glance" && ++pollTick % 5) return;
+  reconcile();
+}, 1000);
 
 // ── fixed N×N layout ─────────────────────────────────────────────────────────
 // The wall is a uniform N×N grid that always FILLS the stage: every cell is an
@@ -570,8 +620,11 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-// quietly refresh thumbnails for tabs that aren't streaming frames (no blink)
+// quietly refresh thumbnails for tabs that aren't streaming frames (no blink).
+// This is what keeps a `glance` wall current: a still capture forces a paint, so it
+// must not run at all while the wall is off screen.
 setInterval(() => {
+  if (mode === "off") return;
   const now = Date.now();
   for (const p of panes.values())
     if (now - p.lastFrame > 4000 && now - (p.lastPing || 0) > 5000) { p.lastPing = now; forceCapture(p); }

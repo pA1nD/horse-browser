@@ -69,7 +69,24 @@ var t0=performance.now();
 });
 </script>
 HTML
-( cd "$W" && python3 -m http.server "$SPORT" >/dev/null 2>&1 ) & SRVPID=$!
+# Serve the fixture, and PROVE it is serving before anything depends on it. port() binds an
+# ephemeral port, closes it, and hands back the number — so between that and http.server's own
+# bind, the OS is free to hand the same port to any outgoing connection. On a busy machine
+# (a browser per agent, a CDP websocket per session) that happens, http.server dies on
+# "Address already in use", Chrome gets chrome-error://chromewebdata, and every gesture is
+# recorded against a blank page. The test then failed as `StopIteration` deep in the stats —
+# reading as "the drag produced no pointerup" when the truth was "there was no page".
+for attempt in 1 2 3; do
+  ( cd "$W" && python3 -m http.server "$SPORT" >/dev/null 2>&1 ) & SRVPID=$!
+  for _ in $(seq 1 40); do
+    curl -sf -m 1 "http://127.0.0.1:$SPORT/page.html" >/dev/null 2>&1 && break
+    sleep 0.25
+  done
+  curl -sf -m 2 "http://127.0.0.1:$SPORT/page.html" >/dev/null 2>&1 && break
+  kill "$SRVPID" 2>/dev/null; SPORT="$(port)"   # lost the race — take a fresh port and retry
+done
+curl -sf -m 2 "http://127.0.0.1:$SPORT/page.html" >/dev/null 2>&1 \
+  || { echo "FATAL: fixture server never came up (last port $SPORT)"; exit 1; }
 
 CHROME_ARGS=( --remote-debugging-port="$CPORT" --user-data-dir="$W/p"
               --no-first-run --no-default-browser-check

@@ -60,9 +60,13 @@ side effect; nothing is blocked, wrapped, or refused.
    *your* tab. (This is why the old "never bare `goto_url`" warning is gone — it can no
    longer clobber a neighbour.)
 
-One cosmetic quirk to know: the active tab's title carries a leading `🐴 ` marker (added so
-the operator can see which tab an agent drives). If you read `document.title` and get
+One quirk to know: the tab you are driving carries a leading `🐴 ` marker in its title (added
+so the operator can see which tab an agent is working). If you read `document.title` and get
 `🐴 Example Domain`, the horse + space is the marker, not the page.
+
+The horse comes and goes — it marks the **foreground lease** (below), so it appears on the
+tab you're driving and disappears once you stop, rather than sitting on every tab you have
+ever touched. A tab with no horse is one no agent is working right now.
 
 ## Verbs — the paved path, and the CDP they run
 
@@ -78,9 +82,9 @@ calls it makes, so when you outgrow it you already know the idiom to compose you
   answers identically on a browser with no extension. `tabId`/`discarded`/`audible`/`active`
   come back `None`: only `chrome.tabs` knows them, and nothing may depend on the extension
   being there. See `docs/attached-mode.md`.
-- `switch_tab(tid)` → attach the target (`Target.attachToTarget flatten`), tell the daemon
-  to bind this session to it, `Emulation.setFocusEmulationEnabled` so it drives live in the
-  background. No `activateTarget`.
+- `switch_tab(tid)` → attach the target (`Target.attachToTarget flatten`) and tell the daemon
+  to bind this session to it, which takes the foreground lease on the new tab and releases it
+  on the old one. No `activateTarget`.
 - `goto_url(url)` = `Page.navigate` on your bound tab. `current_tab()` / `all_tabs()` /
   `close_tab(t)` as named.
 
@@ -194,10 +198,26 @@ Asking the browser instead would give a second answer that can disagree with the
 Focus-safety mechanics: (1) `Target.createTarget(background=True)` + `chrome.tabs.update({active:true})`
 instead of `Target.activateTarget` — the latter calls `[NSApp activate]`; `chrome.tabs.update`
 only changes which tab is visible. (2) `Emulation.setFocusEmulationEnabled` per session makes
-the renderer treat the page as always focused (`document.hasFocus()` true, rAF at full rate),
+the renderer treat the page as focused (`document.hasFocus()` true, rAF at full rate),
 so a backgrounded tab still paints and fires events. Native popovers (autofill, password save,
 translate) are *not* gated by focus emulation — if you see typing-time focus theft, disable
 those at the profile level rather than chasing them through CDP.
+
+**The foreground lease.** (2) is held as a lease, not set once. The daemon takes it on the
+first call that drives a tab, renews it on every call after, and drops it — along with the 🐴 —
+after `HORSE_BROWSER_FOCUS_TTL` seconds of silence (default 60); the next call takes it back
+before the page is touched, so nothing an agent does can land on a page that still thinks it
+is hidden. It is per-CDP-session, so it also dies with the daemon.
+
+Why it must lapse: a page that believes it is visible *paints*. Held forever, every tab any
+agent had ever touched kept compositing for the daemon's whole life — measured at ~40% of a
+core for two idle dashboards, indefinitely, on a browser window that wasn't even focused. The
+lease is also the more honest signal: a real tab loses focus when its user looks elsewhere,
+and one that reports focus for eight unbroken hours does not look like a person.
+
+The cost to know: if you leave a page unattended for longer than the TTL — a bare `sleep`
+rather than `wait_for_load()`, which renews — it goes hidden and throttles its timers while
+you wait. Poll, or raise `HORSE_BROWSER_FOCUS_TTL`, when a page must keep working untouched.
 
 Several browsers run side by side (one per agent, each its own `HORSE_BROWSER_PORT` +
 `HORSE_BROWSER_PROFILE`), so nothing in the extension may assume a port. An extension can't

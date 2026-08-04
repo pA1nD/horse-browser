@@ -45,6 +45,11 @@ INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension
 ANCHOR_PID = os.environ.get("BH_ANCHOR_PID")
 ANCHOR_START = os.environ.get("BH_ANCHOR_START", "").strip()
 
+# Seconds a bound tab keeps foreground emulation after the last call that drove it.
+# Long enough that no realistic gap between an agent's calls flaps the page's focus;
+# short enough that a tab nobody is driving stops painting within a minute.
+FOCUS_TTL = float(os.environ.get("HORSE_BROWSER_FOCUS_TTL", "60"))
+
 
 def _session_label():
     """The session identity string the extension groups tabs under (see helpers._session_id)."""
@@ -322,6 +327,8 @@ class Daemon:
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
         self.has_extension = None  # probed once in start(); drives _apply_realness
+        self.leased = False   # is focus emulation currently held on self.session?
+        self.last_use = 0.0   # monotonic clock of the last call that drove the page
 
     async def attach_first_page(self):
         """Attach to THIS session's tab. Sets self.session. Returns attached target or None.
@@ -555,16 +562,19 @@ class Daemon:
         await self.attach_first_page()
         if ANCHOR_PID and _session_label():
             asyncio.create_task(self._watchdog())
+        asyncio.create_task(self._lease_sweeper())
         orig = self.cdp._event_registry.handle_event
-        mark_js = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
         async def tap(method, params, session_id=None):
             self.events.append({"method": method, "params": params, "session_id": session_id})
             if method == "Page.javascriptDialogOpening":
                 self.dialog = params
             elif method == "Page.javascriptDialogClosed":
                 self.dialog = None
-            elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
-                asyncio.create_task(_silent(asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session), timeout=2)))
+            elif method in ("Page.loadEventFired", "Page.domContentEventFired") and self.leased:
+                # A navigation replaces the title, so a HELD lease re-stamps its mark.
+                # Gated on self.leased: an idle tab that navigates on its own (a dashboard
+                # redirect, a meta refresh) must not re-acquire a horse nobody earned.
+                asyncio.create_task(_silent(asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": self.MARK_ON}, session_id=self.session), timeout=2)))
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
 
@@ -593,6 +603,72 @@ class Daemon:
         # the raw capability alive on non-horse browsers — but it steals focus.
         log(f"activateTarget({tid}) falling back to NATIVE activateTarget (extension unavailable: {value}) — this steals OS focus")
         return {"result": await self.cdp.send_raw("Target.activateTarget", params)}
+
+    # ── foreground lease ─────────────────────────────────────────────────────
+    # Emulation.setFocusEmulationEnabled makes a background tab report itself visible
+    # and focused, so a page behaves as a foreground page while we never steal the
+    # operator's OS focus. It is what lets this tool drive a tab nobody is looking at,
+    # and pages genuinely need it: challenge widgets don't render while hidden, and a
+    # tab that is never focused is itself a bot signal.
+    #
+    # Held forever, though, it is a battery leak. A "visible" tab paints, so every tab
+    # an agent ever touched keeps compositing for as long as the daemon lives. Measured
+    # on one browser: two long-idle dashboards pinned this way burned ~40% of a core
+    # between them, indefinitely, with the window not even focused.
+    #
+    # So it is a LEASE, not a setting: taken by the first call that drives the tab,
+    # renewed by every call after it, dropped after FOCUS_TTL of silence, retaken
+    # transparently by the next call. The override is per-CDP-session, so it also dies
+    # with the daemon — a crash cannot leave a tab pinned.
+    #
+    # The 🐴 title mark is that same lease made visible. Horse on a tab means the tab is
+    # being driven RIGHT NOW, which is why it comes off when the lease lapses instead of
+    # sitting there for the rest of the session.
+    MARK_ON = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
+    MARK_OFF = "if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)"
+
+    async def _lease_set(self, session, on):
+        """Focus emulation and the horse mark move together — they are one signal."""
+        if not session:
+            return
+        await asyncio.gather(
+            _silent(asyncio.wait_for(self.cdp.send_raw(
+                "Emulation.setFocusEmulationEnabled", {"enabled": on}, session_id=session), timeout=2)),
+            _silent(asyncio.wait_for(self.cdp.send_raw(
+                "Runtime.evaluate", {"expression": self.MARK_ON if on else self.MARK_OFF},
+                session_id=session), timeout=2)),
+        )
+
+    async def _lease_touch(self):
+        """Renew the lease, taking it first if it had lapsed.
+
+        Awaited on the hot path on purpose: the call that follows must not land on a
+        page that still believes it is hidden. Once held this is a clock read, so the
+        round trip is paid only on the first call after an idle stretch."""
+        self.last_use = time.monotonic()
+        if self.leased or not self.session:
+            return
+        self.leased = True
+        await self._lease_set(self.session, True)
+
+    async def _lease_drop(self, session=None):
+        target = session or self.session
+        if not self.leased:
+            return
+        self.leased = False
+        await self._lease_set(target, False)
+
+    async def _lease_sweeper(self, interval=10):
+        """Drop the lease once nobody has driven the tab for FOCUS_TTL."""
+        while not self.stop.is_set():
+            try:
+                await asyncio.wait_for(self.stop.wait(), timeout=interval)
+                return
+            except asyncio.TimeoutError:
+                pass
+            if self.leased and (time.monotonic() - self.last_use) > FOCUS_TTL:
+                log(f"foreground lease idle {FOCUS_TTL:.0f}s — releasing (tab stops painting)")
+                await self._lease_drop()
 
     async def _watchdog(self, interval=30):
         """Self-reap: when the anchoring agent-session process dies, close this
@@ -693,6 +769,10 @@ class Daemon:
         if meta == "ping":        return {"pong": True, "pid": os.getpid(),
                                           "endpoint": os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")}
         if meta == "drain_events":
+            # Waiting on a page is driving it: wait_for_load / wait_for_network_idle poll
+            # here without issuing a CDP call, and a page that goes hidden mid-wait throttles
+            # exactly the timers the wait is waiting for.
+            await self._lease_touch()
             out = list(self.events); self.events.clear()
             return {"events": out}
         if meta == "session":     return {"session_id": self.session}
@@ -725,6 +805,7 @@ class Daemon:
             return {"target_id": self.target_id, "session_id": self.session, "page": page}
         if meta == "set_session":
             old_session = self.session
+            was_leased = self.leased
             self.session = req.get("session_id")
             self.target_id = req.get("target_id") or self.target_id
             _remember_target(self.target_id)   # persist the binding: bound-tab attach + drift guard read it
@@ -746,18 +827,19 @@ class Daemon:
                         )
                     except Exception: pass
                 tasks.append(disable_old())
+                if was_leased:
+                    # Hand the lease over rather than leaving it behind: the tab we are
+                    # walking away from stops painting and drops its horse here, which is
+                    # the whole reason a switched-away tab used to keep both for the
+                    # daemon's entire life.
+                    tasks.append(self._lease_set(old_session, False))
             tasks.append(self._enable_default_domains(self.session))
+            # Taking the lease IS switch_tab's "I am driving this tab now" — held, not
+            # fire-and-forget, so the caller's next call can't beat the horse onto the page.
+            self.leased = True
+            self.last_use = time.monotonic()
+            tasks.append(self._lease_set(self.session, True))
             await asyncio.gather(*tasks)
-            # 🐴 tab-marker title prefix is purely cosmetic — fire-and-forget so
-            # it doesn't add to the synchronous IPC budget.
-            asyncio.create_task(_silent(asyncio.wait_for(
-                self.cdp.send_raw(
-                    "Runtime.evaluate",
-                    {"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"},
-                    session_id=self.session,
-                ),
-                timeout=2,
-            )))
             return {"session_id": self.session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}
@@ -769,6 +851,10 @@ class Daemon:
         # Browser-level Target.* calls must not use a session (stale or otherwise).
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
+        # Session-bound calls drive a page; browser-level Target.* calls (listing tabs,
+        # closing one) don't, and must not renew a lease on a tab nobody is touching.
+        if sid:
+            await self._lease_touch()
         if req.get("nowait"):
             # Send it and return; do not wait for the renderer to answer. For INPUT during a
             # gesture the reply carries nothing we use, and waiting for it makes the gesture's

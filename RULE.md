@@ -45,6 +45,12 @@ tab · `click(css)`/`click_xy(x,y)` trusted click · `type_into(css,text)` trust
 - **Challenges: solve, don't reload.** A press-hold / slide / checkbox is a reputation
   checkpoint. `solve_challenge()` (or a trusted gesture) banks IP + cookie trust that pays
   forward across the session; reloading to reroll banks nothing and reads as a bot.
+- **Your tab is foreground only while you're driving it.** The page is told it's focused for
+  as long as you keep calling, then goes hidden about a minute after you stop (and drops its
+  🐴) so an abandoned tab doesn't burn CPU forever. Your next call takes it back before the
+  page is touched, so this is invisible — *except* if you wait with a bare `sleep`: the page
+  throttles its timers while you do. Poll with `wait_for_load()` / `wait_for_network_idle()`,
+  which renew it, or raise `HORSE_BROWSER_FOCUS_TTL`.
 
 ## Make it yours — you can write verbs
 
