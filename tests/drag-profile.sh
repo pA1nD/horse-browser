@@ -209,10 +209,20 @@ chk "the pointer approaches the handle before pressing"  "v >= 4"               
 # band only comes into play when dispatch is so expensive that drag() stops trading samples for
 # time and runs long on purpose, and a 3s drag is a thing a hand demonstrably does.
 chk "the drag takes a hand's time, not a loop's"         "all(1.0 <= d <= 3.5 for d in v)" dur
-# Bimodal in the recorded hand: 7 of 14 drags overshot 5-24px, the other 7 not at all. So the
-# property is that BOTH happen — a drag that always overshoots by a little is the average of two
-# behaviours and resembles neither. Twelve runs, so a fair coin does not fail this by luck.
-chk "sometimes it overshoots, sometimes it does not"     "2 <= sum(1 for o in v if o >= 1.5) <= 10" overshoot
+# Bimodal in the recorded hand: 7 of 14 drags overshot 5-24px, the other 7 not at all. A drag
+# that always overshoots by a little is the average of two behaviours and resembles neither.
+#
+# This used to count how many of the 12 overshot and require 2..10 — which is a fair coin asked
+# to land between 2 and 10 heads in 12 throws, and fails 0.6% of the time on perfectly correct
+# code (Monte-Carlo'd over 400 simulated runs; also seen for real). A failure rate that low is
+# worse than a higher one: it always arrives as "just re-run it", so eventually nobody believes
+# the check at all.
+#
+# The frequency claim moved to harness/tests/unit/test_drag_shape.py, where a virtual clock buys
+# 400 samples for less than a second and a wrong rate is unmissable. What is left here is the
+# part that needs a real browser and cannot flake: the overshoots that DO occur are real ones,
+# never a small constant — the recorded hands leave a gap between ~0 and 5px, and so must we.
+chk "overshoot is a real one or none, never a nudge"    "all(o < 1.5 or o >= 4.0 for o in v)" overshoot
 chk "samples are not metronomic"                         "min(v) >= 0.12"            dt_cv
 # Judged on the DISTRIBUTION, not run by run. This is a shape property measured through
 # randomised sleeps and a browser under load — with the whole suite running, individual drags

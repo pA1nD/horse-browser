@@ -658,8 +658,16 @@ class Daemon:
         self.leased = False
         await self._lease_set(target, False)
 
-    async def _lease_sweeper(self, interval=10):
-        """Drop the lease once nobody has driven the tab for FOCUS_TTL."""
+    async def _lease_sweeper(self, interval=None):
+        """Drop the lease once nobody has driven the tab for FOCUS_TTL.
+
+        The tick scales with the TTL rather than sitting at a fixed 10s: worst-case release is
+        TTL + interval, so a fixed tick makes a deliberately short TTL mean something quite
+        different from what was asked for (4s configured, up to 14s in practice). At the default
+        60s TTL this is still a 10s tick.
+        """
+        if interval is None:
+            interval = max(1.0, min(10.0, FOCUS_TTL / 4.0))
         while not self.stop.is_set():
             try:
                 await asyncio.wait_for(self.stop.wait(), timeout=interval)

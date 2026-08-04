@@ -101,7 +101,12 @@ hb() { BU_CDP_URL="http://127.0.0.1:$CPORT" BU_NAME="hb-cfr$$" HORSE_SESSION="cf
 one() {   # one <kind> <label>
   local kind="$1" label="$2"
   local cx cy cw ch p1 fx
-  cx=$(( (RANDOM % 300) + 20 ))          # inside the 400x300 frame, clear of the decoys
+  cx=$(( (RANDOM % 300) + 20 ))          # inside the 400x300 frame, below the decoy banner
+  # NB the control CAN land on top of the decoy footer (which starts at y=240): cy+ch reaches
+  # 278 on about 17% of draws. That is not a flake — the control is declared after the footer,
+  # so it paints above it, and a solver that picks the topmost element at those coordinates must
+  # still come back with the control. The earlier claim here that the draw was "clear of the
+  # decoys" was simply wrong about the footer.
   cy=$(( (RANDOM % 140) + 90 ))
   cw=$(( (RANDOM % 60) + 24 ))
   ch=$(( (RANDOM % 30) + 20 ))
