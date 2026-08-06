@@ -31,8 +31,9 @@ horse-browser installed. Next:
   • Already running an older version? Apply the update (new launch flags +
     extension) with a tab-preserving relaunch:          horse-browser relaunch
   • Sign into your apps once — logins persist for every agent.
-  • Teach agents the paved path — register the rule file
-    (~/.claude/rules/horse-browser.md, one self-contained file, no imports):
-      horse-browser rule apply
+
+Your agents are already taught: the rule (~/.claude/rules/horse-browser.md) and the
+subagent lane hook are managed for you and re-checked on every run, so an upgrade
+never leaves them stale. Don't want the rule in every session? horse-browser rule off
 EOF
 exit 0

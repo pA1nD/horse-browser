@@ -12,6 +12,13 @@
 # constant the implementation chose; they are all bands wide enough for the randomisation to
 # move inside and narrow enough that removing the behaviour fails them.
 set -u
+
+# A test run must never reach the operator's ~/.claude or ~/.grok. 16 of 19 suites once
+# lacked this, so `npm test` from ANY clone wired that clone's path into the real global
+# settings.json — which is how a build agent's throwaway checkout came to leave a dead
+# hook behind that failed every Bash call on the machine. external-state.sh is the one
+# suite that unsets this, against temp paths of its own.
+export HORSE_BROWSER_NO_RECONCILE=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
 PY="$ROOT/harness/.venv/bin/python"

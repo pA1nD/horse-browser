@@ -18,6 +18,13 @@
 # issued via the helpers would renew the lease it is trying to observe.
 set -u
 
+# A test run must never reach the operator's ~/.claude or ~/.grok. 16 of 19 suites once
+# lacked this, so `npm test` from ANY clone wired that clone's path into the real global
+# settings.json — which is how a build agent's throwaway checkout came to leave a dead
+# hook behind that failed every Bash call on the machine. external-state.sh is the one
+# suite that unsets this, against temp paths of its own.
+export HORSE_BROWSER_NO_RECONCILE=1
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$HERE/.."
 HB="${HB:-$ROOT/bin/horse-browser}"

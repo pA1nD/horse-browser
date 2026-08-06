@@ -13,6 +13,13 @@
 # session's identity.
 set -u
 
+# A test run must never reach the operator's ~/.claude or ~/.grok. 16 of 19 suites once
+# lacked this, so `npm test` from ANY clone wired that clone's path into the real global
+# settings.json — which is how a build agent's throwaway checkout came to leave a dead
+# hook behind that failed every Bash call on the machine. external-state.sh is the one
+# suite that unsets this, against temp paths of its own.
+export HORSE_BROWSER_NO_RECONCILE=1
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 PASS=0; FAIL=0
@@ -103,25 +110,29 @@ HORSE_BROWSER_GROK_SESSIONS="$GS" HORSE_BROWSER_GROK_PID=4243 \
   || fail "no id means no file" "wrote '$(cat "$GS/4243" 2>/dev/null)'"
 
 # ── 7. the launcher registers the grok hook, and only rewrites it on drift ─────────
+# The one place this suite lets the reconciler run — every target retargeted into $WORK, so
+# the operator's real ~/.grok and ~/.claude are still untouched. See tests/external-state.sh.
 GH="$WORK/grok-hooks"; mkdir -p "$GH"
-HORSE_BROWSER_GROK_HOOKS="$GH" HORSE_BROWSER_CLAUDE_SETTINGS="$WORK/ignore.json" \
-  HORSE_BROWSER_LANE_HOOK_STAMP="$WORK/gstamp" HORSE_BROWSER_LANE_HOOK_INTERVAL=0 \
-  "$ROOT/bin/horse-browser" status >/dev/null 2>&1
+grok_run() {
+  env -u HORSE_BROWSER_NO_RECONCILE \
+    HORSE_BROWSER_GROK_HOOKS="$GH" HORSE_BROWSER_CLAUDE_SETTINGS="$WORK/ignore.json" \
+    HORSE_BROWSER_RULES_MD="$WORK/ignore-rule.md" HORSE_BROWSER_RECONCILE_STAMP="$1" \
+    "$ROOT/bin/horse-browser" status >/dev/null 2>&1
+}
+grok_run "$WORK/gstamp"
 python3 -c "
 import json,sys
 d=json.load(open('$GH/horse-browser.json'))
 ev=set(d.get('hooks',{}))
 assert ev == {'SessionStart','SessionEnd'}, ev
 c=d['hooks']['SessionStart'][0]['hooks'][0]['command']
-assert c.endswith('integrations/grok/session-hook.sh'), c
+assert 'integrations/grok/session-hook.sh' in c, c
 " 2>/dev/null \
   && pass "launcher registers ~/.grok/hooks/horse-browser.json (SessionStart + SessionEnd)" \
   || fail "launcher registers the grok hook" "$(cat "$GH/horse-browser.json" 2>/dev/null | head -3)"
 
 before="$(cat "$GH/horse-browser.json")"
-HORSE_BROWSER_GROK_HOOKS="$GH" HORSE_BROWSER_CLAUDE_SETTINGS="$WORK/ignore.json" \
-  HORSE_BROWSER_LANE_HOOK_STAMP="$WORK/gstamp2" HORSE_BROWSER_LANE_HOOK_INTERVAL=0 \
-  "$ROOT/bin/horse-browser" status >/dev/null 2>&1
+grok_run "$WORK/gstamp2"
 [ "$(cat "$GH/horse-browser.json")" = "$before" ] \
   && pass "…and leaves it untouched when it is already correct" \
   || fail "grok hook rewritten without drift"

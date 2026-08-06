@@ -89,9 +89,10 @@ This becomes implementable the moment grok's `PreToolUse` can modify `toolInput`
 
 ## What IS wired: the session hook
 
-`integrations/grok/session-hook.sh`, registered by `ensure_lane_hook()` into
+`integrations/grok/session-hook.sh`, registered by `reconcile_external()` into
 `~/.grok/hooks/horse-browser.json` (a global, always-trusted hook source — a file we own
-outright, never merged into anyone's `config.toml`).
+outright, never merged into anyone's `config.toml`) alongside the Claude Code lane hook and
+the rule file. `~/.grok` is detected, never created: no directory means grok isn't installed.
 
 On `SessionStart` it writes the real `GROK_SESSION_ID` to
 `~/.config/horse-browser/grok-sessions/<grok-pid>`; on `SessionEnd` it removes it. The pid is

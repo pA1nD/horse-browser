@@ -14,6 +14,13 @@
 #   • screenshots, per-target and over plain CDP — so a remote viewer built later can watch a
 #     browser that was never launched to be watched
 set -u
+
+# A test run must never reach the operator's ~/.claude or ~/.grok. 16 of 19 suites once
+# lacked this, so `npm test` from ANY clone wired that clone's path into the real global
+# settings.json — which is how a build agent's throwaway checkout came to leave a dead
+# hook behind that failed every Bash call on the machine. external-state.sh is the one
+# suite that unsets this, against temp paths of its own.
+export HORSE_BROWSER_NO_RECONCILE=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$HERE/.."; HB="$ROOT/bin/horse-browser"
 PASS=0; FAIL=0; FAILED=()
@@ -38,7 +45,7 @@ trap cleanup EXIT
 
 run() {  # run <profile> <unattended?> <script>
   HORSE_BROWSER_PORT="$PORT" HORSE_BROWSER_PROFILE="$1" \
-  HORSE_BROWSER_UNATTENDED="$2" HORSE_BROWSER_NO_LANE_HOOK=1 \
+  HORSE_BROWSER_UNATTENDED="$2" \
   HORSE_SESSION="$SESS" BH_ANCHOR_PID=$$ "$HB" <<<"$3" 2>&1
 }
 targets() { curl -s -m 3 "http://127.0.0.1:$PORT/json/list" 2>/dev/null; }

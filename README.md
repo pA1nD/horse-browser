@@ -47,30 +47,30 @@ You don't have to install by hand. Paste into **Claude Code** or **Codex**:
 ```text
 Set up https://github.com/pA1nD/horse-browser for me.
 
-Clone it, run ./install.sh, then ./claude-md.sh apply so you always use
-open_tab to open tabs from now on.
+Clone it and run ./install.sh so I always use open_tab to open tabs
+from now on.
 ```
 
-`install.sh` does the same setup as the npm install; `./claude-md.sh apply` then registers the rule file (the npm install prints that step for you — see below).
+`install.sh` does the same setup as the npm install, rule included.
 </details>
 
 ### Teaching agents the discipline
 
 The paved path (open tabs with `open_tab`; the shared-browser sharp edges) must be in context *before* the first browser call — so it's an always-on rule, not a load-on-demand skill. It's **one self-contained file** (`RULE.md`, ~650 tokens, no `@`-imports); the full reference stays out of context until an agent asks for it via `horse-browser skill`.
 
-**Recommended** — let horse-browser own a rule file at `~/.claude/rules/horse-browser.md` (rules files load into every session exactly like `CLAUDE.md`):
+**This is on by default.** Installing an agent browser your agents don't know how to drive is a half-install, so horse-browser owns a rule file at `~/.claude/rules/horse-browser.md` (rules files load into every session exactly like `CLAUDE.md`) and *keeps it current* — every run re-checks it, so an upgrade never leaves you on last month's instructions. Same for the subagent lane hook in `settings.json` and the grok session hook.
 
 ```bash
-horse-browser rule apply     # write/refresh the rule file (idempotent; also removes any legacy CLAUDE.md block)
+horse-browser rule status    # on/off, and where it goes
+horse-browser rule off       # remove it and stop rewriting it
+horse-browser rule on        # back on
 horse-browser rule print     # just print it — to compare, or copy by hand
-horse-browser rule check     # is the rule file up to date? (exit 1 if drifted — good for a cron)
+horse-browser rule check     # is the installed copy current? (exit 1 if drifted)
 ```
 
-(`rule` fronts the package's `claude-md.sh` — from a clone, `./claude-md.sh apply` is the same thing.)
+Nothing to re-run after an upgrade: `RULE.md` in the package is the single source, and the file on disk is reconciled against it. From a clone, `./claude-md.sh <cmd>` is the same thing.
 
-`apply` copies `RULE.md` verbatim — no symlinks, no per-Python copies, nothing to rot across reinstalls. `RULE.md` is the single source; edit it and re-run `apply`.
-
-**By hand** — or paste the rule into `~/.claude/CLAUDE.md` (or a single repo's `CLAUDE.md`) yourself: run `./claude-md.sh print` and drop the output in. (Codex users: `~/.codex/AGENTS.md` works the same way.) Either way, the agent loads the `open_tab` discipline automatically from then on.
+**By hand** — prefer to paste it into `~/.claude/CLAUDE.md` (or a single repo's `CLAUDE.md`) yourself? `horse-browser rule off`, then `horse-browser rule print` and drop the output where you want it. (Codex users: `~/.codex/AGENTS.md` works the same way.)
 
 ## How it stays out of your way
 
@@ -137,7 +137,8 @@ The test for anything we add: does it **encode knowledge** the agent can't deriv
 - **`bin/horse-browser`** — the launcher *and* the driver: ensures the browser is up (self-heals a GPU wedge after sleep), then runs your script against it through the vendored harness. Also `horse-browser status` (versions + state), `horse-browser skill` (print the manual), and `horse-browser update` (fetch the latest Chrome for Testing — it has no auto-updater — and restart onto it).
 - **`harness/`** — the vendored CDP harness (`horse_harness`): the daemon that holds the websocket to Chrome, the pre-imported helpers, and the shared-browser invariants (focus-safe activate, per-session tab pinning, self-reap). Runs from a private venv; a fork of browser-harness's core, no external dependency.
 - **`install.sh`** — one-time setup; fetches the browser, builds the harness venv, registers the launcher.
-- **`claude-md.sh`** — installs horse-browser's guidance as a rule file at `~/.claude/rules/horse-browser.md` (`apply`/`print`/`check`) — one self-contained file, no imports.
+- **`claude-md.sh`** — front door for the rule file (`on`/`off`/`print`/`check`/`status`), forwarding to `horse-browser rule`. The rule is on by default and reconciled on every run; this is the toggle, not an installer.
+- **`tools/reconcile_external.py`** — the one place that writes anything outside horse-browser's own directories: the lane hook in `~/.claude/settings.json`, the grok session hook, and the rule file. Last-writer-wins, so running two installs converges instead of accumulating.
 - **`RULE.md`** — the always-on rule (the paved path + the sharp edges, ~650 tokens). **`MANUAL.md`** — the full on-demand reference (`horse-browser skill`).
 
 A thin, self-contained setup — the vendored harness (or anything else speaking CDP) is just a *consumer* on port 9223.

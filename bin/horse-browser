@@ -239,6 +239,17 @@ _hb_stat_mtime() {   # epoch seconds of $1, or 0
   else                             stat -c %Y "$1" 2>/dev/null || echo 0; fi
 }
 
+# _hb_config_set KEY VALUE — set or replace one KEY="VALUE" line in ~/.config/horse-browser/config.
+# The config is shell-sourced at startup, so the operator's other settings must survive verbatim;
+# written atomically because a truncated config is a browser that will not start.
+_hb_config_set() {
+  _hb_mkparent "$CONFIG"
+  local tmp="$CONFIG.hb-tmp"
+  { [ -f "$CONFIG" ] && grep -v "^${1}=" "$CONFIG" || true; } > "$tmp" 2>/dev/null || true
+  printf '%s="%s"\n' "$1" "$2" >> "$tmp"
+  mv "$tmp" "$CONFIG"
+}
+
 _hb_ps_wide() {      # pid + full argv for every process, both ps dialects
   # procps is not guaranteed in a container image — a slim base can have no ps at all.
   #
@@ -384,10 +395,7 @@ ensure_display() {
 # Stamp of the last GPU-process kill, for the backoff above. Keyed to the profile, like
 # HB_LOCK below: the backoff is about ONE browser's crash count, so a sibling instance's
 # heal must not make us skip our own kill (or escalate to a needless relaunch).
-# Adopt the pre-0.9.7 global stamp once, so an upgrade landing inside the backoff window
-# still sees the kill that just happened instead of stacking a second one.
 HEAL_STAMP="${PROFILE%/}.last-heal"
-HEAL_STAMP_LEGACY="$HOME/.config/horse-browser/.last-heal"   # pre-0.9.7, global; read-only now
 
 # heal_log <event> [k=v …]: one tab-separated line per incident, with enough context
 # (time since wake, process ages, trigger details) to understand over time WHY the
@@ -620,15 +628,9 @@ heal_gpu() {
 # recently_healed: a GPU-process kill happened within the backoff window (sets
 # HEAL_AGO). A second kill that soon risks tripping Chrome's crash-count fallback
 # (see gpu_fallback), so the caller escalates to relaunch_browser instead.
-# Reads the pre-0.9.7 GLOBAL stamp as a floor, so an upgrade landing inside the backoff
-# window still sees the kill that just happened. Never written and never removed: moving it
-# would steal the backoff from a v0.9.6 launcher still running (or a rollback), and it stops
-# mattering by itself once it ages past the window.
 recently_healed() {
-  local last now legacy
+  local last now
   last=$(cat "$HEAL_STAMP" 2>/dev/null || echo 0); now=$(date +%s)
-  legacy=$(cat "$HEAL_STAMP_LEGACY" 2>/dev/null || echo 0)
-  [ "$legacy" -gt "$last" ] 2>/dev/null && last="$legacy"
   HEAL_AGO=$(( now - last ))
   [ "$HEAL_AGO" -lt "${HORSE_BROWSER_HEAL_BACKOFF:-600}" ]
 }
@@ -994,71 +996,161 @@ maybe_reap() {
   seed_instance_env   # re-assert the port for a browser that was already up (e.g. across an upgrade)
 }
 
-# ensure_lane_hook: keep the Claude Code subagent lane hook wired in ~/.claude/settings.json.
+# ── external state: everything we own outside our own directories ─────────────────────
 #
-# Why the LAUNCHER and not install.sh alone. install.sh wires it once and skips the wiring
-# entirely under HORSE_FROM_NPM (a silent postinstall must not edit ~/.claude), so `npm i -g`
-# — the documented install — never wired it at all. Nothing re-checked afterwards, so any
-# removal was permanent and silent. And the entry stores an ABSOLUTE path, so moving the
-# install (npm → a dev symlink, a relocated checkout) leaves every Claude session running a
-# Bash hook that no longer exists. Checking here catches all three; install.sh can't.
+# Three targets, one mechanism (tools/reconcile_external.py holds the how):
 #
-# The silent-postinstall policy is intact: this runs from a command the operator typed, and
-# it prints a line when — and only when — it changes something.
-#   HORSE_BROWSER_NO_LANE_HOOK=1       skip entirely
-#   HORSE_BROWSER_CLAUDE_SETTINGS=<f>  target another file (tests)
-ensure_lane_hook() {
-  [ -n "${HORSE_BROWSER_NO_LANE_HOOK:-}" ] && return 0
-  [ -n "$ROOT" ] && [ -f "$ROOT/tools/lane_hook_wire.py" ] || return 0
-  local hook="$ROOT/integrations/claude-code/lane-hook.sh"
-  [ -f "$hook" ] || return 0
-  command -v python3 >/dev/null 2>&1 || return 0
+#   ~/.claude/settings.json           lane-hook entries — subagents get their own tab group
+#   ~/.grok/hooks/horse-browser.json  grok's session id, where a TOOL process can read it
+#   ~/.claude/rules/horse-browser.md  the rule — how an agent is meant to drive this browser
+#
+# Why the LAUNCHER and not install.sh alone: install.sh runs once, and under HORSE_FROM_NPM
+# it deliberately skips the parts that touch ~/.claude, so `npm i -g` — the documented
+# install — left them unwired. Nothing re-checked afterwards, so any removal was permanent
+# and silent, and a stored ABSOLUTE path went stale whenever the install moved. Worse, the
+# rule was only ever written by an explicit command, so it froze at whatever version you
+# applied: the operator's copy was five releases behind and missing the paragraph that tells
+# agents not to idle on a bare sleep.
+#
+# The silent-install policy is intact — "never touch ~/.claude from a SILENT install", and
+# this prints a line when, and only when, it changes something.
+#
+#   HORSE_BROWSER_NO_RECONCILE=1       skip entirely (every test suite sets this)
+#   HORSE_BROWSER_CLAUDE_SETTINGS=<f>  }
+#   HORSE_BROWSER_GROK_HOOKS=<dir>     } retarget for tests
+#   HORSE_BROWSER_RULES_MD=<f>         }
+#   HORSE_BROWSER_RECONCILE_STAMP=<f>  the fingerprint stamp
+#   HORSE_BROWSER_RECONCILE_MAX_AGE=<s> ceiling between forced checks (default 3600)
+
+# _hb_state_paths: the manifest's three targets as "key<TAB>path<TAB>enabled", or nothing at
+# all for a target that does not apply to this machine. Enabled is a policy decision and lives
+# here; the reconciler just does as it is told.
+_hb_state_paths() {
   local settings="${HORSE_BROWSER_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
-  # Only on a machine that already runs Claude Code — never create ~/.claude ourselves.
-  [ -d "$(dirname "$settings")" ] || return 0
-  local stamp="${HORSE_BROWSER_LANE_HOOK_STAMP:-$HOME/.config/horse-browser/.last-lane-hook}"
-  local interval="${HORSE_BROWSER_LANE_HOOK_INTERVAL:-3600}" now last
-  now=$(date +%s); last=$(cat "$stamp" 2>/dev/null || echo 0)
-  [ $(( now - last )) -lt "$interval" ] && return 0
-  mkdir -p "$(dirname "$stamp")" 2>/dev/null || true
-  echo "$now" > "$stamp" 2>/dev/null || true
-  python3 "$ROOT/tools/lane_hook_wire.py" "$hook" "$settings" || true
-  ensure_grok_hook
+  local grok="${HORSE_BROWSER_GROK_HOOKS:-$HOME/.grok/hooks}"
+  local rule="${HORSE_BROWSER_RULES_MD:-$HOME/.claude/rules/horse-browser.md}"
+
+  # Claude Code and grok are detected, never created: an absent ~/.claude or ~/.grok means
+  # that agent system is not installed, and conjuring its config dir would be presumptuous.
+  [ -d "$(dirname "$settings")" ] && printf 'claude_hooks\t%s\t1\n' "$settings"
+  [ -d "$(dirname "$grok")" ] && printf 'grok_hook\t%s/horse-browser.json\t1\n' "$grok"
+
+  # The rule is ON by default — installing an agent browser that agents do not know how to
+  # drive is a half-install. `horse-browser rule off` sets RULE=0 in the config, and then we
+  # actively remove the file rather than leaving stale instructions behind.
+  if [ -d "$(dirname "$settings")" ]; then
+    printf 'rule\t%s\t%s\n' "$rule" "$([ "${RULE:-1}" = 0 ] && echo 0 || echo 1)"
+  fi
 }
 
-# ensure_grok_hook: publish grok's session id where a tool process can read it.
+# _hb_reconcile_now: build the manifest and hand it over. Unconditional — the gate is the
+# caller's job. `horse-browser rule on|off` calls this directly, so a toggle takes effect at
+# once instead of on the next fingerprint change.
+_hb_reconcile_now() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -n "$ROOT" ] && [ -f "$ROOT/tools/reconcile_external.py" ] || return 0
+  local line key path on
+  {
+    printf '{"root": "%s", "targets": {' "$ROOT"
+    local first=1
+    while IFS=$'\t' read -r key path on; do
+      [ -n "$key" ] || continue
+      [ "$first" = 1 ] || printf ','
+      first=0
+      printf '"%s": {"path": "%s", "enabled": %s}' "$key" "$path" \
+        "$([ "$on" = 1 ] && echo true || echo false)"
+    done <<EOF
+$(_hb_state_paths)
+EOF
+    printf '}}'
+  } | python3 "$ROOT/tools/reconcile_external.py" || true
+}
+
+# reconcile_external: the gate. Reconciling costs a python3 spawn (~21ms), so the common case
+# — nothing changed since last time — must not pay it. It doesn't: the check below is bash
+# builtins plus one clock read.
 #
-# grok gives a TOOL process exactly one variable, GROK_AGENT=1 — GROK_SESSION_ID reaches HOOK
-# processes only. Without this, integrations/grok/detect.sh can do no better than hashing the
-# workspace root, so two grok sessions in one directory land in one tab group. The hook writes
-# the real id keyed by the grok pid, which the detector recomputes the same way.
+# The stamp records WHICH install wrote it and WHICH targets were enabled; its mtime is the
+# "as of" moment. We reconcile when any of those identities changed, when any source or target
+# has been touched since, when an enabled target is missing outright, or once an hour
+# regardless — a ceiling for anything mtime cannot see (coarse filesystem timestamps, a file
+# restored in place), not the mechanism.
 #
-# Its own file in ~/.grok/hooks/ (a global, always-trusted source), never merged into
-# config.toml: a file we own outright can be rewritten wholesale and deleted cleanly.
-# Nothing here does subagent lanes — grok's subagents share the parent's process and tool
-# environment, and its PreToolUse can only allow/deny, so there is no point at which a
-# subagent's call can be told apart. See docs/grok-integration.md.
-ensure_grok_hook() {
-  local dir="${HORSE_BROWSER_GROK_HOOKS:-$HOME/.grok/hooks}"
-  local script="$ROOT/integrations/grok/session-hook.sh"
-  [ -f "$script" ] || return 0
-  [ -d "$(dirname "$dir")" ] || return 0     # no ~/.grok ⇒ grok isn't installed; never create it
-  mkdir -p "$dir" 2>/dev/null || return 0
-  local want
-  want=$(python3 - "$script" <<'PY' 2>/dev/null || true
-import json, sys
-print(json.dumps({"hooks": {ev: [{"hooks": [
-    {"type": "command", "command": sys.argv[1], "timeout": 10}]}]
-    for ev in ("SessionStart", "SessionEnd")}}, indent=2))
-PY
-)
-  [ -n "$want" ] || return 0
-  local target="$dir/horse-browser.json"
-  # Rewrite only on drift, so an unchanged install stays silent and touch-free.
-  if [ ! -f "$target" ] || [ "$(cat "$target" 2>/dev/null)" != "$want" ]; then
-    printf '%s\n' "$want" > "$target" 2>/dev/null \
-      && echo "horse-browser: registered the grok session hook ($target)" >&2
+# This is the same shape reset_stale_sw and the old grok hook already used: compare against
+# what you last saw, not against a clock. The lane hook was the one place that used a pure
+# wall-clock throttle, and it was the one place that broke.
+reconcile_external() {
+  [ -n "${HORSE_BROWSER_NO_RECONCILE:-}" ] && return 0
+  [ -n "$ROOT" ] || return 0
+
+  # A tree living in a temp dir is not an installation and must never claim global config.
+  # This is not hypothetical: a build-agent checkout under $TMPDIR registered its own path in
+  # the operator's ~/.claude/settings.json, was cleaned up an hour later, and left every Bash
+  # call in every Claude Code session on the machine failing a hook that no longer existed.
+  case "$ROOT" in
+    /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) return 0 ;;
+  esac
+  [ -n "${TMPDIR:-}" ] && case "$ROOT/" in "${TMPDIR%/}"/*) return 0 ;; esac
+
+  local stamp="${HORSE_BROWSER_RECONCILE_STAMP:-$HOME/.config/horse-browser/.external-state}"
+  local max_age="${HORSE_BROWSER_RECONCILE_MAX_AGE:-3600}"
+  local fp prev_fp= prev_at=0 stale=
+
+  fp="$(_hb_state_fingerprint)"
+  # Guarded rather than 2>/dev/null'd: bash reports a failed redirect itself, before the
+  # redirect that would have silenced it can apply.
+  [ -f "$stamp" ] && { read -r prev_fp; read -r prev_at; } < "$stamp" || true
+
+  if [ "$fp" != "$prev_fp" ]; then
+    stale=1
+  else
+    local now="${EPOCHSECONDS:-$(date +%s)}"
+    [ $(( now - ${prev_at:-0} )) -ge "$max_age" ] && stale=1
   fi
+  [ -n "$stale" ] || return 0
+
+  _hb_reconcile_now
+  # Re-read the fingerprint AFTER reconciling: it now describes what we just wrote, so the
+  # next call sees a match instead of mistaking our own writes for somebody else's change.
+  _hb_mkparent "$stamp"
+  printf '%s\n%s\n' "$(_hb_state_fingerprint)" "${EPOCHSECONDS:-$(date +%s)}" \
+    > "$stamp" 2>/dev/null || true
+}
+
+# _hb_state_fingerprint: everything that decides whether a reconcile is needed, in one line.
+#
+#   • which install, and which targets are enabled — a different tree or a flipped toggle
+#     wants a different result even when every file on disk is untouched
+#   • mtime+size of each SOURCE — an upgrade or a dev edit changes what we want
+#   • mtime+size of each TARGET — somebody edited, truncated or removed what we wrote
+#
+# One `stat` call covers every file: stat takes a list, so this is a single ~2ms spawn rather
+# than six, and an order of magnitude cheaper than the python3 reconcile it is protecting.
+#
+# It is mtime AND SIZE, not `test -nt`, because -nt compares whole seconds on this platform:
+# a settings.json edited in the same second as the stamp was written compared EQUAL, so the
+# edit was invisible until the hourly ceiling. The first version of this function had exactly
+# that bug and the suite caught it.
+_hb_state_fingerprint() {
+  local files=("$ROOT/RULE.md" "$ROOT/integrations/claude-code/lane-hook.sh"
+               "$ROOT/integrations/grok/session-hook.sh")
+  local key path on
+  while IFS=$'\t' read -r key path on; do
+    [ -n "$path" ] && files+=("$path")
+  done <<EOF
+$(_hb_state_paths)
+EOF
+  printf '%s|%s|' "$ROOT" "$(_hb_state_paths | tr '\n\t' '::')"
+  # A target that does not exist yet is the normal first-run case, and stat exits non-zero for
+  # it — which under `set -e -o pipefail` would take the whole launcher down before the browser
+  # ever starts. Its absence still shows up in the fingerprint, as a missing line.
+  # Sub-second mtime (%Fm / %y), not whole seconds: an edit landing in the same second as the
+  # last reconcile is exactly what happens when you change RULE.md and immediately re-run, and
+  # at one-second resolution it compares equal — invisible until the hourly ceiling.
+  if [ "$HB_OS" = "Darwin" ]; then stat -f '%N:%Fm:%z' "${files[@]}" 2>/dev/null || true
+  else                             stat -c '%n:%y:%s' "${files[@]}" 2>/dev/null || true; fi \
+    | tr '\n' '|'
+  return 0
 }
 
 # recycle_daemons: after a browser (re)launch, every harness daemon pinned to our
@@ -1655,8 +1747,8 @@ PY
 }
 
 # Before the subcommand switch, so `status` / `update` / `relaunch` self-heal it too — the
-# operator running any of those is exactly who needs the hook wired. Throttled and silent.
-ensure_lane_hook
+# operator running any of those is exactly who needs it wired. Fingerprint-gated and silent.
+reconcile_external
 
 # horse-browser's own subcommands — handled here, never forwarded to browser-harness.
 case "${1:-}" in
@@ -1688,11 +1780,40 @@ case "${1:-}" in
     else echo "horse-browser: MANUAL.md not found under $ROOT — reinstall the package" >&2; exit 1; fi
     ;;
   rule)
-    # First-class front for claude-md.sh (apply/print/check) — so setup docs can say
-    # `horse-browser rule apply` instead of locating the package via `npm root -g`.
+    # The rule file (~/.claude/rules/horse-browser.md) is ON by default and kept current by
+    # reconcile_external — these subcommands are the toggle and the inspection, not the
+    # installer. `apply` is kept as an alias for `on`: it is in the README and in muscle memory.
     shift
-    if [ -n "$ROOT" ] && [ -f "$ROOT/claude-md.sh" ]; then exec bash "$ROOT/claude-md.sh" "$@"
-    else echo "horse-browser: claude-md.sh not found under $ROOT — reinstall the package" >&2; exit 1; fi
+    _rule_want() { python3 "$ROOT/tools/reconcile_external.py" --print-rule "$ROOT"; }
+    case "${1:-status}" in
+      on|apply)
+        _hb_config_set RULE 1; RULE=1
+        _hb_reconcile_now
+        echo "horse-browser: rule ON — ${HORSE_BROWSER_RULES_MD:-$HOME/.claude/rules/horse-browser.md} is managed and kept current."
+        ;;
+      off)
+        _hb_config_set RULE 0; RULE=0
+        _hb_reconcile_now
+        echo "horse-browser: rule OFF — removed, and it will not be rewritten."
+        ;;
+      print) _rule_want ;;
+      check)
+        _rf="${HORSE_BROWSER_RULES_MD:-$HOME/.claude/rules/horse-browser.md}"
+        if [ "${RULE:-1}" = 0 ]; then
+          [ -e "$_rf" ] && { echo "horse-browser: rule is OFF but $_rf still exists" >&2; exit 1; }
+          echo "horse-browser: rule is off"; exit 0
+        fi
+        if [ "$(cat "$_rf" 2>/dev/null)" = "$(_rule_want)" ]; then
+          echo "horse-browser: rule is current"; exit 0
+        fi
+        echo "horse-browser: $_rf is DRIFTED (or missing) — a normal run repairs it" >&2; exit 1
+        ;;
+      status)
+        echo "rule: $([ "${RULE:-1}" = 0 ] && echo off || echo on) → ${HORSE_BROWSER_RULES_MD:-$HOME/.claude/rules/horse-browser.md}"
+        ;;
+      *) echo "usage: horse-browser rule [on|off|print|check|status]" >&2; exit 2 ;;
+    esac
+    exit 0
     ;;
   verbs)
     # Introspect every loaded verb (core / plugins / local) with docstrings — powers the dashboard.

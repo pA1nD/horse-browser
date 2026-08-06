@@ -86,63 +86,18 @@ else
   case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "  note: $BINDIR isn't on your PATH — add it so 'horse-browser' resolves";; esac
 fi
 
-# 3. workspace migration — retire the old loader stub ───────────────────────────
-# The open_tab/trusted-input helpers are FOLDED INTO the vendored harness now
-# (harness/horse_harness/helpers.py + input.py). Older installs synced them into the
-# browser-harness workspace as horse_helpers.py/horse_input.py plus a loader stub in
-# agent_helpers.py — retire all of that so stale copies can't shadow the packaged
-# versions. Everything the user keeps in agent_helpers.py is preserved byte-for-byte
-# (the harness still loads that file and pre-seeds it with every public helper).
-# NB: this marker is a HISTORICAL fingerprint of the stub shipped by past versions (≤0.9.2
-# wrote it as "bh_open helpers") — it must match what's on disk in the wild, so DON'T rename it
-# when verbs are renamed, or upgrades stop stripping the old stub.
-LOADER_MARKER="# >>> horse-browser: bh_open helpers (managed loader — do not edit) >>>"
-migrate_workspace() {
-  local ws="$1" dst="$1/agent_helpers.py"
-  [ -d "$ws" ] || return 0
-  rm -f "$ws/horse_helpers.py" "$ws/horse_input.py"
-  if [ -f "$dst" ] && grep -qF "$LOADER_MARKER" "$dst"; then
-    python3 - "$dst" <<'PY' || true
-import re, sys
-p = sys.argv[1]
-text = open(p).read()
-pat = re.compile(
-    r"\n*# >>> horse-browser: bh_open helpers \(managed loader — do not edit\) >>>"
-    r".*?# <<< horse-browser: bh_open helpers <<<\n*",
-    re.S)
-new = pat.sub("\n\n", text, count=1).strip("\n")
-if new != text:
-    open(p, "w").write(new + ("\n" if new else ""))
-    print("  migrated: retired the horse_helpers loader stub (helpers ship in the harness now)")
-PY
-  fi
-}
-migrate_workspace "${BH_AGENT_WORKSPACE:-$HOME/.config/browser-harness/agent-workspace}"
-for c in "$HOME/Developer/browser-harness" "$HOME/browser-harness"; do
-  migrate_workspace "$c/agent-workspace"
-done
-echo "✓ helpers: folded into the vendored harness (workspace agent_helpers.py still loads for your own additions)"
-
-# The rule (~/.claude/rules/horse-browser.md) is now ONE self-contained file — no @-imports,
-# no ~/.config skill copies to keep current. Registering it stays opt-in via
-# ./claude-md.sh apply (never touch ~/.claude from a silent install); the next-steps note
-# below points the user at it. The full manual is on-demand behind `horse-browser skill`.
-
-# Wire the claude-code lane hook into ~/.claude/settings.json: PreToolUse gives each
-# SUBAGENT's horse-browser calls their own lane (own daemon + tab group — parallel
-# subagents stop clobbering each other); SubagentStop cleans that lane up. Pure harness
-# plumbing — agents never see it. Idempotent: skipped if the hook is already wired.
-# Same npm policy as above: never touch ~/.claude from a silent postinstall.
+# 3. external state — the hooks and the rule ────────────────────────────────────
+# Three files outside our own directories: the Claude Code lane hook (subagents get their
+# own daemon + tab group), the grok session hook, and the rule that tells an agent how to
+# drive this browser. One reconciler owns all three, and the LAUNCHER runs it on every
+# invocation — so this call is only about making them exist before the first launch, not
+# about keeping them current.
 #
-# ONE implementation, in tools/lane_hook_wire.py — the launcher self-heals with the same
-# script on every run (ensure_lane_hook), which is what catches the npm case this branch
-# deliberately skips, plus a path gone stale after a reinstall. This inlined its own copy
-# once; two copies is how the launcher ended up with none.
-if [ -z "${HORSE_FROM_NPM:-}" ] && [ -d "$HOME/.claude" ]; then
-  python3 "$HERE/tools/lane_hook_wire.py" \
-    "$HERE/integrations/claude-code/lane-hook.sh" "$HOME/.claude/settings.json" || true
-  echo "✓ subagent lane hook checked in ~/.claude/settings.json"
-fi
+# It runs under npm too, unlike the old wiring. The policy it has to respect is "never touch
+# ~/.claude from a SILENT install", and the reconciler prints a line for every file it
+# writes; the postinstall's next-steps block prints around it. An agent browser whose agents
+# have not been told it exists is a half-install.
+"$HERE/bin/horse-browser" rule status >/dev/null 2>&1 || true   # triggers the reconcile
 
 # 4. first launch + smoke test ─────────────────────────────────────────────────
 # HORSE_SKIP_LAUNCH=1 skips this whole step — used by the "update" path (re-running
